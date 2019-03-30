@@ -34,6 +34,7 @@ using System.Windows.Shapes;
 using System.Windows.Forms;
 using System.IO;
 using Revit.IFC.Common.Utility;
+using Revit.RevitIFCTools.Extension;
 
 namespace RevitIFCTools
 {
@@ -118,11 +119,44 @@ namespace RevitIFCTools
             aggregateEntities = new SortedSet<string>();
          aggregateEntities.Clear();
 
+         ProcessPsetDefinition procPsetDef = new ProcessPsetDefinition();
+
+         IDictionary<string, FXIFCEntityAndPsetList> fxEntityNPsetDict = new Dictionary<string, FXIFCEntityAndPsetList>();
+
          foreach (string fileName in listBox_schemaList.SelectedItems)
          {
             FileInfo f = dInfo.GetFiles(fileName).First();
             processSchema(f);
-         }
+
+            // Add creation of Json file for FORNAX universal template
+            string schemaName = f.Name.Replace(".xsd", "");
+            IDictionary<string, IfcSchemaEntityNode> entDict = IfcSchemaEntityTree.GetEntityDictFor(schemaName);
+            FXIFCEntityAndPsetList entPsetList = new FXIFCEntityAndPsetList();
+            foreach (KeyValuePair<string, IfcSchemaEntityNode> ent in entDict)
+            {
+               FXEntityInfo entPdef = new FXEntityInfo();
+               entPdef.Entity = ent.Key;
+               if (!string.IsNullOrEmpty(ent.Value.PredefinedType))
+               {
+                  if (IfcSchemaEntityTree.PredefinedTypeEnumDict.ContainsKey(ent.Value.PredefinedType))
+                  {
+                     entPdef.PredefinedType = IfcSchemaEntityTree.PredefinedTypeEnumDict[ent.Value.PredefinedType];
+                  }
+               }
+               entPsetList.EntityList.Add(entPdef);
+            }
+
+            DirectoryInfo[] psdFolders = new DirectoryInfo(System.IO.Path.Combine(textBox_folderLocation.Text, schemaName)).GetDirectories("psd", SearchOption.AllDirectories);
+            FXPropertySetDef psetDefList = new FXPropertySetDef();
+            foreach (DirectoryInfo subDir in psdFolders[0].GetDirectories())
+            {
+               foreach (FileInfo file in subDir.GetFiles("Pset_*.xml"))
+               {
+                  PropertySet.PsetDefinition psetD = ProcessPsetDefinition(schemaFolder, file);
+                  AddPsetDefToDict(schemaFolder, psetD);
+               }
+               //psetDefList.PsetName =
+         } }
 
          if (aggregateEntities.Count > 0)
          {

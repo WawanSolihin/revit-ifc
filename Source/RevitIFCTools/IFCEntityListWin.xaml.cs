@@ -124,7 +124,7 @@ namespace RevitIFCTools
 
          IList<IFCEntityAndPsetList> fxEntityNPsetList = new List<IFCEntityAndPsetList>();
 
-         string jsonFile = outputFolder + @"\FXEntityAndPsetDefs.json";
+         string jsonFile = outputFolder + @"\IFCEntityAndPsetDefs.json";
          if (File.Exists(jsonFile))
             File.Delete(jsonFile);
          FileStream fs = File.Create(jsonFile);

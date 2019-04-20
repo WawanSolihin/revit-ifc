@@ -1,4 +1,23 @@
-﻿using System;
+﻿//
+// BIM IFC library: this library works with Autodesk(R) Revit(R) to export IFC files containing model geometry.
+// Copyright (C) 2012  Autodesk, Inc.
+// 
+// This library is free software; you can redistribute it and/or
+// modify it under the terms of the GNU Lesser General Public
+// License as published by the Free Software Foundation; either
+// version 2.1 of the License, or (at your option) any later version.
+//
+// This library is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+// Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public
+// License along with this library; if not, write to the Free Software
+// Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+//
+
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -22,7 +41,7 @@ namespace Revit.IFC.Common.Utility
          if (ifcxmlSchemaFile.Name.Equals(loadedSchema) && IfcSchemaEntityTree.EntityDict.Count > 0)
             return false;     // The schema file has been processed and loaded before
 
-         loadedSchema = ifcxmlSchemaFile.Name;
+         loadedSchema = Path.GetFileNameWithoutExtension(ifcxmlSchemaFile.Name);
          IfcSchemaEntityTree.Initialize(loadedSchema);
          XmlTextReader reader = new XmlTextReader(ifcxmlSchemaFile.FullName);
          XmlSchema theSchema = XmlSchema.Read(reader, ValidationCallback);
@@ -66,7 +85,26 @@ namespace Revit.IFC.Common.Utility
                      foreach (XmlSchemaAttribute attr in parentComplexType.Attributes)
                      {
                         if (attr.Name != null && attr.Name.Equals("PredefinedType", StringComparison.InvariantCultureIgnoreCase))
+                        {
                            predefTypeEnum = attr.SchemaTypeName.Name;
+                           break;
+                        }
+                     }
+
+                     if (string.IsNullOrEmpty(predefTypeEnum) && parentComplexType.Particle != null)
+                     { 
+                        XmlSchemaSequence seq = parentComplexType.Particle as XmlSchemaSequence;
+                        if (seq != null)
+                        {
+                           foreach (XmlSchemaElement elem in seq.Items)
+                           {
+                              if (elem.Name != null && elem.Name.Equals("PredefinedType", StringComparison.InvariantCultureIgnoreCase))
+                              {
+                                 predefTypeEnum = elem.SchemaTypeName.Name;
+                                 break;
+                              }
+                           }
+                        }
                      }
                   }
                }
@@ -88,11 +126,11 @@ namespace Revit.IFC.Common.Utility
                      {
                         if (IfcSchemaEntityTree.PredefinedTypeEnumDict.ContainsKey(enumName))
                         {
-                           IfcSchemaEntityTree.PredefinedTypeEnumDict[enumName].Add(enumFacet.Value);
+                           IfcSchemaEntityTree.PredefinedTypeEnumDict[enumName].Add(enumFacet.Value.ToUpper());
                         }
                         else
                         {
-                           enumValueList.Add(enumFacet.Value);
+                           enumValueList.Add(enumFacet.Value.ToUpper());
                         }
                      }
                      if (enumValueList.Count > 0)

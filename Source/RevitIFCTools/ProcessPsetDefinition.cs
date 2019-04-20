@@ -1,4 +1,23 @@
-﻿using System;
+﻿//
+// BIM IFC library: this library works with Autodesk(R) Revit(R) to export IFC files containing model geometry.
+// Copyright (C) 2012  Autodesk, Inc.
+// 
+// This library is free software; you can redistribute it and/or
+// modify it under the terms of the GNU Lesser General Public
+// License as published by the Free Software Foundation; either
+// version 2.1 of the License, or (at your option) any later version.
+//
+// This library is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+// Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public
+// License along with this library; if not, write to the Free Software
+// Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+//
+
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -59,12 +78,14 @@ namespace RevitIFCTools
       public static IDictionary<string, SharedParameterDef> SharedParamFileDict  { get; set; } = new Dictionary<string, SharedParameterDef>();
       public static IDictionary<string, SharedParameterDef> SharedParamFileTypeDict { get; set; } = new Dictionary<string, SharedParameterDef>();
 
-      public ProcessPsetDefinition()
+      public ProcessPsetDefinition(StreamWriter logfile)
       {
-
+         logF = logfile;
+         enumFileDict = new Dictionary<string, StreamWriter>();
+         enumDict = new Dictionary<string, IList<string>>();
       }
 
-      public void AddPsetDefToDict(string schemaVersionName, PsetDefinition psetD)
+      void AddPsetDefToDict(string schemaVersionName, PsetDefinition psetD)
       {
          VersionSpecificPropertyDef psetDefEntry = new VersionSpecificPropertyDef()
          {
@@ -231,7 +252,7 @@ namespace RevitIFCTools
 
       public static string removeInvalidNName(string name)
       {
-         string[] subNames = name.Split('/', '\\');
+         string[] subNames = name.Split('/', '\\', ' ');
          if (subNames[0].Trim().StartsWith("Ifc", StringComparison.InvariantCultureIgnoreCase))
             return subNames[0].Trim();  // Only returns the name before '/' if any
          else
@@ -246,8 +267,6 @@ namespace RevitIFCTools
       public void processSimpleProperty(StreamWriter outF, PsetProperty prop, string propNamePrefix, string IfcVersion, string schemaVersion, 
          string varName, VersionSpecificPropertyDef vSpecPDef, string outputFile)
       {
-         // For now, keep the same approach for naming the properties (i.e. without prefix)
-         //outF.WriteLine("\t\t\t\tifcPSE = new PropertySetEntry(\"{0}.{1}\");", propNamePrefix, prop.Name);
          outF.WriteLine("\t\t\t\tifcPSE = new PropertySetEntry(\"{0}\");", prop.Name);
          outF.WriteLine("\t\t\t\tifcPSE.PropertyName = \"{0}\";", prop.Name);
          if (prop.PropertyType != null)
@@ -441,15 +460,8 @@ namespace RevitIFCTools
                newPar.ParamType = "NUMBER";
          }
 
-         //// Append into the param file:
-         //string vis = newPar.Visibility ? "1" : "0";
-         //string usrMod = newPar.UserModifiable ? "1" : "0";
-
          if (!SharedParamFileDict.ContainsKey(newPar.Name))
          {
-            //string parEntry = newPar.Param + "\t" + newPar.ParamGuid.ToString() + "\t" + newPar.Name + "\t" + newPar.ParamType + "\t" + newPar.DataCategory + "\t" + newPar.GroupId.ToString()
-            //                  + "\t" + vis + "\t" + newPar.Description + "\t" + usrMod;
-            //stSharedPar.WriteLine(parEntry);
             SharedParamFileDict.Add(newPar.Name, newPar);
          }
          else    // Keep the GUID, but override the details
@@ -457,9 +469,6 @@ namespace RevitIFCTools
             // If this Property has IfcGuid, use the IfdGuid set in the newPar, otherwise keep the original one
             if (!hasIfdGuid)
                newPar.ParamGuid = SharedParamFileDict[newPar.Name].ParamGuid;
-            //string parEntry = newPar.Param + "\t" + newPar.ParamGuid.ToString() + "\t" + newPar.Name + "\t" + newPar.ParamType + "\t" + newPar.DataCategory + "\t" + newPar.GroupId.ToString()
-            //                  + "\t" + vis + "\t" + newPar.Description + "\t" + usrMod;
-            //stSharedPar.WriteLine(parEntry);
             SharedParamFileDict[newPar.Name] = newPar;     // override the Dict
          }
 
@@ -730,7 +739,6 @@ namespace RevitIFCTools
                   {
                      PropertyEnumItem enumItem = new PropertyEnumItem();
                      enumItem.EnumItem = cD.Elements(ns + "Name").FirstOrDefault().Value;
-                     //pev.Name = enumItem.EnumItem;             // Use this constant def for the missing Enum item
                      enumItem.Aliases = new List<NameAlias>();
                      var eAliases = from el in cD.Elements(ns + "NameAliases").FirstOrDefault().Elements(ns + "NameAlias") select el;
                      if (eAliases.Count() > 0)
@@ -808,11 +816,10 @@ namespace RevitIFCTools
          return prop;
       }
 
-      public PsetDefinition ProcessPsetDef(string schemaVersion, FileInfo PSDfileName)
+      PsetDefinition Process(string schemaVersion, FileInfo PSDfileName)
       {
          PsetDefinition pset = new PsetDefinition();
          XDocument doc = XDocument.Load(PSDfileName.FullName);
-         ProcessPsetDefinition procPset = new ProcessPsetDefinition();
 
          // Older versions of psd uses namespace!
          var nsInfo = doc.Root.Attributes("xmlns").FirstOrDefault();
@@ -895,6 +902,15 @@ namespace RevitIFCTools
          pset.properties = propList;
 
          return pset;
+      }
+
+      public void ProcessSchemaPsetDef(string schemaName, DirectoryInfo psdFolder)
+      {
+         foreach (FileInfo file in psdFolder.GetFiles("Pset_*.xml"))
+         {
+            PropertySet.PsetDefinition psetD = Process(schemaName, file);
+            AddPsetDefToDict(schemaName, psetD);
+         }
       }
    }
 }

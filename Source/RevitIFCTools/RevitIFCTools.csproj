@@ -83,7 +83,7 @@
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
     </ApplicationDefinition>
-    <Compile Include="Extension\FXIFCEntityAndPsetList.cs" />
+    <Compile Include="IFCEntityAndPsetList.cs" />
     <Compile Include="ParameterExpr\ExprTester.xaml.cs">
       <DependentUpon>ExprTester.xaml</DependentUpon>
     </Compile>

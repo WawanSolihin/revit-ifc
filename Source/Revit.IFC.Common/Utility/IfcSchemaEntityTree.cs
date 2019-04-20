@@ -112,10 +112,10 @@ namespace Revit.IFC.Common.Utility
             case IFCVersion.IFC4:
             case IFCVersion.IFC4DTV:
             case IFCVersion.IFC4RV:
-               schemaFile = "IFC4_ADD2.xsd";
+               schemaFile = "IFC4.xsd";
                break;
             default:
-               schemaFile = "IFC4_ADD1.xsd";
+               schemaFile = "IFC4.xsd";
                break;
          }
          return schemaFile;
@@ -134,7 +134,7 @@ namespace Revit.IFC.Common.Utility
             // Process IFCXml schema here, then search for IfcProduct and build TreeView beginning from that node. Allow checks for the tree nodes. Grey out (and Italic) the abstract entity
             string schemaLoc = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetCallingAssembly().Location);
             schemaFile = Path.Combine(schemaLoc, schemaFile);
-            FileInfo schemaFileInfo = new FileInfo(schemaFile);
+            FileInfo schemaFileInfo = new FileInfo(schemaFile + ".xsd");
 
             bool newLoad = ProcessIFCXMLSchema.ProcessIFCSchema(schemaFileInfo);
             if (newLoad)
@@ -295,6 +295,46 @@ namespace Revit.IFC.Common.Utility
                {
                   res = entNode;
                   break;
+               }
+            }
+         }
+         return res;
+      }
+
+      /// <summary>
+      /// Collect all the supertype of an entity node
+      /// </summary>
+      /// <param name="entityName">the entity</param>
+      /// <param name="stopNode">array of the stop node(s)</param>
+      /// <returns>List of the supertypes</returns>
+      static public IList<IfcSchemaEntityNode> FindAllSuperTypes(string entityName, params string[] stopNode)
+      {
+         IList<IfcSchemaEntityNode> res = new List<IfcSchemaEntityNode>();
+
+         IfcSchemaEntityNode entNode = Find(entityName);
+
+         if (entNode != null)
+         {
+            // return the list when it reaches the stop node
+            foreach (string stopCond in stopNode)
+               if (entNode.Name.Equals(stopCond, StringComparison.InvariantCultureIgnoreCase))
+                  return res;
+
+            while (true)
+            {
+               entNode = entNode.GetParent();
+               // no more parent node to get
+               if (entNode == null)
+                  break;
+
+               // Stop the search when it reaches the stop node
+               foreach (string stopCond in stopNode)
+                  if (entNode.Name.Equals(stopCond, StringComparison.InvariantCultureIgnoreCase))
+                     break;
+
+               if (entNode != null)
+               {
+                  res.Add(entNode);
                }
             }
          }

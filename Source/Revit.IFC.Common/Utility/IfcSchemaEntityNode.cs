@@ -65,9 +65,6 @@ namespace Revit.IFC.Common.Utility
       /// <param name="parentNode">the supertype entity node</param>
       public void SetParentNode(IfcSchemaEntityNode parentNode)
       {
-         if (superType != null)
-            throw new System.Exception("parentNode cannot be null!");
-
          if (superType == null)
             if (parentNode != null)
                superType = parentNode;
@@ -157,12 +154,6 @@ namespace Revit.IFC.Common.Utility
       /// <returns>true: is the valid subtype</returns>
       public bool IsSuperTypeOf(string subTypeName)
       {
-         //HashSet<string> branch = getBranch();
-         //if (branch.Count > 0)
-         //   if (branch.Contains(subTypeName))
-         //      return true;
-         //return false;
-
          return CheckChildNode(subTypeName);
       }
 

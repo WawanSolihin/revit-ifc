@@ -212,6 +212,11 @@ namespace RevitIFCTools
                }
             }
 
+#if FORNAX_EXTENSION
+            // TODO: Insert code here to parse FORNAX extended property set definitions and add the pset into the appropriate applicable types (entPsetDict)
+
+#endif
+
             // For every entity of the schema, collect the list of PredefinedType (obtained from the xsd), and collect all applicable
             //  Pset Definitions collected above
             foreach (KeyValuePair<string, IfcSchemaEntityNode> ent in entDict)
@@ -240,7 +245,9 @@ namespace RevitIFCTools
                {
                   entInfo.PropertySets = entPsetDict[entInfo.Entity].ToList();
 #if FORNAX_EXTENSION
-                  // Add FORNAX special property sets
+                  // Add FORNAX special property sets IFCATTRIBUTES
+                  entInfo.PropertySets.Add("IFCATTRIBUTES");
+                  // TODO: Add the pset definition of IFCATTRIBUTES to ... (probably has to be dne earlier)
 
 #endif
                }

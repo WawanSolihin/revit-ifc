@@ -239,6 +239,10 @@ namespace RevitIFCTools
                if (entPsetDict.ContainsKey(entInfo.Entity))
                {
                   entInfo.PropertySets = entPsetDict[entInfo.Entity].ToList();
+#if FORNAX_EXTENSION
+                  // Add FORNAX special property sets
+
+#endif
                }
                // Collect Pset that is applicable to the supertype of this entity
                IList<IfcSchemaEntityNode> supertypeList = IfcSchemaEntityTree.FindAllSuperTypes(entInfo.Entity, 
@@ -250,7 +254,11 @@ namespace RevitIFCTools
                      if (entPsetDict.ContainsKey(superType.Name))
                      {
                         if (entInfo.PropertySets == null)
+#if FORNAX_EXTENSION
+                           entInfo.PropertySets = new List<string>() { "IFCATTRIBUTES" };
+#else
                            entInfo.PropertySets = new List<string>();
+#endif
                         foreach (string pset in entPsetDict[superType.Name])
                            entInfo.PropertySets.Add(pset);
                      }
@@ -395,5 +403,43 @@ namespace RevitIFCTools
       {
          outputFolder = textBox_outputFolder.Text;
       }
+
+#if FORNAX_EXTENSION
+      List<IFCPropertySetDef> DefineFXProperties ()
+      {
+         List<IFCPropertySetDef> fxPSets = new List<IFCPropertySetDef>();
+
+         // For IFCATTRIBUTES
+         IFCPropertySetDef pset = new IFCPropertySetDef();
+         pset.PsetName = "IFCATTRIBUTES";
+         IList<string> props = new List<string>();
+         props.Add("AreaClassification");
+         props.Add("Building Name");
+         props.Add("Description");
+         props.Add("DrainageBoundary");
+         props.Add("Checkbox");
+         props.Add("Level");
+         props.Add("LongName");
+         props.Add("Material");
+         props.Add("Name");
+         props.Add("ObjectType");
+         props.Add("OccupancyType");
+         props.Add("PredefinedType");
+         props.Add("ProjectDevelopmentType");
+         props.Add("Project Location");
+         props.Add("System");
+         fxPSets.Add(pset);
+
+         // For Fornax Extensions
+         //pset = new IFCPropertySetDef();
+         //pset.PsetName = "PUBPset_xxx";
+         //props = new List<string>();
+         //props.Add("Building Name");
+         //fxPSets.Add(pset);
+
+
+         return fxPSets;
+      }
+#endif
    }
 }

@@ -161,7 +161,8 @@ namespace RevitIFCTools
 
             //Collect information on applicable Psets for Entity
             IDictionary<string, HashSet<string>> entPsetDict = new Dictionary<string, HashSet<string>>();
-            foreach(KeyValuePair<string, IList<VersionSpecificPropertyDef>> pdefEntry in procPdef.allPDefDict)
+            schemaEntities.PsetDefList.Add(DefineFXProperties());
+            foreach (KeyValuePair<string, IList<VersionSpecificPropertyDef>> pdefEntry in procPdef.allPDefDict)
             {
                foreach(VersionSpecificPropertyDef vPdef in pdefEntry.Value)
                {
@@ -175,7 +176,7 @@ namespace RevitIFCTools
                         props.Add(property.Name);
                      }
                      psetDef.Properties = props;
-                     schemaEntities.PsetDefList.Add(psetDef);
+                     schemaEntities.PsetDefList.Add(psetDef);                     
 
                      // TODO: to check the appl classes either a type or not and check whether the pair (type or without) exists in entDict, if there is add 
                      foreach (string applEntity in vPdef.PropertySetDef.ApplicableClasses)
@@ -412,7 +413,7 @@ namespace RevitIFCTools
       }
 
 #if FORNAX_EXTENSION
-      List<IFCPropertySetDef> DefineFXProperties ()
+      IFCPropertySetDef DefineFXProperties ()
       {
          List<IFCPropertySetDef> fxPSets = new List<IFCPropertySetDef>();
 
@@ -435,7 +436,8 @@ namespace RevitIFCTools
          props.Add("ProjectDevelopmentType");
          props.Add("Project Location");
          props.Add("System");
-         fxPSets.Add(pset);
+         pset.Properties = props;
+         //fxPSets.Add(pset);
 
          // For Fornax Extensions
          //pset = new IFCPropertySetDef();
@@ -445,7 +447,7 @@ namespace RevitIFCTools
          //fxPSets.Add(pset);
 
 
-         return fxPSets;
+         return pset;
       }
 #endif
    }

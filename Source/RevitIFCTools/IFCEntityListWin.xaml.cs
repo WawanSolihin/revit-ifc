@@ -35,7 +35,10 @@ using System.Windows.Forms;
 using System.Runtime.Serialization.Json;
 using System.IO;
 using Revit.IFC.Common.Utility;
-
+using GeometryGym.Ifc;
+using Revit.IFC.Export.Utility;
+using System.Reflection;
+using System.Diagnostics;
 namespace RevitIFCTools
 {
    /// <summary>
@@ -213,8 +216,48 @@ namespace RevitIFCTools
                }
             }
 
+
 #if FORNAX_EXTENSION
-            // TODO: Insert code here to parse FORNAX extended property set definitions and add the pset into the appropriate applicable types (entPsetDict)
+            foreach (IfcPropertySetTemplate pset in LoadUserDefinedPset())
+            {
+               IFCPropertySetDef psetDef = new IFCPropertySetDef();
+               psetDef.PsetName = pset.Name;
+               IList<string> props = new List<string>();
+               foreach (KeyValuePair<string, GeometryGym.Ifc.IfcPropertyTemplate> property in pset.HasPropertyTemplates)
+               {
+                  props.Add(property.Key);
+               }
+               psetDef.Properties = props;
+               schemaEntities.PsetDefList.Add(psetDef);
+               
+               if (entPsetDict.ContainsKey(pset.ApplicableEntity))
+               {
+                  entPsetDict[pset.ApplicableEntity].Add(pset.Name);
+               }
+               else
+               {
+                  entPsetDict.Add(pset.ApplicableEntity, new HashSet<string>() { pset.Name });
+               }
+
+               // The Pset will be valid for both the Instance and the Type. Check for that here and add if found
+               string entOrTypePair;
+               if (pset.ApplicableEntity.Length > 4 && pset.ApplicableEntity.EndsWith("Type"))
+                  entOrTypePair = pset.ApplicableEntity.Substring(0, pset.ApplicableEntity.Length - 4);
+               else
+                  entOrTypePair = pset.ApplicableEntity + "Type";
+
+               if (aggregateEntities.Contains(entOrTypePair))
+               {
+                  if (entPsetDict.ContainsKey(entOrTypePair))
+                  {
+                     entPsetDict[entOrTypePair].Add(pset.Name);
+                  }
+                  else
+                  {
+                     entPsetDict.Add(entOrTypePair, new HashSet<string>() { pset.Name });
+                  }
+               }
+            }          
 
 #endif
 
@@ -245,11 +288,8 @@ namespace RevitIFCTools
                if (entPsetDict.ContainsKey(entInfo.Entity))
                {
                   entInfo.PropertySets = entPsetDict[entInfo.Entity].ToList();
-#if FORNAX_EXTENSION
-                  // Add FORNAX special property sets IFCATTRIBUTES
-                  entInfo.PropertySets.Add("IFCATTRIBUTES");
-                  // TODO: Add the pset definition of IFCATTRIBUTES to ... (probably has to be dne earlier)
-
+#if FORNAX_EXTENSION                  
+                  entInfo.PropertySets.Add("IFCATTRIBUTES");                  
 #endif
                }
                // Collect Pset that is applicable to the supertype of this entity
@@ -414,9 +454,7 @@ namespace RevitIFCTools
 
 #if FORNAX_EXTENSION
       IFCPropertySetDef DefineFXProperties ()
-      {
-         List<IFCPropertySetDef> fxPSets = new List<IFCPropertySetDef>();
-
+      {  
          // For IFCATTRIBUTES
          IFCPropertySetDef pset = new IFCPropertySetDef();
          pset.PsetName = "IFCATTRIBUTES";
@@ -436,18 +474,103 @@ namespace RevitIFCTools
          props.Add("ProjectDevelopmentType");
          props.Add("Project Location");
          props.Add("System");
-         pset.Properties = props;
-         //fxPSets.Add(pset);
-
-         // For Fornax Extensions
-         //pset = new IFCPropertySetDef();
-         //pset.PsetName = "PUBPset_xxx";
-         //props = new List<string>();
-         //props.Add("Building Name");
-         //fxPSets.Add(pset);
-
+         pset.Properties = props;                       
 
          return pset;
+      }
+      public static IEnumerable<IfcPropertySetTemplate> LoadUserDefinedPset()
+      {
+         List<IfcPropertySetTemplate> userDefinedPsets = new List<IfcPropertySetTemplate>();
+
+         try
+         {
+            string filename = "SGPset.txt";
+            string extension = System.IO.Path.GetExtension(filename);
+            var path = @"..\..\SGPset.txt";
+            if (string.Compare(extension, ".ifcxml", true) == 0 || string.Compare(extension, ".ifcjson", true) == 0 || string.Compare(extension, ".ifc", true) == 0)
+            {
+               DatabaseIfc db = new DatabaseIfc(filename);
+               IfcContext context = db.Context;
+               if (context == null)
+                  return userDefinedPsets;
+               foreach (IfcRelDeclares relDeclares in context.Declares)
+               {
+                  userDefinedPsets.AddRange(relDeclares.RelatedDefinitions.OfType<IfcPropertySetTemplate>());
+               }
+            }
+            else
+            {
+               using (StreamReader sr = new StreamReader(path))
+               {
+                  string line;
+
+                  DatabaseIfc db = new DatabaseIfc(false, ReleaseVersion.IFC4);
+                  IfcPropertySetTemplate userDefinedPset = null;
+                  while ((line = sr.ReadLine()) != null)
+                  {
+                     line.TrimStart(' ', '\t');
+
+                     if (String.IsNullOrEmpty(line)) continue;
+                     if (line[0] != '#')
+                     {
+                        // Format: PropertSet: <Pset_name> I[nstance]/T[ype] <IFC entity list separated by ','> 
+                        //              Property_name   Data_type   Revit_Parameter
+                        // ** For now it only works for simple property with single value (datatype supported: Text, Integer, Real and Boolean)
+
+                        string[] split = line.Split(new char[] { '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                        if (string.Compare(split[0], "PropertySet:", true) == 0)
+                        {
+                           userDefinedPset = new IfcPropertySetTemplate(db, split.Length > 2 ? split[1] : "Unknown");
+                           if (split.Count() >= 4)         // Any entry with less than 3 par is malformed
+                           {
+                              switch (split[2][0])
+                              {
+                                 case 'T':
+                                    userDefinedPset.TemplateType = IfcPropertySetTemplateTypeEnum.PSET_TYPEDRIVENONLY;
+                                    break;
+                                 case 'I':
+                                    userDefinedPset.TemplateType = IfcPropertySetTemplateTypeEnum.PSET_OCCURRENCEDRIVEN;
+                                    break;
+                                 default:
+                                    userDefinedPset.TemplateType = IfcPropertySetTemplateTypeEnum.PSET_OCCURRENCEDRIVEN;
+                                    break;
+                              }
+                              userDefinedPset.ApplicableEntity = string.Join(",", split[3].Split(new char[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries));
+                              userDefinedPsets.Add(userDefinedPset);
+                           }
+                        }
+                        else
+                        {
+                           if (split.Count() >= 2)
+                           {
+                              string propertyTemplateName = split[0];
+                              IfcSimplePropertyTemplate propertyDefUnit = userDefinedPset[propertyTemplateName] as IfcSimplePropertyTemplate;
+                              if (propertyDefUnit == null)
+                                 userDefinedPset.AddPropertyTemplate(propertyDefUnit = new IfcSimplePropertyTemplate(db, split[0]));
+                              if (split.Count() >= 3 && !string.IsNullOrEmpty(split[2]))
+                              {
+                                 new IfcRelAssociatesClassification(new IfcClassificationReference(db) { Identification = split[2] }, propertyDefUnit);
+                              }
+                              if (!string.IsNullOrEmpty(split[1]))
+                                 propertyDefUnit.PrimaryMeasureType = "Ifc" + split[1];
+                           }
+                        }
+                     }
+                  }
+               }
+            }
+         }
+         catch (Exception e)
+         {
+            Console.WriteLine("The file could not be read:");
+            Console.WriteLine(e.Message);
+         }
+         return userDefinedPsets;
+      }
+      private static string GetUserDefPsetFilename()
+      {
+         string directory = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+         return directory + @"\" + ExporterCacheManager.ExportOptionsCache.SelectedConfigName + @".txt";
       }
 #endif
    }

@@ -1,0 +1,83 @@
+PropertySet:	URAPset_Space	I	IfcSpace
+AreaClassification	Label
+BonusGFA	Boolean
+GFA	Label
+NonGFA	Label
+
+PropertySet:	URAPset_Building	I	IfcBuilding
+BroadlandUse	Label
+PlanningArea	Label
+
+PropertySet:	URAPset_BuildingStorey	I	IfcBuildingStorey
+HighestPodium	Boolean
+
+PropertySet:	URAPset_ShadingDeviceType	I	IfcShadingDeviceType
+IsTransparent	Boolean
+
+PropertySet:	URAPset_BuildingElementProxyType	I	IfcBuildingElementProxyType
+IsTransparent	Boolean
+
+PropertySet:	PUBPset_Building	I	IfcBuilding
+DrainageBoundary	Label
+ProjectDevelopmentType	Label
+SubmissionType	Label
+
+PropertySet:	PUBPset_Door	I	IfcDoor
+HardwareLock	Boolean
+Non-DuplicableLock	Boolean
+NonDuplicableLock	Boolean
+
+PropertySet:	PUBPset_Window	I	IfcWindow
+Corrosion-Resistant	Boolean
+CorrosionResistant	Boolean
+Openable	Boolean
+
+PropertySet:	PUBPset_DiscreteAccessoryType	I	IfcDiscreteAccessoryType
+HardwareLock	Boolean
+Non-DuplicableLock	Boolean
+NonDuplicableLock	Boolean
+TaperedRoundNuts	Boolean
+StainlessSteelBrackets	Boolean
+NitrileButadieneGasket	Boolean
+Corrosion-Resistant	Boolean
+CorrosionResistant	Boolean
+
+PropertySet:	PUBPset_BuildingElementProxyType	I	IfcBuildingElementProxyType
+HardwareLock	Boolean
+Non-DuplicableLock	Boolean
+NonDuplicableLock	Boolean
+TaperedRoundNuts	Boolean
+StainlessSteelBrackets	Boolean
+NitrileButadieneGasket	Boolean
+Corrosion-Resistant	Boolean
+CorrosionResistant	Boolean
+
+PropertySet:	PUBPset_Tank	I	IfcTankType
+TaperedRoundNuts	Boolean
+StainlessSteelBrackets	Boolean
+
+PropertySet:	PUBPset_FlowTerminalType	I	IfcFlowTerminalType
+Anti-MosquitoDevice	Boolean
+AntiMosquitoDevice	Boolean
+WithAntiMosquitoDevice	Boolean
+UnperforatedCover	Boolean
+
+PropertySet:	PUBPset_FlowSegmentType	I	IfcFlowSegmentType
+HeavyVehicularLoading	Boolean
+RoughnesCoefficient	Label
+MaximumVelocity	Label
+Minimum Velocity	Label
+NonCorrodible	Boolean
+CorrosionResistant	Boolean
+PermissibleVelocity	Label
+PermissibleRange	Label	
+
+PropertySet:	PUBPset_FlowMovingDeviceType	I	IfcFlowMovingDeviceType
+FusedSwitch	Boolean
+SinglePhaseProtection	Boolean
+OverloadProtection	Boolean
+EarthFaultProtection	Boolean
+
+PropertySet:	PUBPset_DistributionChamberElementTypeTrench	I	IfcDistributionChamberElementType
+WithLiftingFeature	Boolean
+RemovableCover	Boolean

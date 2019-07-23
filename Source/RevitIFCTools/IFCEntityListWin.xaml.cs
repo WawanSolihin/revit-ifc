@@ -228,7 +228,11 @@ namespace RevitIFCTools
                   continue;
 
                // Collect only the IfcProducts or IfcGroup
-               if (!ent.Value.IsSubTypeOf("IfcProduct") && !ent.Value.IsSubTypeOf("IfcGroup") && !ent.Value.IsSubTypeOf("IfcTypeProduct"))
+               //if (!ent.Value.IsSubTypeOf("IfcProduct") && !ent.Value.IsSubTypeOf("IfcGroup") && !ent.Value.IsSubTypeOf("IfcTypeProduct"))
+               //   continue;
+               if (!IfcSchemaEntityTree.IsSubTypeOf(ent.Value.Name, "IfcProduct")
+                  && !IfcSchemaEntityTree.IsSubTypeOf(ent.Value.Name, "IfcTypeProduct")
+                  && !IfcSchemaEntityTree.IsSubTypeOf(ent.Value.Name, "IfcGroup", strict: false))
                   continue;
 
                entInfo.Entity = ent.Key;
@@ -244,16 +248,20 @@ namespace RevitIFCTools
                if (entPsetDict.ContainsKey(entInfo.Entity))
                {
                   entInfo.PropertySets = entPsetDict[entInfo.Entity].ToList();
+               }
 #if FORNAX_EXTENSION
-                  // Add FORNAX special property sets IFCATTRIBUTES
+               // Add FORNAX special property sets IFCATTRIBUTES
+               if (entInfo.PropertySets == null)
+                  entInfo.PropertySets = new List<string>() { "IFCATTRIBUTES" };
+               else
                   entInfo.PropertySets.Add("IFCATTRIBUTES");
-                  // TODO: Add the pset definition of IFCATTRIBUTES to ... (probably has to be dne earlier)
+               // TODO: Add the pset definition of IFCATTRIBUTES to ... (probably has to be dne earlier)
 
 #endif
-               }
+
                // Collect Pset that is applicable to the supertype of this entity
                IList<IfcSchemaEntityNode> supertypeList = IfcSchemaEntityTree.FindAllSuperTypes(entInfo.Entity, 
-                  "IfcProduct", "IfcTypeProduct", "IfcGroup");
+                  "IfcProduct", "IfcTypeProduct", "IfcObject");
                if (supertypeList != null && supertypeList.Count > 0)
                {
                   foreach(IfcSchemaEntityNode superType in supertypeList)

@@ -65,7 +65,7 @@ namespace Revit.IFC.Common.Utility
       /// <param name="parentNode">the supertype entity node</param>
       public void SetParentNode(IfcSchemaEntityNode parentNode)
       {
-         if (superType != null)
+         if (parentNode == null)
             throw new System.Exception("parentNode cannot be null!");
 
          if (superType == null)

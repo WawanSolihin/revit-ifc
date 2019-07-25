@@ -320,21 +320,24 @@ namespace Revit.IFC.Common.Utility
                if (entNode.Name.Equals(stopCond, StringComparison.InvariantCultureIgnoreCase))
                   return res;
 
-            while (true)
+            bool continueSearch = true;
+            while (continueSearch)
             {
                entNode = entNode.GetParent();
                // no more parent node to get
                if (entNode == null)
                   break;
+               else
+                  res.Add(entNode);
 
                // Stop the search when it reaches the stop node
                foreach (string stopCond in stopNode)
-                  if (entNode.Name.Equals(stopCond, StringComparison.InvariantCultureIgnoreCase))
-                     break;
-
-               if (entNode != null)
                {
-                  res.Add(entNode);
+                  if (entNode.Name.Equals(stopCond, StringComparison.InvariantCultureIgnoreCase))
+                  {
+                     continueSearch = false;
+                     break;
+                  }
                }
             }
          }

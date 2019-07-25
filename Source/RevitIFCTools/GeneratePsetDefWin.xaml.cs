@@ -227,6 +227,7 @@ namespace RevitIFCTools
 #endif
             }
 
+            outF.WriteLine("\t\t\t{0}.Name = \"{1}\";", varName, psetName);
             outF.WriteLine("\t\t\tPropertySetEntry ifcPSE = null;");
             outF.WriteLine("\t\t\tType calcType = null;");
 
@@ -349,7 +350,7 @@ namespace RevitIFCTools
 
             outF.WriteLine("\t\t\tif (ifcPSE != null)");
             outF.WriteLine("\t\t\t{");
-            outF.WriteLine("\t\t\t\t{0}.Name = \"{1}\";", varName, psetName);
+            //outF.WriteLine("\t\t\t\t{0}.Name = \"{1}\";", varName, psetName);
             outF.WriteLine("\t\t\t\tcommonPropertySets.Add({0});", varName);
             outF.WriteLine("\t\t\t}");
             outF.WriteLine("\t\t}");

@@ -291,7 +291,7 @@ namespace RevitIFCTools
                // Get Pset list that is applicable to this entity type
                if (entPsetDict.ContainsKey(entInfo.Entity))
                {
-                  entInfo.PropertySets = entPsetDict[entInfo.Entity].ToList()
+                  entInfo.PropertySets = entPsetDict[entInfo.Entity].ToList();
                }
 #if FORNAX_EXTENSION
                // Add FORNAX special property sets IFCATTRIBUTES

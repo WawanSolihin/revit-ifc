@@ -64,16 +64,16 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// Calculates the shape code for a rebar.
       /// </summary>
       /// <param name="exporterIFC">The ExporterIFC object.</param>
-      /// <param name="extrusionCreationData">The IFCExtrusionCreationData.</param>
+      /// <param name="extrusionCreationData">The IFCExportBodyParams.</param>
       /// <param name="element">The element to calculate the value.</param>
       /// <param name="elementType">The element type.</param>
       /// <returns>
       /// True if the operation succeed, false otherwise.
       /// </returns>
-      public override bool Calculate(ExporterIFC exporterIFC, IFCExtrusionCreationData extrusionCreationData, Element element, ElementType elementType)
+      public override bool Calculate(ExporterIFC exporterIFC, IFCAnyHandle handle, IFCExportBodyParams extrusionCreationData, Element element, ElementType elementType, EntryMap entryMap)
       {
-         ElementId rebarShapeId;
-         if (ParameterUtil.GetElementIdValueFromElement(element, BuiltInParameter.REBAR_SHAPE, out rebarShapeId) == null)
+         ElementId rebarShapeId = ParameterUtil.GetElementIdValueFromElement(element, BuiltInParameter.REBAR_SHAPE);
+         if (MathUtil.IsInvalidElementId(rebarShapeId))
             return false;
 
          Element rebarShape = element.Document.GetElement(rebarShapeId);

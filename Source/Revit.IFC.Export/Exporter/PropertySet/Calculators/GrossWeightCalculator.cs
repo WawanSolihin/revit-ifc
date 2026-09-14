@@ -58,7 +58,7 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// The ExporterIFC object.
       /// </param>
       /// <param name="extrusionCreationData">
-      /// The IFCExtrusionCreationData.
+      /// The IFCExportBodyParams.
       /// </param>
       /// <param name="element">
       /// The element to calculate the value.
@@ -69,15 +69,12 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// <returns>
       /// True if the operation succeed, false otherwise.
       /// </returns>
-      public override bool Calculate(ExporterIFC exporterIFC, IFCExtrusionCreationData extrusionCreationData, Element element, ElementType elementType)
+      public override bool Calculate(ExporterIFC exporterIFC, IFCAnyHandle handle, IFCExportBodyParams extrusionCreationData, Element element, ElementType elementType, EntryMap entryMap)
       {
-         if (ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "IfcQtyGrossWeight", out m_Weight) == null)
-               ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "GrossWeight", out m_Weight);
+         (_, m_Weight) = ParameterUtil.GetDoubleValueFromElementOrSymbol(element, entryMap.RevitParameterName, 
+            entryMap.CompatibleRevitParameterName, "IfcQtyGrossWeight");
 
-         if (m_Weight > MathUtil.Eps())
-            return true;
-
-         return false;
+         return m_Weight > MathUtil.Eps;
       }
 
       /// <summary>

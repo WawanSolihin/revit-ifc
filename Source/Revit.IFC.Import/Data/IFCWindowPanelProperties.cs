@@ -64,23 +64,23 @@ namespace Revit.IFC.Import.Data
       {
          base.Process(ifcWindowPanelProperties);
 
-         string currPropertyValueString = IFCImportHandleUtil.GetOptionalStringAttribute(ifcWindowPanelProperties, "OperationType", null);
+         string currPropertyValueString = IFCAnyHandleUtil.GetEnumerationAttribute(ifcWindowPanelProperties, "OperationType");
          if (!string.IsNullOrEmpty(currPropertyValueString))
             StringProperties[GeneratePropertyName("OperationType")] = currPropertyValueString;
 
-         currPropertyValueString = IFCImportHandleUtil.GetOptionalStringAttribute(ifcWindowPanelProperties, "PanelPosition", null);
+         currPropertyValueString = IFCAnyHandleUtil.GetEnumerationAttribute(ifcWindowPanelProperties, "PanelPosition");
          if (!string.IsNullOrEmpty(currPropertyValueString))
             StringProperties[GeneratePropertyName("PanelPosition")] = currPropertyValueString;
 
          double currPropertyValue = IFCImportHandleUtil.GetOptionalScaledLengthAttribute(ifcWindowPanelProperties, "FrameDepth", -1e+30);
          if (!MathUtil.IsAlmostEqual(currPropertyValue, -1e+30))
-            DoubleProperties[new Tuple<string, UnitType, AllowedValues>(GeneratePropertyName("FrameDepth"),
-                UnitType.UT_Length, AllowedValues.Positive)] = currPropertyValue;
+            DoubleProperties[Tuple.Create(GeneratePropertyName("FrameDepth"),
+                SpecTypeId.Length, AllowedValues.Positive)] = currPropertyValue;
 
          currPropertyValue = IFCImportHandleUtil.GetOptionalScaledLengthAttribute(ifcWindowPanelProperties, "FrameThickness", -1e+30);
          if (!MathUtil.IsAlmostEqual(currPropertyValue, -1e+30))
-            DoubleProperties[new Tuple<string, UnitType, AllowedValues>(GeneratePropertyName("FrameThickness"),
-                UnitType.UT_Length, AllowedValues.Positive)] = currPropertyValue;
+            DoubleProperties[Tuple.Create(GeneratePropertyName("FrameThickness"),
+                SpecTypeId.Length, AllowedValues.Positive)] = currPropertyValue;
       }
 
       /// <summary>

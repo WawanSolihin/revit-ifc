@@ -40,17 +40,9 @@ namespace Revit.IFC.Import.Data
       private int m_UpperBoundPropertyIndex = -1;
 
       private int m_SetPointValueIndex = -1;
-
-      private string FormatBoundedValue(IFCPropertyValue propertyValue)
-      {
-         if (IFCUnit != null)
-            return UnitFormatUtils.Format(IFCImportFile.TheFile.Document.GetUnits(), IFCUnit.UnitType, propertyValue.AsDouble(), true, false);
-         else
-            return propertyValue.ValueAsString();
-      }
-
+ 
       /// <summary>
-      /// Returns the property value as a string, for SetValueString().
+      /// Returns the property value as a string, for Set().
       /// </summary>
       /// <returns>The property value as a string.</returns>
       public override string PropertyValueAsString()
@@ -62,7 +54,7 @@ namespace Revit.IFC.Import.Data
          // Lower and Upper: [ LowValue - UpperValue ]
          // SetPointValue: (SetPointValue)
          // Lower, SetPointValue: >= LowValue (SetPointValue)
-         // Upper, SetPointValue: >= UpperValue (SetPointValue)
+         // Upper, SetPointValue: <= UpperValue (SetPointValue)
          // Lower, Upper, SetPointValue: [ LowValue - UpperValue ] (SetPointValue)
          string propertyValueAsString = string.Empty;
 
@@ -76,7 +68,7 @@ namespace Revit.IFC.Import.Data
             else
                propertyValueAsString += "[ ";
 
-            propertyValueAsString += FormatBoundedValue(IFCPropertyValues[m_LowerBoundPropertyIndex]);
+            propertyValueAsString += FormatPropertyValue(IFCPropertyValues[m_LowerBoundPropertyIndex]);
          }
 
          if (hasUpperBoundPropertyIndex)
@@ -85,7 +77,7 @@ namespace Revit.IFC.Import.Data
                propertyValueAsString += "<= ";
             else
                propertyValueAsString += " - ";
-            propertyValueAsString += FormatBoundedValue(IFCPropertyValues[m_UpperBoundPropertyIndex]);
+            propertyValueAsString += FormatPropertyValue(IFCPropertyValues[m_UpperBoundPropertyIndex]);
             if (hasLowerBoundPropertyIndex)
                propertyValueAsString += " ]";
          }
@@ -94,7 +86,7 @@ namespace Revit.IFC.Import.Data
          {
             if (hasUpperBoundPropertyIndex || hasLowerBoundPropertyIndex)
                propertyValueAsString += " ";
-            propertyValueAsString += "(" + FormatBoundedValue(IFCPropertyValues[m_SetPointValueIndex]) + ")";
+            propertyValueAsString += "(" + FormatPropertyValue(IFCPropertyValues[m_SetPointValueIndex]) + ")";
          }
 
          return propertyValueAsString;
@@ -120,24 +112,24 @@ namespace Revit.IFC.Import.Data
 
          IFCData lowerBoundValue = ifcPropertyBoundedValue.GetAttribute("LowerBoundValue");
          IFCData upperBoundValue = ifcPropertyBoundedValue.GetAttribute("UpperBoundValue");
-         IFCData setPointValue = (IFCImportFile.TheFile.SchemaVersion > IFCSchemaVersion.IFC2x3) ? ifcPropertyBoundedValue.GetAttribute("SetPointValue") : null;
+         IFCData setPointValue = (IFCImportFile.TheFile.SchemaVersionAtLeast(IFCSchemaVersion.IFC4Obsolete)) ? ifcPropertyBoundedValue.GetAttribute("SetPointValue") : null;
 
-         if (lowerBoundValue != null)
+         if (lowerBoundValue != null && lowerBoundValue.HasValue)
          {
             m_LowerBoundPropertyIndex = IFCPropertyValues.Count;
-            IFCPropertyValues.Add(new IFCPropertyValue(this, lowerBoundValue));
+            IFCPropertyValues.Add(new IFCPropertyValue(this, lowerBoundValue, false));
          }
 
-         if (upperBoundValue != null)
+         if (upperBoundValue != null && upperBoundValue.HasValue)
          {
             m_UpperBoundPropertyIndex = IFCPropertyValues.Count;
-            IFCPropertyValues.Add(new IFCPropertyValue(this, upperBoundValue));
+            IFCPropertyValues.Add(new IFCPropertyValue(this, upperBoundValue, false));
          }
 
-         if (setPointValue != null)
+         if (setPointValue != null && setPointValue.HasValue)
          {
             m_SetPointValueIndex = IFCPropertyValues.Count;
-            IFCPropertyValues.Add(new IFCPropertyValue(this, setPointValue));
+            IFCPropertyValues.Add(new IFCPropertyValue(this, setPointValue, false));
          }
 
          ProcessIFCSimplePropertyUnit(this, ifcPropertyBoundedValue);

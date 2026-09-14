@@ -19,27 +19,124 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-
-using Autodesk.Revit.ApplicationServices;
 using Autodesk.Revit.DB;
-using Autodesk.Revit.DB.IFC;
-
+using Revit.IFC.Common.Utility;
 using Revit.IFC.Export.Toolkit;
-using Revit.IFC.Export.Exporter.PropertySet;
-using Revit.IFC.Common.Enums;
 
 namespace Revit.IFC.Export.Utility
 {
    /// <summary>
-   /// Manages state information for the current export session.  Intended to eventually replace ExporterIFC for most state operations.
+   /// Class that manages information for the current link instance being exported.
+   /// </summary>
+   public class FederatedLinkManager
+   {
+      public FederatedLinkManager()
+      {
+         // Set up the mirror transform here, for use in mapped items.
+         MirrorTransform = Transform.CreateReflection(Plane.CreateByNormalAndOrigin(XYZ.BasisY, XYZ.Zero));
+      }
+
+      /// <summary>
+      /// Update the values of the current LinkInformation.
+      /// </summary>
+      /// <param name="linkId">The id of the linked instance.</param>
+      public void Update(ElementId linkId)
+      {
+         LinkId = linkId;
+         IsMirrored = false;
+         BaseLinkTransform = Transform.Identity;
+      }
+
+      /// <summary>
+      /// Update the values of the current LinkInformation.
+      /// </summary>
+      /// <param name="linkId">The id of the linked instance.</param>
+      /// <param name="totalTransform">The transform (potentially with reflection> of the linked instance.</param>
+      public void Update(ElementId linkId, Transform totalTransform)
+      {
+         LinkId = linkId;
+         IsMirrored = totalTransform.HasReflection;
+         if (IsMirrored)
+         {
+            BaseLinkTransform = totalTransform.Multiply(MirrorTransform);
+         }
+         else
+         {
+            BaseLinkTransform = totalTransform;
+         }
+      }
+
+      /// <summary>
+      /// Checks if we are currently exporting a linked instance.
+      /// </summary>
+      /// <returns>True if we are.</returns>
+      public bool ExportingLink()
+      {
+         return !MathUtil.IsInvalidElementId(LinkId);
+      }
+
+      /// <summary>
+      /// Creates a filter for the current link instance, if it exists.
+      /// </summary>
+      /// <param name="filterView">The current view for the filter.</param>
+      /// <returns>A FilteredElementCollector if we are exporting a link, or null if not.</returns>
+      public FilteredElementCollector CreateFilter(View filterView)
+      {
+         if (MathUtil.IsInvalidElementId(LinkId) || filterView == null)
+            return null;
+
+         return new FilteredElementCollector(filterView.Document, filterView.Id, LinkId);
+      }
+
+      /// <summary>
+      /// Creates a LinkElementId that identifies an element of the current linked document from
+      /// the host document's point of view.
+      /// </summary>
+      /// <param name="linkedElementId">The id of the element in the linked document.</param>
+      /// <returns>The LinkElementId, or null if we are not currently exporting a link.</returns>
+      /// <remarks>Used to access information that the host document stores for linked elements,
+      /// such as extended properties.</remarks>
+      public LinkElementId GetLinkElementId(ElementId linkedElementId)
+      {
+         if (!ExportingLink() || MathUtil.IsInvalidElementId(linkedElementId))
+            return null;
+
+         return new LinkElementId(LinkId, linkedElementId);
+      }
+
+      /// <summary>
+      /// The id of the link instance.
+      /// </summary>
+      /// <remarks>This is private to discourage direct access to element information.</remarks>
+      private ElementId LinkId { get; set; } = ElementId.InvalidElementId;
+
+      /// <summary>
+      /// The transform associated with this link without reflection.
+      /// </summary>
+      /// <remarks>If IsMirrored is true, the original transform is the BaseLinkTransform multiplied
+      /// by the MirrorTransform.  If IsMirrored is false, the original transform is the BaseLinkTransform.</remarks>
+      public Transform BaseLinkTransform { get; private set; } = Transform.Identity;
+
+      /// <summary>
+      /// True if the link has a reflection component, false otherwise.
+      /// </summary>
+      public bool IsMirrored { get; private set; } = false;
+
+      /// <summary>
+      /// Static access to the mirrored transform to apply to elements inside of a mirrored link instance.
+      /// </summary>
+      public static Transform MirrorTransform { get; set; } = null;
+   }
+
+   /// <summary>
+   /// Manages state information for the current export session.  Intended to eventually replace 
+   /// ExporterIFC for most state operations.
    /// </summary>
    public class ExporterStateManager
    {
-      static IList<string> m_CADLayerOverrides;
+      static IList<string> CADLayerOverrides { get; set; } = new List<string>();
 
-      static int m_RangeIndex;
+      static int RangeIndex { get; set; }
 
       /// <summary>
       /// A utility class that manages keeping track of a sub-element index for ranges for splitting walls and columns.  
@@ -52,7 +149,7 @@ namespace Revit.IFC.Export.Utility
          /// </summary>
          public void IncreaseRangeIndex()
          {
-            m_RangeIndex++;
+            RangeIndex++;
          }
 
          /// <summary>
@@ -72,52 +169,31 @@ namespace Revit.IFC.Export.Utility
          /// </summary>
          public void Dispose()
          {
-            m_RangeIndex = 0;
+            RangeIndex = 0;
          }
 
          #endregion
       }
 
       /// <summary>
-      /// Preserve the element parameter cache after the element export, as it will be used again.
-      /// This should be checked before it is overridden
-      /// </summary>
-      static Element m_CurrentElementToPreserveParameterCache = null;
-
-      /// <summary>
-      /// Determines whether this elements parameter cache should be removed after this element is exported.
-      /// </summary>
-      /// <param name="element">The element.</param>
-      /// <param name="preserve">True to preserve, false otherwise.</param>
-      static public void PreserveElementParameterCache(Element element, bool preserve)
-      {
-         m_CurrentElementToPreserveParameterCache = preserve ? element : null;
-      }
-
-      static public bool ShouldPreserveElementParameterCache(Element element)
-      {
-         return (m_CurrentElementToPreserveParameterCache == element);
-      }
-
-      /// <summary>
       /// Skip the "CanElementBeExported" function for cached elements that have already passed the test.
       /// </summary>
-      static bool m_CanExportElementOverride = false;
+      public static bool CanExportElementOverride { get; private set; } = false;
 
       /// <summary>
       /// A utility class that skips the "CanElementBeExported" function for cached elements that have already passed the test.
       /// </summary>
       public class ForceElementExport : IDisposable
       {
-         bool m_OldCanExportElementOverride;
+         bool OldCanExportElementOverride { get; set; } = false;
 
          /// <summary>
          /// The constructor that sets forced element export to be true.
          /// </summary>
          public ForceElementExport()
          {
-            m_OldCanExportElementOverride = m_CanExportElementOverride;
-            m_CanExportElementOverride = true;
+            OldCanExportElementOverride = CanExportElementOverride;
+            CanExportElementOverride = true;
          }
 
          /// <summary>
@@ -125,17 +201,23 @@ namespace Revit.IFC.Export.Utility
          /// </summary>
          public void Dispose()
          {
-            m_CanExportElementOverride = m_OldCanExportElementOverride;
+            CanExportElementOverride = OldCanExportElementOverride;
          }
       }
 
-      /// <summary>
-      /// If true, skip the CanExportElement() check and export the element.
-      /// </summary>
-      /// <returns>True if the element should be exported.</returns>
-      static public bool CanExportElementOverride()
+      public static FederatedLinkManager FederatedLinkManager { get; } = new();
+
+      public class FederatedLinkManagerSetter : IDisposable
       {
-         return m_CanExportElementOverride;
+         public FederatedLinkManagerSetter(ElementId linkId, Transform linkTransform)
+         {
+            FederatedLinkManager.Update(linkId, linkTransform);
+         }
+
+         public void Dispose()
+         {
+            FederatedLinkManager.Update(ElementId.InvalidElementId);
+         }
       }
 
       /// <summary>
@@ -143,7 +225,7 @@ namespace Revit.IFC.Export.Utility
       /// </summary>
       public class CADLayerOverrideSetter : IDisposable
       {
-         bool m_ValidString = false;
+         bool ValidString = false;
 
          /// <summary>
          /// The constructor that sets the current CAD layer override string.  Will do nothing if the string in invalid or null.
@@ -154,7 +236,7 @@ namespace Revit.IFC.Export.Utility
             if (!string.IsNullOrWhiteSpace(overrideString))
             {
                ExporterStateManager.PushCADLayerOverride(overrideString);
-               m_ValidString = true;
+               ValidString = true;
             }
          }
 
@@ -165,23 +247,13 @@ namespace Revit.IFC.Export.Utility
          /// </summary>
          public void Dispose()
          {
-            if (m_ValidString)
+            if (ValidString)
             {
                ExporterStateManager.PopCADLayerOverride();
             }
          }
 
          #endregion
-      }
-
-      static private IList<string> CADLayerOverrides
-      {
-         get
-         {
-            if (m_CADLayerOverrides == null)
-               m_CADLayerOverrides = new List<string>();
-            return m_CADLayerOverrides;
-         }
       }
 
       static private void PushCADLayerOverride(string overrideString)
@@ -203,7 +275,10 @@ namespace Revit.IFC.Export.Utility
       static public string GetCurrentCADLayerOverride()
       {
          if (CADLayerOverrides.Count > 0)
+         {
+            // Should this be 0 or Count-1?
             return CADLayerOverrides[0];
+         }
          return null;
       }
 
@@ -213,7 +288,7 @@ namespace Revit.IFC.Export.Utility
       /// <returns>The current range index, or 0 if there are no ranges.</returns>
       static public int GetCurrentRangeIndex()
       {
-         return m_RangeIndex;
+         return RangeIndex;
       }
 
       /// <summary>
@@ -221,8 +296,9 @@ namespace Revit.IFC.Export.Utility
       /// </summary>
       static public void Clear()
       {
-         m_CADLayerOverrides = null;
-         m_RangeIndex = 0;
+         CADLayerOverrides.Clear();
+         RangeIndex = 0;
+         FederatedLinkManager.Update(ElementId.InvalidElementId);
       }
    }
 }

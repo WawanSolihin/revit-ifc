@@ -17,25 +17,18 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 //
 
+using Autodesk.UI.Windows;
+using Revit.IFC.Export.Utility;
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Data;
-using System.Windows.Documents;
-using System.Windows.Input;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Shapes;
 
 namespace BIM.IFC.Export.UI
 {
     /// <summary>
     /// Interaction logic for Window1.xaml
     /// </summary>
-    public partial class NewExportSetupWindow : Window
+    public partial class NewExportSetupWindow : ChildWindow
     {
         private String m_newName;
         private IFCExportConfigurationsMap m_configurationMap;
@@ -48,7 +41,7 @@ namespace BIM.IFC.Export.UI
         public NewExportSetupWindow(IFCExportConfigurationsMap configurationMap, String initialName)
         {
             m_configurationMap = configurationMap;
-            m_newName = initialName;           
+            m_newName = initialName;
             InitializeComponent();
             textBoxNewSetupName.Text = m_newName;
         }

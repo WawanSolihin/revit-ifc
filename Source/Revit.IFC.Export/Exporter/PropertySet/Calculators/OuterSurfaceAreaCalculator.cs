@@ -39,57 +39,42 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       private double m_Area = 0;
 
       /// <summary>
-      /// A static instance of this class.
-      /// </summary>
-      static OuterSurfaceAreaCalculator s_Instance = new OuterSurfaceAreaCalculator();
-
-      /// <summary>
       /// The OuterSurfaceAreaCalculator instance.
       /// </summary>
-      public static OuterSurfaceAreaCalculator Instance
-      {
-         get { return s_Instance; }
-      }
-
+      public static OuterSurfaceAreaCalculator Instance { get; } = new OuterSurfaceAreaCalculator();
+      
       /// <summary>
       /// Calculates gross volume for a slab.
       /// </summary>
-      /// <param name="exporterIFC">
-      /// The ExporterIFC object.
-      /// </param>
-      /// <param name="extrusionCreationData">
-      /// The IFCExtrusionCreationData.
-      /// </param>
-      /// <param name="element">
-      /// The element to calculate the value.
-      /// </param>
-      /// <param name="elementType">
-      /// The element type.
-      /// </param>
-      /// <returns>
-      /// True if the operation succeed, false otherwise.
-      /// </returns>
-      public override bool Calculate(ExporterIFC exporterIFC, IFCExtrusionCreationData extrusionCreationData, Element element, ElementType elementType)
+      /// <param name="exporterIFC">The ExporterIFC object.</param>
+      /// <param name="extrusionCreationData">The IFCExportBodyParams.</param>
+      /// <param name="element">The element to calculate the value.</param>
+      /// <param name="elementType">The element type.</param>
+      /// <returns>True if the operation succeed, false otherwise.</returns>
+      public override bool Calculate(ExporterIFC exporterIFC, IFCAnyHandle handle, IFCExportBodyParams extrusionCreationData, Element element, ElementType elementType, EntryMap entryMap)
       {
-         if (ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "IfcQtyOuterSurfaceArea", out m_Area) == null)
-            ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "OuterSurfaceArea", out m_Area);
-         m_Area = UnitUtil.ScaleArea(m_Area);
-         if (m_Area > MathUtil.Eps() * MathUtil.Eps())
-            return true;
-
-         if (extrusionCreationData != null)
+         const double areaEps = MathUtil.Eps * MathUtil.Eps;
+         if (ParameterUtil.TryGetDoubleValueFromElementOrSymbol(element, entryMap.RevitParameterName,
+            entryMap.CompatibleRevitParameterName, "IfcQtyOuterSurfaceArea") is double area)
          {
-            double outerPerimeter = extrusionCreationData.ScaledOuterPerimeter;
-            double length = extrusionCreationData.ScaledLength;
-
-            if (outerPerimeter > MathUtil.Eps() * MathUtil.Eps() && length > MathUtil.Eps())
+            if (area > areaEps)
             {
-               m_Area = outerPerimeter * length;
+               m_Area = UnitUtil.ScaleArea(area);
                return true;
             }
          }
 
-         return false;
+         if (extrusionCreationData == null)
+            return false;
+
+         // It may be that the length component of the area unit is not the same
+         // as the length unit itself (e.g. length in mm, area in m^2).  As such,
+         // we unscale the length values and then re-scale them to the area unit.
+         double outerPerimeter = UnitUtil.UnscaleLength(extrusionCreationData.ScaledOuterPerimeter);
+         double length = UnitUtil.UnscaleLength(extrusionCreationData.ScaledLength);
+         m_Area = UnitUtil.ScaleArea(outerPerimeter * length);
+         
+         return m_Area > areaEps;
       }
 
       /// <summary>

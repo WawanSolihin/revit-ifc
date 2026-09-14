@@ -26,6 +26,7 @@ using Autodesk.Revit.DB.Architecture;
 using Autodesk.Revit.DB.IFC;
 using Revit.IFC.Export.Utility;
 using Revit.IFC.Common.Utility;
+using Revit.IFC.Common.Enums;
 using Revit.IFC.Export.Toolkit;
 
 namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
@@ -54,25 +55,18 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       }
 
       /// <summary>
-      /// Calculates height for a railing
+      /// Calculates height for a Revit element.
       /// </summary>
-      /// <param name="exporterIFC">
-      /// The ExporterIFC object.
-      /// </param>
-      /// <param name="extrusionCreationData">
-      /// The IFCExtrusionCreationData.
-      /// </param>
-      /// <param name="element">
-      /// The element to calculate the value.
-      /// </param>
-      /// <param name="elementType">
-      /// The element type.
-      /// </param>
-      /// <returns>
-      /// True if the operation succeed, false otherwise.
-      /// </returns>
-      public override bool Calculate(ExporterIFC exporterIFC, IFCExtrusionCreationData extrusionCreationData, Element element, ElementType elementType)
+      /// <param name="exporterIFC">The ExporterIFC object.</param>
+      /// <param name="extrusionCreationData">The IFCExportBodyParams.</param>
+      /// <param name="element">The element to calculate the value.</param>
+      /// <param name="elementType">The element type.</param>
+      /// <returns>True if the operation succeed, false otherwise.</returns>
+      public override bool Calculate(ExporterIFC exporterIFC, IFCAnyHandle handle,
+         IFCExportBodyParams extrusionCreationData, Element element, ElementType elementType, 
+         EntryMap entryMap)
       {
+         m_Height = 0.0;
          if (element == null)
             return false;
 
@@ -84,11 +78,13 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
             return true;
          }
 
+         double eps = MathUtil.Eps;
+
          // For ProvisionForVoid
          ShapeCalculator shapeCalculator = ShapeCalculator.Instance;
          if (shapeCalculator != null && shapeCalculator.GetCurrentElement() == element)
          {
-            if (String.Compare(shapeCalculator.GetStringValue(), IFCProvisionForVoidShapeType.Rectangle.ToString()) == 0)
+            if (string.Compare(shapeCalculator.GetStringValue(), IFCProvisionForVoidShapeType.Rectangle.ToString()) == 0)
             {
                IFCAnyHandle rectProfile = shapeCalculator.GetCurrentProfileHandle();
                if (!IFCAnyHandleUtil.IsNullOrHasNoValue(rectProfile))
@@ -96,23 +92,54 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
                   // This is already scaled.
                   double? height = IFCAnyHandleUtil.GetDoubleAttribute(rectProfile, "YDim");
                   m_Height = height.HasValue ? height.Value : 0.0;
-                  if (m_Height > MathUtil.Eps())
+                  if (m_Height > eps)
                      return true;
                }
             }
          }
-         
-         ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "Height", out m_Height);
-         m_Height = UnitUtil.ScaleLength(m_Height);
-         if (m_Height > MathUtil.Eps())
+
+         ElementId categoryId = CategoryUtil.GetSafeCategoryId(element);
+         long categoryIdValue = categoryId.Value;
+         IFCAnyHandle hnd = ExporterCacheManager.ElementToHandleCache.Find(element.Id);
+
+         m_Height = 0.0;
+         if (IFCAnyHandleUtil.IsSubTypeOf(hnd, IFCEntityType.IfcDoor) || categoryIdValue == (long)BuiltInCategory.OST_Doors)
+         {
+            (_, m_Height) = ParameterUtil.GetDoubleValueFromElementOrSymbol(element, BuiltInParameter.DOOR_HEIGHT);
+         }
+         else if (IFCAnyHandleUtil.IsSubTypeOf(hnd, IFCEntityType.IfcWindow) || categoryIdValue == (long)BuiltInCategory.OST_Windows)
+         {
+            (_, m_Height) = ParameterUtil.GetDoubleValueFromElementOrSymbol(element, BuiltInParameter.WINDOW_HEIGHT);
+         }
+         else if (IFCAnyHandleUtil.IsSubTypeOf(hnd, IFCEntityType.IfcCurtainWall))
+         {
+            BoundingBoxXYZ boundingBox = element.get_BoundingBox(null);
+            if (boundingBox != null)
+               m_Height = boundingBox.Max.Z - boundingBox.Min.Z;
+         }
+         else if(IFCAnyHandleUtil.IsSubTypeOf(hnd, IFCEntityType.IfcFooting))
+         {
+            (_, m_Height) = ParameterUtil.GetDoubleValueFromElementOrSymbol(element, BuiltInParameter.STRUCTURAL_FOUNDATION_THICKNESS);
+         }
+
+         if (m_Height > eps)
+         {
+            m_Height = UnitUtil.ScaleLength(m_Height);
             return true;
+         }
+
+         (_, m_Height) = ParameterUtil.GetDoubleValueFromElementOrSymbol(element, entryMap.RevitParameterName, 
+            entryMap.CompatibleRevitParameterName);
+
+         if (m_Height > eps)
+         {
+            m_Height = UnitUtil.ScaleLength(m_Height);
+            return true;
+         }
 
          // For other elements
-         if (extrusionCreationData == null)
-            return false;
-
-         m_Height = extrusionCreationData.ScaledHeight;
-         return m_Height > MathUtil.Eps();
+         m_Height = extrusionCreationData?.ScaledHeight ?? 0.0;
+         return m_Height > eps;
       }
 
       /// <summary>

@@ -17,11 +17,7 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 //
 
-using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace RevitIFCTools.PropertySet
 {
@@ -36,10 +32,10 @@ namespace RevitIFCTools.PropertySet
          {
             foreach (PropertyEnumItem ei in EnumDef)
             {
-               dt += "\n\tEnum:\t" + ei.EnumItem;
+               dt += "\r\n\tEnum:\t" + ei.EnumItem;
                foreach (NameAlias na in ei.Aliases)
                {
-                  dt += "\n\t\tAliases:\tlang: " + na.lang + " :\t" + na.Alias;
+                  dt += "\r\n\t\tAliases:\tlang: " + na.lang + " :\t" + na.Alias;
                }
             }
          }

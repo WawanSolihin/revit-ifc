@@ -27,1018 +27,737 @@ using Autodesk.Revit.DB.IFC;
 using Revit.IFC.Export.Toolkit;
 using Revit.IFC.Export.Exporter.PropertySet;
 using Revit.IFC.Common.Enums;
+using Revit.IFC.Common.Utility;
+
 
 namespace Revit.IFC.Export.Utility
 {
+   // Alias to make it easier to deal with ExportInfoCache.
+   using ExportTypeInfo = Tuple<IFCExportInfoPair, string, ExportTypeOverrideHelper>;
+   using ParameterMappingKey = Tuple<PropertySetupType, string, ElementId, string>;
+
    /// <summary>
    /// Manages caches necessary for IFC export.
    /// </summary>
    public class ExporterCacheManager
    {
       /// <summary>
-      /// The AssemblyInstanceCache object.
+      /// The AllocatedGeometryObjectCache object.
       /// </summary>
-      static AllocatedGeometryObjectCache m_AllocatedGeometryObjectCache;
+      public static AllocatedGeometryObjectCache AllocatedGeometryObjectCache { get; protected set; } = new();
+
+      /// <summary>
+      /// The AreaSchemeCache object.
+      /// </summary>
+      public static Dictionary<ElementId, HashSet<IFCAnyHandle>> AreaSchemeCache = new();
 
       /// <summary>
       /// The AssemblyInstanceCache object.
       /// </summary>
-      static AssemblyInstanceCache m_AssemblyInstanceCache;
+      public static AssemblyInstanceCache AssemblyInstanceCache { get; private set; } = new();
+
+      public static AttributeCache AttributeCache { get; private set; } = new();
+
+      /// <summary>
+      /// The base guid to use for all entities when exporting, used when exporting linked documents.
+      /// </summary>
+      public static string BaseLinkedDocumentGUID { get; set; } = null;
+
+      /// <summary>
+      /// Cache for total material layer Width quantities, keyed by product handle.
+      /// </summary>
+      public static Dictionary<IFCAnyHandle, HashSet<IFCAnyHandle>> TotalLayerWidthCache { get; private set; } = new();
+
+      /// <summary>
+      /// A mapping of element ids to a material id determined by looking at element parameters.
+      /// </summary>
+      /// <summary>
+      /// The BeamSystemCache object.
+      /// </summary>
+      public static HashSet<ElementId> BeamSystemCache { get; private set; } = new();
 
       /// <summary>
       /// The IfcBuilding handle.
       /// </summary>
-      static public IFCAnyHandle BuildingHandle { get; set; }
+      public static IFCAnyHandle BuildingHandle { get; set; } = null;
 
       /// <summary>
       /// A cache to keep track of what beams can be exported as extrusions.
       /// Strictly for performance issues.
       /// </summary>
-      static IDictionary<ElementId, bool> m_CanExportBeamGeometryAsExtrusionCache;
+      public static Dictionary<ElementId, bool> CanExportBeamGeometryAsExtrusionCache { get; private set; } = new();
+
+      private static IFCCategoryTemplate m_CategoryMappingTemplate = null;
 
       /// <summary>
-      /// Cache the values of the IFC entity class from the IFC Export table by category.
+      /// Ceiling and Space relationship cache. We need it to check whether a Ceiling should be contained in a Space later on when exporting Ceiling
       /// </summary>
-      static Dictionary<KeyValuePair<ElementId, int>, string> m_CategoryClassNameCache;
+      public static Dictionary<ElementId, IList<ElementId>> CeilingSpaceRelCache { get; private set; } = new();
 
       /// <summary>
-      /// Cache the values of the IFC entity pre-defined type from the IFC Export table by category.
+      /// The CertifiedEntitiesAndPsetsCache
       /// </summary>
-      static Dictionary<KeyValuePair<ElementId, int>, string> m_CategoryTypeCache;
+      public static IFCCertifiedEntitiesAndPSets CertifiedEntitiesAndPsetsCache { get; private set; } = new();
+
+      public static ClassificationLocationCache ClassificationLocationCache { get; private set; } = new();
 
       /// <summary>
-      /// The ClassificationCache object.
-      /// Keeps track of created IfcClassifications for re-use.
+      /// Cache for additional Quantities or Properties to be created later with the other quantities
       /// </summary>
-      static ClassificationCache m_ClassificationCache;
+      public static Dictionary<IFCAnyHandle, HashSet<IFCAnyHandle>> ComplexPropertyCache { get; private set; } = new();
+
+      public static ContainmentCache ContainmentCache { get; private set; } = new();
 
       /// <summary>
-      /// The Classification location cache.
+      /// The top level 2D context handles by identifier.
       /// </summary>
-      static ClassificationLocationCache m_ClassificationLocationCache;
+      private static Dictionary<IFCRepresentationIdentifier, IFCAnyHandle> Context2DHandles { get; set; } = new();
 
-      static ClassificationReferenceCache m_ClassificationReferenceCache;
       /// <summary>
-      /// The ContainmentCache object.
+      /// The top level 3D context handles by identifier.
       /// </summary>
-      static ContainmentCache m_ContainmentCache;
+      private static Dictionary<IFCRepresentationIdentifier, IFCAnyHandle> Context3DHandles { get; set; } = new();
+
+      /// <summary>
+      /// Cache for "special" property sets to make sure we don't re-export them.
+      /// </summary>
+      /// <remarks>
+      /// At the moment, this is only for Pset_Draughting for 2x2.  But really we
+      /// should combine this with CreatedInternalPropertySets.
+      /// </remarks>
+      public static PropertySetCache CreatedSpecialPropertySets { get; private set; } = new();
+
+      public static PropertySetCache CreatedInternalPropertySets { get; private set; } = new();
+
+      /// <summary>
+      /// The current IfcSchemaEntityTree related to the current IFC version.
+      /// </summary>
+      public static IfcSchemaEntityTree IFCSchemaEntityTree 
+      {
+         get 
+         {
+            field ??= IfcSchemaEntityTree.GetEntityDictFor(ExportOptionsCache.FileVersion, null);
+            return field;
+         } 
+         private set; 
+      } = null;
 
       /// <summary>
       /// The CurveAnnotationCache object.
       /// </summary>
-      static CurveAnnotationCache m_CurveAnnotationCache;
+      public static CurveAnnotationCache CurveAnnotationCache { get; private set; } = new();
 
       /// <summary>
-      /// The db views to export.
+      /// A convenience function to check if we are exporting IFC base quantities.
       /// </summary>
-      static IDictionary<ElementId, ElementId> m_DBViewsToExport;
-
-      /// <summary>
-      /// The Document object.
-      /// </summary>
-      static Document m_Document;
-
-      /// <summary>
-      /// The collection of openings needed for created doors and windows.
-      /// </summary>
-      static DoorWindowDelayedOpeningCreatorCache m_DoorWindowDelayedOpeningCreatorCache;
+      /// <returns>True if we are exporting base quantities.</returns>
+      static public bool ExportIFCBaseQuantities() { return ExportOptionsCache.PropertySetOptions.ExportIFCBaseQuantities; }
 
       ///<summary>
-      /// The ElementToHandleCache cache.
+      /// A map containing the level to export for a particular view.
       /// </summary>
-      static ElementToHandleCache m_ElementToHandleCache;
+      public static Dictionary<ElementId, ElementId> DBViewsToExport { get; private set; } = new();
+
+      private static IFCAnyHandle m_DefaultCartesianTransformationOperator3D = null;
 
       /// <summary>
-      /// The ElementTypeToHandleCache cache
+      /// The Document object passed to the Exporter class.
       /// </summary>
-      static ElementTypeToHandleCache m_ElementTypeToHandleCache;
-
-      ///<summary>
-      /// The ExportOptions cache.
-      /// </summary>
-      static ExportOptionsCache m_ExportOptionsCache;
+      public static Document Document { get; set; } = null;
 
       /// <summary>
-      /// The GroupElementGeometryCache cache.
+      /// Cache contains warnings that may have occurred outside a transaction, but will be posted within a transaction (at the end of export).
       /// </summary>
-      static GroupElementGeometryCache m_GroupElementGeometryCache;
+      public static List<String> DelayedWarnings { get; private set; } = new();
 
       /// <summary>
-      /// The GUID cache.
+      /// The cache containing the openings that need to be created for doors and windows.
       /// </summary>
-      static HashSet<string> m_GUIDCache;
+      public static DoorWindowDelayedOpeningCreatorCache DoorWindowDelayedOpeningCreatorCache { get; private set; } = new();
+
+      private static Units m_DocumentUnits = null;
 
       /// <summary>
-      /// The GUIDs to store at the end of export.
+      /// A cache of Document.GetUnits().
       /// </summary>
-      static Dictionary<KeyValuePair<Element, BuiltInParameter>, string> m_GUIDsToStoreCache;
-
-      /// <summary>
-      /// The HandleToElementCache cache.
-      /// This maps an IFC handle to the Element that created it.
-      /// This is used to identify which element should be used for properties, for elements (e.g. Stairs) that contain other elements.
-      /// </summary>
-      static HandleToElementCache m_HandleToElementCache;
-
-      /// <summary>
-      /// The IsExternal parameter value cache.
-      /// This stores the IsExternal value from the shared parameters, if any, for elements that may be used by hosted elements later.
-      /// We use this because we clear the ParametersCache after we export an element, and do not want to create just for IsExternal.
-      static Dictionary<ElementId, bool?> m_IsExternalParameterValueCache;
-
-      /// <summary>
-      /// The language of the current Revit document.
-      /// </summary>
-      static LanguageType m_LanguageType;
-
-      /// <summary>
-      /// The LevelInfoCache object.  This contains extra information on top of
-      /// IFCLevelInfo, and will eventually replace it.
-      /// </summary>
-      static LevelInfoCache m_LevelInfoCache;
-
-      /// <summary>
-      /// The MaterialHandleCache object.
-      /// </summary>
-      static MaterialHandleCache m_MaterialHandleCache;
-
-      /// <summary>
-      /// The MaterialConsituent object cache (starting IFC4)
-      /// </summary>
-      //static MaterialHandleCache m_MaterialConstituentCache;
-
-      /// <summary>
-      /// The MaterialConstituentSet cache (starting IFC4)
-      /// </summary>
-      static MaterialConstituentSetCache m_MaterialConstituentSetCache;
-
-      /// <summary>
-      /// The MaterialLayerRelationsCache object.
-      /// </summary>
-      static MaterialSetUsageCache m_MaterialSetUsageCache;
-
-      /// <summary>
-      /// The MaterialLayerSetCache object.
-      /// </summary>
-      static MaterialSetCache m_MaterialSetCache;
-
-      /// <summary>
-      /// The MEPCache object.
-      /// </summary>
-      static MEPCache m_MEPCache;
-
-      /// <summary>
-      /// The MaterialRelationsCache object.
-      /// </summary>
-      static MaterialRelationsCache m_MaterialRelationsCache;
-
-      /// <summary>
-      /// The top level IfcOwnerHistory handle.
-      /// </summary>
-      static IFCAnyHandle m_OwnerHistoryHandle;
-
-      static AttributeCache m_AttributeCache;
-
-      /// <summary>
-      /// The ParameterCache object.
-      /// </summary>
-      static ParameterCache m_ParameterCache;
-
-      /// <summary>
-      /// The PartExportedCache object.
-      /// </summary>
-      static PartExportedCache m_PartExportedCache;
-
-      /// <summary>
-      /// The PresentationLayerSetCache object.
-      /// </summary>
-      static PresentationLayerSetCache m_PresentationLayerSetCache;
-
-      /// <summary>
-      /// The PresentationStyleAssignmentCache object.
-      /// </summary>
-      static PresentationStyleAssignmentCache m_PresentationStyleCache;
-
-      /// <summary>
-      /// The top level IfcProject handle.
-      /// </summary>
-      static IFCAnyHandle m_ProjectHandle;
-
-      ///<summary>
-      /// The RailingCache cache.
-      /// This keeps track of all of the railings in the document, to export them last.
-      /// </summary>
-      static HashSet<ElementId> m_RailingCache;
-
-      ///<summary>
-      /// The RailingSubElementCache cache.
-      /// This keeps track of all of the sub-elements of railings in the document, to not export them twice.
-      /// </summary>
-      static HashSet<ElementId> m_RailingSubElementCache;
-
-      /// <summary>
-      /// The top level IfcSite handle.
-      /// </summary>
-      static IFCAnyHandle m_SiteHandle;
-
-      /// <summary>
-      /// The SpaceBoundaryCache object.
-      /// </summary>
-      static SpaceBoundaryCache m_SpaceBoundaryCache;
-
-      /// <summary>
-      /// The SpaceOccupantInfoCache object.
-      /// </summary>
-      static SpaceOccupantInfoCache m_SpaceOccupantInfoCache;
-
-      /// <summary>
-      /// The SystemsCache object.
-      /// </summary>
-      static SystemsCache m_SystemsCache;
-
-      ///<summary>
-      /// The Truss cache.
-      /// This keeps track of all of the truss in the document, to export after all beams and members.
-      /// </summary>
-      static HashSet<ElementId> m_TrussCache;
-
-      /// <summary>
-      /// The ViewSchedule element cache.
-      /// This tracks the element ids of the elements in a view schedule that is being exported.  Not used unless schedules are being exported.
-      /// </summary>
-      static IDictionary<ElementId, HashSet<ElementId>> m_ViewScheduleElementCache;
-
-      ///<summary>
-      /// The AreaScheme cache.
-      /// This keeps track of all of the area schemes in the document, to export them after all areas.
-      /// </summary>
-      static Dictionary<ElementId, HashSet<IFCAnyHandle>> m_AreaSchemeCache;
-
-      ///<summary>
-      /// The BeamSystem cache.
-      /// This keeps track of all of the beam systems in the document, to export after all beams.
-      /// </summary>
-      static HashSet<ElementId> m_BeamSystemCache;
-
-      ///<summary>
-      /// The Group cache.
-      /// This keeps track of all of the groups in the document, to export them after all regular elements.
-      /// </summary>
-      static GroupCache m_GroupCache;
-
-      ///<summary>
-      /// The Zone cache.
-      /// This keeps track of all of the zone in the document, to export them after all spaces.
-      /// </summary>
-      static HashSet<ElementId> m_ZoneCache;
-
-      /// <summary>
-      /// The TypeRelationsCache object.
-      /// </summary>
-      static TypeRelationsCache m_TypeRelationsCache;
-
-      /// <summary>
-      /// The FamilySymbolToTypeInfoCache object
-      /// </summary>
-      static TypeObjectsCache m_FamilySymbolToTypeInfoCache;
-
-      /// <summary>
-      /// The WallConnectionDataCache object.
-      /// </summary>
-      static WallConnectionDataCache m_WallConnectionDataCache;
-
-      /// <summary>
-      /// The UnitsCache object.
-      /// Keeps track of created IfcUnits for re-use.
-      /// </summary>
-      static UnitsCache m_UnitsCache;
-
-      /// <summary>
-      /// The ZoneInfoCache object.
-      /// </summary>
-      static ZoneInfoCache m_ZoneInfoCache;
-
-      /// <summary>
-      /// The TypePropertyInfoCache object.
-      /// </summary>
-      static TypePropertyInfoCache m_TypePropertyInfoCache;
-
-      /// <summary>
-      /// The PropertyInfoCache object.
-      /// </summary>
-      static PropertyInfoCache m_PropertyInfoCache;
-
-      /// <summary>
-      /// The common property sets to be exported for an entity type, regardless of Object Type.
-      /// </summary>
-      static IDictionary<IFCEntityType, IList<PropertySetDescription>> m_PropertySetsForTypeCache;
-
-      /// <summary>
-      /// The common property sets to be exported for an entity type, conditional on the Object Type of the
-      /// entity matching that of the PropertySetDescription.
-      /// </summary>
-      static IDictionary<IFCEntityType, IList<PropertySetDescription>> m_ConditionalPropertySetsForTypeCache;
-
-      /// <summary>
-      /// The material id to style handle cache.
-      /// </summary>
-      static ElementToHandleCache m_MaterialIdToStyleHandleCache;
-
-      /// <summary>
-      /// A list of elements contained in assemblies, to be removed from the level spatial structure.
-      /// </summary>
-      static ISet<IFCAnyHandle> m_ElementsInAssembliesCache;
-
-      /// <summary>
-      /// The default IfcCartesianTransformationOperator3D, scale 1.0 and origin =  { 0., 0., 0. };
-      /// </summary>
-      static IFCAnyHandle m_DefaultCartesianTransformationOperator3D;
-
-      /// The HostPartsCache object.
-      /// </summary>
-      static HostPartsCache m_HostPartsCache;
+      public static Units DocumentUnits
+      {
+         get
+         {
+            m_DocumentUnits ??= Document.GetUnits();
+            return m_DocumentUnits;
+         }
+      }
 
       /// <summary>
       /// The DummyHostCache object.
       /// </summary>
-      static DummyHostCache m_DummyHostCache;
+      public static DummyHostCache DummyHostCache { get; private set; } = new();
+
+      public static Dictionary<ElementId, ElementId> ElementIdMaterialParameterCache { get; private set; } = new();
 
       /// <summary>
-      /// The StairRampContainerInfoCache object.
+      /// The elements in assemblies cache.
       /// </summary>
-      static StairRampContainerInfoCache m_StairRampContainerInfoCache;
+      public static HashSet<IFCAnyHandle> ElementsInAssembliesCache { get; private set; } = new();
+
+      /// <summary>
+      /// The ElementToHandleCache object, used to cache Revit element ids to IFC entity handles.
+      /// </summary>
+      public static ElementToHandleCache ElementToHandleCache { get; private set; } = new();
+
+      /// <summary>
+      /// The ElementTypeToHandleCache object, used to cache Revit element type ids to IFC entity handles.
+      /// </summary>
+      public static ElementTypeToHandleCache ElementTypeToHandleCache { get; private set; } = new();
+
+      private static bool? m_ExportCeilingGrids { get; set; } = null;
+
+      /// <summary>
+      /// The ExporterIFC used to access internal IFC API functions.
+      /// </summary>
+      public static ExporterIFC ExporterIFC { get; set; } = null;
+
+      /// <summary>
+      /// The ExportOptionsCache object.
+      /// </summary>
+      public static ExportOptionsCache ExportOptionsCache { get; set; } = new();
+
+      /// <summary>
+      /// The ContainmentCache object.
+      /// </summary>
+      /// <summary>
+      /// On each export, each Element will always have one and always one IFCExportInfoPair class associated with it.
+      /// This cache keeps track of that.
+      /// </summary>
+      public static Dictionary<ElementId, ExportTypeInfo> ExportTypeInfoCache { get; private set; } = new();
+
+      /// <summary>
+      /// The FabricArea id to FabricSheet handle cache.
+      /// </summary>
+      public static Dictionary<ElementId, HashSet<IFCAnyHandle>> FabricAreaHandleCache { get; private set; } = new();
+
+      public static Dictionary<ElementId, FabricParams> FabricParamsCache { get; private set; } = new();
+
+      /// <summary>
+      /// The FamilySymbolToTypeInfoCache object.  This maps a FamilySymbol id to the related created IFC information (the TypeObjectsCache).
+      /// </summary>
+      public static TypeObjectsCache FamilySymbolToTypeInfoCache { get; private set; } = new();
+
+      private static IFCAnyHandle m_Global2DOriginHandle = null;
+      
+      private static IFCAnyHandle m_Global3DOriginHandle = null;
 
       /// <summary>
       /// The GridCache object.
       /// </summary>
-      static List<Element> m_GridCache;
+      public static List<Element> GridCache { get; private set; } = new();
+
+      /// <summary>
+      /// The GroupCache object.
+      /// </summary>
+      public static GroupCache GroupCache { get; private set; } = new();
+
+      /// <summary>
+      /// The GUIDCache object.
+      /// </summary>
+      public static HashSet<string> GUIDCache { get; } = [];
+
+      /// <summary>
+      /// The GUIDs to store in elements at the end of export, if the option to store GUIDs has been selected.
+      /// </summary>
+      public static Dictionary<(ElementId, BuiltInParameter), string> GUIDsToStoreCache { get; private set; } = new();
+
+      /// <summary>
+      /// Collection of IFC Handles to delete
+      /// </summary>
+      public static HashSet<IFCAnyHandle> HandleToDeleteCache { get; private set; } = new();
+
+      /// <summary>
+      /// The HandleToElementCache object.
+      /// </summary>
+      public static HandleToElementCache HandleToElementCache { get; private set; } = new();
 
       /// <summary>
       /// This contains the mapping from Level element id to index in the IList returned by GetHostObjects.
       /// This is redundant with a native list that is being deprecated, which has inadequate API access.
       /// </summary>
-      static IDictionary<ElementId, int> m_HostObjectsLevelIndex;
-
-      ///// <summary>
-      ///// The ElementToTypeCache cache that maps Revit element type id to the IFC element type handle.
-      ///// </summary>
-      //static ElementToHandleCache m_ElementTypeToHandleCache;
+      public static Dictionary<ElementId, int> HostObjectsLevelIndex { get; private set; } = new();
 
       /// <summary>
-      /// Keeps relationship of Ceiling to the Space(s) where it belongs to. Used to determine Space containment for Ceiling object that is fully contained in Space (for FMHandOverView)
+      /// The ParameterAccess object associated with the HostDocument handle.
       /// </summary>
-      static IDictionary<ElementId, IList<ElementId>> m_CeilingSpaceRelCache;
-
-      /// <summary>
-      /// The SpaceInfo cache that maps Revit SpatialElement id to the SpaceInfo.
-      /// </summary>
-      static SpaceInfoCache m_SpaceInfoCache;
-
-      /// <summary>
-      /// The FabricArea id to FabricSheet handle cache.
-      /// </summary>
-      static IDictionary<ElementId, HashSet<IFCAnyHandle>> m_FabricAreaHandleCache;
-
-      /// <summary>
-      /// The PropertyMapCache
-      /// </summary>
-      static IDictionary<Tuple<string, string>, string> m_PropertyMapCache;
-
-      /// <summary>
-      /// The CertifiedEntitiesAndPsetCache
-      /// </summary>
-      static IFCCertifiedEntitiesAndPSets m_CertifiedEntitiesAndPsetCache;
-
-      /// <summary>
-      /// The ParameterCache object.
-      /// </summary>
-      public static AllocatedGeometryObjectCache AllocatedGeometryObjectCache
+      public static ParameterAccess HostParameterAccess
       {
          get
          {
-            if (m_AllocatedGeometryObjectCache == null)
-               m_AllocatedGeometryObjectCache = new AllocatedGeometryObjectCache();
-            return m_AllocatedGeometryObjectCache;
+            if (ExportOptionsCache.HostDocument == null)
+               return null;
+            
+            field ??= new(ExportOptionsCache.HostDocument);
+            return field;
+         }
+         set
+         {
+            field = value;
          }
       }
+      
+      /// <summary>
+      /// The HostPartsCache object.
+      /// </summary>
+      public static HostPartsCache HostPartsCache { get; private set; } = new();
 
       /// <summary>
-      /// The AssemblyInstanceCache object.
+      /// A cache of internally created IfcRoot-derived handles.
       /// </summary>
-      public static AssemblyInstanceCache AssemblyInstanceCache
-      {
-         get
-         {
-            if (m_AssemblyInstanceCache == null)
-               m_AssemblyInstanceCache = new AssemblyInstanceCache();
-            return m_AssemblyInstanceCache;
-         }
-      }
-
-      /// <summary>
-      /// A cache to keep track of what beams can be exported as extrusions.
-      /// Strictly for performance issues.
-      /// </summary>
-      public static IDictionary<ElementId, bool> CanExportBeamGeometryAsExtrusionCache
-      {
-         get
-         {
-            if (m_CanExportBeamGeometryAsExtrusionCache == null)
-               m_CanExportBeamGeometryAsExtrusionCache = new Dictionary<ElementId, bool>();
-            return m_CanExportBeamGeometryAsExtrusionCache;
-         }
-      }
-
-      /// <summary>
-      /// The CategoryClassNameCache object.
-      /// </summary>
-      public static IDictionary<KeyValuePair<ElementId, int>, string> CategoryClassNameCache
-      {
-         get
-         {
-            if (m_CategoryClassNameCache == null)
-               m_CategoryClassNameCache = new Dictionary<KeyValuePair<ElementId, int>, string>();
-            return m_CategoryClassNameCache;
-         }
-      }
-
-      /// <summary>
-      /// The CategoryTypeCache object.
-      /// </summary>
-      public static IDictionary<KeyValuePair<ElementId, int>, string> CategoryTypeCache
-      {
-         get
-         {
-            if (m_CategoryTypeCache == null)
-               m_CategoryTypeCache = new Dictionary<KeyValuePair<ElementId, int>, string>();
-            return m_CategoryTypeCache;
-         }
-      }
-
-      /// <summary>
-      /// The GroupElementGeometryCache object.
-      /// </summary>
-      public static GroupElementGeometryCache GroupElementGeometryCache
-      {
-         get
-         {
-            if (m_GroupElementGeometryCache == null)
-               m_GroupElementGeometryCache = new GroupElementGeometryCache();
-            return m_GroupElementGeometryCache;
-         }
-      }
-
-      /// <summary>
-      /// The GUIDCache object.
-      /// </summary>
-      public static HashSet<string> GUIDCache
-      {
-         get
-         {
-            if (m_GUIDCache == null)
-               m_GUIDCache = new HashSet<string>();
-            return m_GUIDCache;
-         }
-      }
-
-      /// <summary>
-      /// The GUIDs to store in elements at the end of export, if the option to store GUIDs has been selected.
-      /// </summary>
-      public static IDictionary<KeyValuePair<Element, BuiltInParameter>, string> GUIDsToStoreCache
-      {
-         get
-         {
-            if (m_GUIDsToStoreCache == null)
-               m_GUIDsToStoreCache = new Dictionary<KeyValuePair<Element, BuiltInParameter>, string>();
-            return m_GUIDsToStoreCache;
-         }
-      }
-
-      /// <summary>
-      /// The HandleToElementCache object.
-      /// </summary>
-      public static HandleToElementCache HandleToElementCache
-      {
-         get
-         {
-            if (m_HandleToElementCache == null)
-               m_HandleToElementCache = new HandleToElementCache();
-            return m_HandleToElementCache;
-         }
-      }
+      /// <remarks></remarks>
+      public static Dictionary<IFCAnyHandle, ElementId> InternallyCreatedRootHandles { get; private set; } = new();
 
       /// <summary>
       /// The IsExternalParameterValueCache object.
       /// </summary>
-      public static IDictionary<ElementId, bool?> IsExternalParameterValueCache
-      {
-         get
-         {
-            if (m_IsExternalParameterValueCache == null)
-               m_IsExternalParameterValueCache = new Dictionary<ElementId, bool?>();
-            return m_IsExternalParameterValueCache;
-         }
-      }
+      public static Dictionary<ElementId, bool> IsExternalParameterValueCache { get; private set; } = new();
 
       /// <summary>
       /// The language of the current Revit document.
       /// </summary>
-      public static LanguageType LanguageType
-      {
-         get { return m_LanguageType; }
-         set { m_LanguageType = value; }
-      }
+      public static LanguageType LanguageType { get; set; } = LanguageType.Unknown;
 
-      public static AttributeCache AttributeCache
+      /// <summary>
+      /// The precision used in the IfcRepresentationContext in Revit units.
+      /// </summary>
+      public static double LengthPrecision { get; set; } = MathUtil.Eps;
+
+      /// <summary>
+      /// The LevelInfoCache object.  This contains extra information on top of
+      /// IFCLevelInfo, and will eventually replace it.
+      /// </summary>
+      public static LevelInfoCache LevelInfoCache { get; private set; } = new();
+
+
+      /// <summary>
+      /// The MaterialConstituent to IfcMaterial cache
+      /// </summary>
+      public static MaterialConstituentCache MaterialConstituentCache { get; private set; } = new();
+
+      /// <summary>
+      /// The MaterialConstituentSet cache
+      /// </summary>
+      public static MaterialConstituentSetCache MaterialConstituentSetCache { get; private set; } = new();
+
+      /// <summary>
+      /// The MaterialHandleCache object.
+      /// </summary>
+      public static ElementToHandleCache MaterialHandleCache { get; private set; } = new();
+
+      /// <summary>
+      /// The material id to style handle cache.
+      /// </summary>
+      public static ElementToHandleCache MaterialIdToStyleHandleCache { get; private set; } = new();
+
+      /// <summary>
+      /// The MaterialRelationsCache object.
+      /// </summary>
+      public static MaterialRelationsCache MaterialRelationsCache { get; private set; } = new();
+
+      /// <summary>
+      /// The Material___SetCache object (includes IfcMaterialLayerSet, IfcMaterialProfileSet, IfcMaterialConstituentSet in IFC4).
+      /// </summary>
+      public static MaterialSetCache MaterialSetCache { get; private set; } = new();
+
+      /// <summary>
+      /// The MaterialLayerRelationsCache object.
+      /// </summary>
+      public static MaterialSetUsageCache MaterialSetUsageCache { get; private set; } = new();
+
+      /// <summary>
+      /// The MEPCache object.
+      /// </summary>
+      public static MEPCache MEPCache { get; private set; } = new();
+
+      /// <summary>
+      /// Non-spatial Elements (e.g., Floor) for export.
+      /// </summary>
+      public static HashSet<ElementId> NonSpatialElements { get; private set; } = new();
+
+      /// <summary>
+      /// The Cache for 2D curves information of a FamilySymbol
+      /// </summary>
+      public static Dictionary<ElementId, IList<Curve>> Object2DCurvesCache { get; private set; } = new();
+
+      /// <summary>
+      /// The top level IfcOwnerHistory handle.
+      /// </summary>
+      public static IFCAnyHandle OwnerHistoryHandle { get; set; } = null;
+
+      /// <summary>
+      /// The ParameterAccess object associated with the Document handle.
+      /// </summary>
+      public static ParameterAccess ParameterAccess
       {
          get
          {
-            if (m_AttributeCache == null)
-               m_AttributeCache = new AttributeCache();
-            return m_AttributeCache;
+            if (Document == null)
+               return null;
+
+            field ??= new(Document);
+            return field;
+         }
+         set
+         {
+            field = value;
          }
       }
 
       /// <summary>
       /// The ParameterCache object.
       /// </summary>
-      public static ParameterCache ParameterCache
-      {
-         get
-         {
-            if (m_ParameterCache == null)
-               m_ParameterCache = new ParameterCache();
-            return m_ParameterCache;
-         }
-      }
+      public static ParameterCache ParameterCache { get; private set; } = new();
 
       /// <summary>
-      /// The PartExportedCache object.
+      /// The ParameterInformationCache object, used to map from parameter ids to parameter information.
       /// </summary>
-      public static PartExportedCache PartExportedCache
-      {
-         get
-         {
-            if (m_PartExportedCache == null)
-               m_PartExportedCache = new PartExportedCache();
-            return m_PartExportedCache;
-         }
-      }
-      /// <summary>
-      /// The Document object passed to the Exporter class.
-      /// </summary>
-      public static Autodesk.Revit.DB.Document Document
-      {
-         get
-         {
-            if (m_Document == null)
-            {
-               throw new InvalidOperationException("doc is null");
-            }
-            return m_Document;
-         }
-         set
-         {
-            m_Document = value;
-         }
-      }
-
-      /// <summary>
-      /// The PresentationLayerSetCache object.
-      /// </summary>
-      public static PresentationLayerSetCache PresentationLayerSetCache
-      {
-         get
-         {
-            if (m_PresentationLayerSetCache == null)
-               m_PresentationLayerSetCache = new PresentationLayerSetCache();
-            return m_PresentationLayerSetCache;
-         }
-      }
-
-      /// <summary>
-      /// The PresentationStyleAssignmentCache object.
-      /// </summary>
-      public static PresentationStyleAssignmentCache PresentationStyleAssignmentCache
-      {
-         get
-         {
-            if (m_PresentationStyleCache == null)
-               m_PresentationStyleCache = new PresentationStyleAssignmentCache();
-            return m_PresentationStyleCache;
-         }
-      }
-
-      /// <summary>
-      /// The top level IfcOwnerHistory handle.
-      /// </summary>
-      public static IFCAnyHandle OwnerHistoryHandle
-      {
-         get { return m_OwnerHistoryHandle; }
-         set { m_OwnerHistoryHandle = value; }
-      }
+      public static ParameterInformationCache ParameterInformationCache { get; private set; } = new();
 
       /// <summary>
       /// The top level IfcProject handle.
       /// </summary>
-      public static IFCAnyHandle ProjectHandle
-      {
-         get { return m_ProjectHandle; }
-         set { m_ProjectHandle = value; }
-      }
+      public static IFCAnyHandle ProjectHandle { get; set; } = null;
 
       /// <summary>
-      /// The top level IfcSite handle.
+      /// The PartExportedCache object.
       /// </summary>
-      public static IFCAnyHandle SiteHandle
-      {
-         get { return m_SiteHandle; }
-         set { m_SiteHandle = value; }
-      }
+      public static PartExportedCache PartExportedCache { get; private set; } = new();
 
       /// <summary>
-      /// The CurveAnnotationCache object.
+      /// The PresentationLayerSetCache object.
       /// </summary>
-      public static CurveAnnotationCache CurveAnnotationCache
-      {
-         get
-         {
-            if (m_CurveAnnotationCache == null)
-               m_CurveAnnotationCache = new CurveAnnotationCache();
-            return m_CurveAnnotationCache;
-         }
-      }
+      public static PresentationLayerSetCache PresentationLayerSetCache { get; private set; } = new();
 
       /// <summary>
-      /// The CurveAnnotationCache object.
+      /// The PresentationStyleAssignmentCache object.
       /// </summary>
-      public static IDictionary<ElementId, ElementId> DBViewsToExport
-      {
-         get
-         {
-            if (m_DBViewsToExport == null)
-               m_DBViewsToExport = new Dictionary<ElementId, ElementId>();
-            return m_DBViewsToExport;
-         }
-      }
+      public static PresentationStyleAssignmentCache PresentationStyleAssignmentCache { get; private set; } = new();
 
       /// <summary>
-      /// The cache containing the openings that need to be created for doors and windows.
+      /// Preserve the element parameter cache after the element export, as it will be used again.
       /// </summary>
-      public static DoorWindowDelayedOpeningCreatorCache DoorWindowDelayedOpeningCreatorCache
-      {
-         get
-         {
-            if (m_DoorWindowDelayedOpeningCreatorCache == null)
-               m_DoorWindowDelayedOpeningCreatorCache = new DoorWindowDelayedOpeningCreatorCache();
-            return m_DoorWindowDelayedOpeningCreatorCache;
-         }
-      }
+      public static HashSet<ElementId> PreservedParameterCacheElementIds = [];
+
+
+      private static IDictionary<Tuple<string, string>, string> m_PropertyMapCache = null;
+
+      /// Cache for information whether a QuantitySet specified in the Dict. value has been created for the elementHandle
+      /// </summary>
+      public static HashSet<(IFCAnyHandle, string)> QtoSetCreated { get; private set; } = new();
 
       /// <summary>
-      /// The Material___SetCache object (includes IfcMaterialLayerSet, IfcMaterialProfileSet, IfcMaterialConstituentSet in IFC4).
+      /// Property handles pre-created by specific exporters (e.g., door/window panel properties)
+      /// to be merged into the centralized property set pass. Keyed by (psetName, typeElementId).
       /// </summary>
-      public static MaterialSetCache MaterialSetCache
-      {
-         get
-         {
-            if (m_MaterialSetCache == null)
-               m_MaterialSetCache = new MaterialSetCache();
-            return m_MaterialSetCache;
-         }
-      }
+      public static Dictionary<(string, ElementId), Dictionary<string, IFCAnyHandle>> PreCreatedPsetProperties { get; private set; } = [];
 
       /// <summary>
-      /// The MEPCache object.
+      /// The predefined property sets to be exported for an entity type, regardless of Object Type.
       /// </summary>
-      public static MEPCache MEPCache
-      {
-         get
-         {
-            if (m_MEPCache == null)
-               m_MEPCache = new MEPCache();
-            return m_MEPCache;
-         }
-      }
-
+      public static Dictionary<PropertySetKey, IList<PreDefinedPropertySetDescription>> PreDefinedPropertySetsForTypeCache { get; private set; } = new();
 
       /// <summary>
-      /// The SpaceBoundaryCache object.
+      /// The PropertyInfoCache object.
       /// </summary>
-      public static SpaceBoundaryCache SpaceBoundaryCache
-      {
-         get
-         {
-            if (m_SpaceBoundaryCache == null)
-               m_SpaceBoundaryCache = new SpaceBoundaryCache();
-            return m_SpaceBoundaryCache;
-         }
-      }
+      public static PropertyInfoCache PropertyInfoCache { get; private set; } = new();
 
       /// <summary>
-      /// The SpaceInfo cache that maps Revit SpatialElement id to the SpaceInfo.
+      /// Cache for property mappings.
       /// </summary>
-      public static SpaceInfoCache SpaceInfoCache
-      {
-         get
-         {
-            if (m_SpaceInfoCache == null)
-               m_SpaceInfoCache = new SpaceInfoCache();
-            return m_SpaceInfoCache;
-         }
-      }
+      public static Dictionary<ParameterMappingKey, IFCPropertyMappingInfo> PropertyMappingCache { get; private set; } = new();
 
       /// <summary>
-      /// The SystemsCache object.
+      /// The common property sets to be exported for an entity type, regardless of Object Type.
       /// </summary>
-      public static SystemsCache SystemsCache
-      {
-         get
-         {
-            if (m_SystemsCache == null)
-               m_SystemsCache = new SystemsCache();
-            return m_SystemsCache;
-         }
-      }
-
-      /// <summary>
-      /// The MaterialHandleCache object.
-      /// </summary>
-      public static MaterialHandleCache MaterialHandleCache
-      {
-         get
-         {
-            if (m_MaterialHandleCache == null)
-               m_MaterialHandleCache = new MaterialHandleCache();
-            return m_MaterialHandleCache;
-         }
-      }
-
-      /// <summary>
-      /// The MaterialConstituent to IfcMaterial cache
-      /// </summary>
-      //public static MaterialHandleCache MaterialConstituentCache
-      //{
-      //   get
-      //   {
-      //      if (m_MaterialConstituentCache == null)
-      //         m_MaterialConstituentCache = new MaterialHandleCache();
-      //      return m_MaterialConstituentCache;
-      //   }
-      //}
-
-      public static MaterialConstituentSetCache MaterialConstituentSetCache
-      {
-         get
-         {
-            if (m_MaterialConstituentSetCache == null)
-               m_MaterialConstituentSetCache = new MaterialConstituentSetCache();
-            return m_MaterialConstituentSetCache;
-         }
-      }
-
-      /// <summary>
-      /// The MaterialRelationsCache object.
-      /// </summary>
-      public static MaterialRelationsCache MaterialRelationsCache
-      {
-         get
-         {
-            if (m_MaterialRelationsCache == null)
-               m_MaterialRelationsCache = new MaterialRelationsCache();
-            return m_MaterialRelationsCache;
-         }
-      }
-
-      /// <summary>
-      /// The MaterialLayerRelationsCache object.
-      /// </summary>
-      public static MaterialSetUsageCache MaterialLayerRelationsCache
-      {
-         get
-         {
-            if (m_MaterialSetUsageCache == null)
-               m_MaterialSetUsageCache = new MaterialSetUsageCache();
-            return m_MaterialSetUsageCache;
-         }
-      }
+      public static Dictionary<PropertySetKey, IList<PropertySetDescription>> PropertySetsForTypeCache { get; private set; } = new();
 
       /// <summary>
       /// The RailingCache object.
       /// </summary>
-      public static HashSet<ElementId> RailingCache
-      {
-         get
-         {
-            if (m_RailingCache == null)
-               m_RailingCache = new HashSet<ElementId>();
-            return m_RailingCache;
-         }
-      }
-
-      /// <summary>
-      /// The TrussCache object.
-      /// </summary>
-      public static HashSet<ElementId> TrussCache
-      {
-         get
-         {
-            if (m_TrussCache == null)
-               m_TrussCache = new HashSet<ElementId>();
-            return m_TrussCache;
-         }
-      }
-
-      /// <summary>
-      /// The ViewScheduleElementCache object.
-      /// </summary>
-      public static IDictionary<ElementId, HashSet<ElementId>> ViewScheduleElementCache
-      {
-         get
-         {
-            if (m_ViewScheduleElementCache == null)
-               m_ViewScheduleElementCache = new Dictionary<ElementId, HashSet<ElementId>>();
-            return m_ViewScheduleElementCache;
-         }
-      }
-
-      /// <summary>
-      /// The BeamSystemCache object.
-      /// </summary>
-      public static HashSet<ElementId> BeamSystemCache
-      {
-         get
-         {
-            if (m_BeamSystemCache == null)
-               m_BeamSystemCache = new HashSet<ElementId>();
-            return m_BeamSystemCache;
-         }
-      }
-
-      /// <summary>
-      /// The AreaSchemeCache object.
-      /// </summary>
-      public static Dictionary<ElementId, HashSet<IFCAnyHandle>> AreaSchemeCache
-      {
-         get
-         {
-            if (m_AreaSchemeCache == null)
-               m_AreaSchemeCache = new Dictionary<ElementId, HashSet<IFCAnyHandle>>();
-            return m_AreaSchemeCache;
-         }
-      }
-
-      /// <summary>
-      /// The GroupCache object.
-      /// </summary>
-      public static GroupCache GroupCache
-      {
-         get
-         {
-            if (m_GroupCache == null)
-               m_GroupCache = new GroupCache();
-            return m_GroupCache;
-         }
-      }
-
-      /// <summary>
-      /// The ZoneCache object.
-      /// </summary>
-      public static HashSet<ElementId> ZoneCache
-      {
-         get
-         {
-            if (m_ZoneCache == null)
-               m_ZoneCache = new HashSet<ElementId>();
-            return m_ZoneCache;
-         }
-      }
+      public static HashSet<ElementId> RailingCache { get; private set; } = new();
 
       /// <summary>
       /// The RailingSubElementCache object.  This ensures that we don't export sub-elements of railings (e.g. supports) separately.
       /// </summary>
-      public static HashSet<ElementId> RailingSubElementCache
-      {
-         get
-         {
-            if (m_RailingSubElementCache == null)
-               m_RailingSubElementCache = new HashSet<ElementId>();
-            return m_RailingSubElementCache;
-         }
-      }
+      public static HashSet<ElementId> RailingSubElementCache { get; private set; } = new();
 
       /// <summary>
-      /// The TypeRelationsCache object.
+      /// Cache for the Project Location that comes from the Selected Site on export option
       /// </summary>
-      public static TypeRelationsCache TypeRelationsCache
-      {
-         get
-         {
-            if (m_TypeRelationsCache == null)
-               m_TypeRelationsCache = new TypeRelationsCache();
-            return m_TypeRelationsCache;
-         }
-      }
+      public static ProjectLocation SelectedSiteProjectLocation { get; set; } = null;
 
       /// <summary>
-      /// The FamilySymbolToTypeInfoCache object.  This maps a FamilySymbol id to the related created IFC information (the TypeObjectsCache).
+      /// This keeps track of IfcSite-related information.
       /// </summary>
-      public static TypeObjectsCache FamilySymbolToTypeInfoCache
-      {
-         get
-         {
-            if (m_FamilySymbolToTypeInfoCache == null)
-               m_FamilySymbolToTypeInfoCache = new TypeObjectsCache();
-            return m_FamilySymbolToTypeInfoCache;
-         }
-      }
+      public static SiteExportInfo SiteExportInfo { get; private set; } = new();
 
       /// <summary>
-      /// The ZoneInfoCache object.
+      /// The SpaceBoundaryCache object.
       /// </summary>
-      public static ZoneInfoCache ZoneInfoCache
-      {
-         get
-         {
-            if (m_ZoneInfoCache == null)
-               m_ZoneInfoCache = new ZoneInfoCache();
-            return m_ZoneInfoCache;
-         }
-      }
+      public static SpaceBoundaryCache SpaceBoundaryCache { get; private set; } = new();
+
+      /// <summary>
+      /// The SpaceInfo cache that maps Revit SpatialElement id to the SpaceInfo.
+      /// </summary>
+      public static SpaceInfoCache SpaceInfoCache { get; private set; } = new();
 
       /// <summary>
       /// The SpaceOccupantInfoCache object.
       /// </summary>
-      public static SpaceOccupantInfoCache SpaceOccupantInfoCache
-      {
-         get
-         {
-            if (m_SpaceOccupantInfoCache == null)
-               m_SpaceOccupantInfoCache = new SpaceOccupantInfoCache();
-            return m_SpaceOccupantInfoCache;
-         }
-      }
+      public static SpaceOccupantInfoCache SpaceOccupantInfoCache { get; private set; } = new();
+
+      /// <summary>
+      /// The SpaceTypeCache object.  Used for space elements in Revit with no type.
+      /// </summary>
+      /// <remarks>The key is the predefined type of the IfcSpaceType.</remarks>
+      public static Dictionary<NamingUtil.IFCStringKey, IFCAnyHandle> SpaceTypeCache { get; private set; } = [];
+      
+      /// <summary>
+      /// The StairRampContainerInfoCache object.
+      /// </summary>
+      public static StairRampContainerInfoCache StairRampContainerInfoCache { get; private set; } = new();
+
+      /// <summary>
+      /// The SystemsCache object.
+      /// </summary>
+      public static SystemsCache SystemsCache { get; private set; } = new();
+
+      /// <summary>
+      /// The TrussCache object.
+      /// </summary>
+      public static HashSet<ElementId> TrussCache { get; private set; } = new();
+
+      /// <summary>
+      /// A container of geometry associated with temporary parts.
+      /// </summary>
+      public static TemporaryPartsCache TemporaryPartsCache { get; private set; } = new();
+
+      /// <summary>
+      /// The TypePropertyInfoCache object.
+      /// </summary>
+      public static TypePropertyInfoCache TypePropertyInfoCache { get; private set; } = new();
+
+      /// <summary>
+      /// The TypeRelationsCache object.
+      /// </summary>
+      public static TypeRelationsCache TypeRelationsCache { get; private set; } = new();
+
+      /// <summary>
+      /// The UnitsCache object.
+      /// </summary>
+      public static UnitsCache UnitsCache { get; private set; } = new();
+
+      /// <summary>
+      /// The ViewScheduleElementCache object.
+      /// </summary>
+      public static Dictionary<ElementId, HashSet<ElementId>> ViewScheduleElementCache { get; private set; } = new();
 
       /// <summary>
       /// The WallConnectionDataCache object.
       /// </summary>
-      public static WallConnectionDataCache WallConnectionDataCache
+      public static WallConnectionDataCache WallConnectionDataCache { get; private set; } = new();
+
+      public static WallCrossSectionCache WallCrossSectionCache { get; private set; } = new();
+
+      /// <summary>
+      /// The ZoneCache object.
+      /// </summary>
+      public static HashSet<ElementId> ZoneCache { get; private set; } = new();
+
+      /// <summary>
+      /// The ZoneInfoCache object.
+      /// </summary>
+      public static ZoneInfoCache ZoneInfoCache { get; private set; } = new();
+
+      /// <summary>
+      /// Caches the context handle for a particular IfcGeometricRepresentationContext in this
+      /// cache and in the internal cache if necessary.
+      /// </summary>
+      /// <param name="exporterIFC">The exporterIFC class for access to the internal cache.</param>
+      /// <param name="identifier">The identifier.</param>
+      /// <param name="contextHandle">The created context handle.</param>
+      public static void Set3DContextHandle(ExporterIFC exporterIFC, 
+         IFCRepresentationIdentifier identifier, 
+         IFCAnyHandle contextHandle)
+      {
+         string identifierAsString = identifier == IFCRepresentationIdentifier.None ? 
+            string.Empty : identifier.ToString();
+         exporterIFC.Set3DContextHandle(contextHandle, identifierAsString);
+         Context3DHandles[identifier] = contextHandle;
+      }
+
+      /// <summary>
+      /// Get the handle associated to a particular IfcGeometricRepresentationContext.
+      /// </summary>
+      /// <param name="identifier">The identifier.</param>
+      /// <returns>The corresponding IfcGeometricRepresentationContext handle.</returns>
+      public static IFCAnyHandle Get3DContextHandle(IFCRepresentationIdentifier identifier)
+      {
+         if (Context3DHandles.TryGetValue(identifier, out IFCAnyHandle handle))
+            return handle;
+
+         if (!Context3DHandles.TryGetValue(IFCRepresentationIdentifier.None, out IFCAnyHandle context3D))
+            return handle;
+
+         IFCGeometricProjection projection = (identifier == IFCRepresentationIdentifier.Axis) ?
+            IFCGeometricProjection.Graph_View : IFCGeometricProjection.Model_View;
+
+         IFCFile file = ExporterIFC.GetFile();
+         IFCAnyHandle context3DHandle = IFCInstanceExporter.CreateGeometricRepresentationSubContext(file,
+                identifier.ToString(), "Model", context3D, null, projection, null);
+         Set3DContextHandle(ExporterIFC, identifier, context3DHandle);
+         return context3DHandle;
+      }
+
+      /// <summary>
+      /// Determines if we should export ceiling grids.
+      /// </summary>
+      /// <returns>True if the user has chosen to export ceiling grids and ceiling surface patterns are exported.</returns>
+      public static bool ExportCeilingGrids()
+      {
+         if (!ExportOptionsCache.ExportCeilingGrids)
+         {
+            return false;
+         }
+
+         m_ExportCeilingGrids ??= CategoryMappingTemplate?.GetMappingInfoById(Document,
+            new ElementId(BuiltInCategory.OST_CeilingsSurfacePattern), CustomSubCategoryId.None)?.IFCExportFlag ?? false;
+
+         return m_ExportCeilingGrids.Value;
+      }
+
+      /// <summary>
+      /// Keeps track of the active IFC parameter mapping template.
+      /// </summary>
+      static IFCParameterTemplate m_ParameterMappingTemplate = null;
+
+      /// <summary>
+      /// Get the current parameter mapping template.
+      /// </summary>
+      public static IFCParameterTemplate ParameterMappingTemplate
       {
          get
          {
-            if (m_WallConnectionDataCache == null)
-               m_WallConnectionDataCache = new WallConnectionDataCache();
-            return m_WallConnectionDataCache;
+            // TODO: this isn't really correct if we are exporting multiple documents.
+            if (m_ParameterMappingTemplate == null)
+            {
+               try
+               {
+                  string templateName = ExportOptionsCache.PropertySetOptions?.ParameterMappingTemplateName;
+                  if (string.IsNullOrEmpty(templateName))
+                     return null; 
+                  
+                  Document document = ExportOptionsCache.HostDocument ?? Document;
+                  if (document != null)
+                     m_ParameterMappingTemplate = IFCParameterTemplate.FindByName(document, templateName);
+                  
+               }
+               catch
+               {
+                  m_ParameterMappingTemplate = null;
+               }
+
+               if (Document != null && m_ParameterMappingTemplate == null)
+                  m_ParameterMappingTemplate = IFCParameterTemplate.GetOrCreateInSessionTemplate(Document);
+            }
+
+            return m_ParameterMappingTemplate;
+         }
+      }
+
+      public static IFCCategoryTemplate CategoryMappingTemplate
+      {
+         get
+         {
+            if (m_CategoryMappingTemplate == null)
+            {
+               try
+               {
+                  string name = ExportOptionsCache.CategoryMappingTemplateName;
+                  if (name != null)
+                  {
+                     Document documentToUse = ExportOptionsCache.HostDocument ?? Document;
+                     if (documentToUse != null)
+                     {
+                        m_CategoryMappingTemplate = IFCCategoryTemplate.FindByName(documentToUse, name);
+                     }
+                  }
+               }
+               catch
+               {
+                  m_CategoryMappingTemplate = null;
+               }
+
+               bool getFromLink = (m_CategoryMappingTemplate == null);
+               m_CategoryMappingTemplate ??= IFCCategoryTemplate.GetOrCreateInSessionTemplate(Document);
+               if (ExportOptionsCache.HostDocument == null || getFromLink)
+               {
+                  // TODO: This routine currently doesn't work will if the mapping template and the Document we are
+                  // updating the category list from are from different documents.  We need to fix that.
+                  m_CategoryMappingTemplate?.UpdateCategoryList(Document);
+               }
+            }
+
+            return m_CategoryMappingTemplate;
          }
       }
 
       /// <summary>
-      /// The ElementToHandleCache object, used to cache Revit element ids to IFC entity handles.
+      /// Get the handle associated to a particular IfcGeometricRepresentationContext, or create it
+      /// if it doesn't exist.
       /// </summary>
-      public static ElementToHandleCache ElementToHandleCache
+      /// <param name="file">The IFCFile class.</param>
+      /// <param name="identifier">The identifier.</param>
+      /// <returns>The corresponding IfcGeometricRepresentationContext handle.</returns>
+      public static IFCAnyHandle GetOrCreate3DContextHandle(ExporterIFC exporterIFC, 
+         IFCRepresentationIdentifier identifier)
       {
-         get
-         {
-            if (m_ElementToHandleCache == null)
-               m_ElementToHandleCache = new ElementToHandleCache();
-            return m_ElementToHandleCache;
-         }
+         IFCAnyHandle context3d = Get3DContextHandle(identifier);
+         if (!IFCAnyHandleUtil.IsNullOrHasNoValue(context3d))
+            return context3d;
+
+         // This is primarily intended for model curves; we don't
+         // want to add the IfcGeometricRepresentationContext unless it is actually used.
+         if (!Context3DHandles.TryGetValue(IFCRepresentationIdentifier.None, out IFCAnyHandle parent))
+            return null;
+
+         IFCFile file = exporterIFC.GetFile();
+         IFCAnyHandle newContext3D = IFCInstanceExporter.CreateGeometricRepresentationSubContext(
+            file, identifier.ToString(), "Model", parent, null, IFCGeometricProjection.Model_View, null);
+         Set3DContextHandle(exporterIFC, identifier, newContext3D);
+         return newContext3D;
+      }
+      
+      /// <summary>
+      /// Caches the context handle for a particular IfcGeometricRepresentationContext in this
+      /// cache and in the internal cache if necessary.
+      /// </summary>
+      /// <param name="identifier">The identifier.</param>
+      /// <param name="contextHandle">The created context handle.</param>
+      public static void Set2DContextHandle(IFCRepresentationIdentifier identifier,
+         IFCAnyHandle contextHandle)
+      {
+         Context2DHandles[identifier] = contextHandle;
       }
 
       /// <summary>
-      /// The ElementTypeToHandleCache object, used to cache Revit element type ids to IFC entity handles.
+      /// Get the handle associated to a particular IfcGeometricRepresentationContext.
       /// </summary>
-      public static ElementTypeToHandleCache ElementTypeToHandleCache
+      /// <param name="identifier">The identifier.</param>
+      /// <returns>The corresponding IfcGeometricRepresentationContext handle.</returns>
+      public static IFCAnyHandle Get2DContextHandle(IFCRepresentationIdentifier identifier)
       {
-         get
-         {
-            if (m_ElementTypeToHandleCache == null)
-               m_ElementTypeToHandleCache = new ElementTypeToHandleCache();
-            return m_ElementTypeToHandleCache;
-         }
-      }
+         if (Context2DHandles.TryGetValue(identifier, out IFCAnyHandle handle))
+            return handle;
 
-      /// <summary>
-      /// The ExportOptionsCache object.
-      /// </summary>
-      public static ExportOptionsCache ExportOptionsCache
-      {
-         get { return m_ExportOptionsCache; }
-         set { m_ExportOptionsCache = value; }
-      }
-
-      /// <summary>
-      /// The ContainmentCache object.
-      /// </summary>
-      public static ContainmentCache ContainmentCache
-      {
-         get
-         {
-            if (m_ContainmentCache == null)
-               m_ContainmentCache = new ContainmentCache();
-            return m_ContainmentCache;
-         }
-         set { m_ContainmentCache = value; }
+         return null;
       }
 
       /// <summary>
@@ -1048,164 +767,82 @@ namespace Revit.IFC.Export.Utility
       {
          get
          {
-            if (m_ClassificationCache == null)
-               m_ClassificationCache = new ClassificationCache(ExporterCacheManager.Document);
-            return m_ClassificationCache;
+            field ??= new ClassificationCache(Document);
+            return field;
          }
-         set { m_ClassificationCache = value; }
-      }
-
-      public static ClassificationLocationCache ClassificationLocationCache
-      {
-         get
-         {
-            if (m_ClassificationLocationCache == null)
-               m_ClassificationLocationCache = new ClassificationLocationCache();
-            return m_ClassificationLocationCache;
-         }
-         set { m_ClassificationLocationCache = value; }
-      }
-
-      public static ClassificationReferenceCache ClassificationReferenceCache
-      {
-         get
-         {
-            if (m_ClassificationReferenceCache == null)
-               m_ClassificationReferenceCache = new ClassificationReferenceCache();
-            return m_ClassificationReferenceCache;
-         }
-         set { m_ClassificationReferenceCache = value; }
-      }
-
-      /// <summary>
-      /// The UnitsCache object.
-      /// </summary>
-      public static UnitsCache UnitsCache
-      {
-         get
-         {
-            if (m_UnitsCache == null)
-               m_UnitsCache = new UnitsCache();
-            return m_UnitsCache;
-         }
-         set { m_UnitsCache = value; }
-      }
-
-      /// <summary>
-      /// The HostPartsCache object.
-      /// </summary>
-      public static HostPartsCache HostPartsCache
-      {
-         get
-         {
-            if (m_HostPartsCache == null)
-               m_HostPartsCache = new HostPartsCache();
-            return m_HostPartsCache;
+         set 
+         { 
+            field = value; 
          }
       }
 
       /// <summary>
-      /// The DummyHostCache object.
+      /// This class is used to identify property set in cache.
+      /// Current logic uses a combination of instance type and predefined type
+      /// to uniquely identify relation of ifc object and property set.
       /// </summary>
-      public static DummyHostCache DummyHostCache
+      public class PropertySetKey : IComparable<PropertySetKey>
       {
-         get
+         public PropertySetKey(IFCEntityType entityType, string predefinedType)
          {
-            if (m_DummyHostCache == null)
-               m_DummyHostCache = new DummyHostCache();
-            return m_DummyHostCache;
+            EntityType = entityType;
+            PredefinedType = predefinedType;
          }
-      }
 
-      /// <summary>
-      /// The LevelInfoCache object.
-      /// </summary>
-      public static LevelInfoCache LevelInfoCache
-      {
-         get
+         public IFCEntityType EntityType { get; protected set; } = IFCEntityType.UnKnown;
+
+         public string PredefinedType { get; protected set; } = null;
+
+         public int CompareTo(PropertySetKey other)
          {
-            if (m_LevelInfoCache == null)
-               m_LevelInfoCache = new LevelInfoCache();
-            return m_LevelInfoCache;
+            if (other is null) 
+               return 1;
+
+            if (EntityType < other.EntityType)
+               return -1;
+
+            if (EntityType > other.EntityType)
+               return 1;
+
+            if (PredefinedType is null)
+               return other.PredefinedType is null ? 0 : -1;
+            
+            if (other.PredefinedType is null)
+               return 1;
+
+            return PredefinedType.CompareTo(other.PredefinedType);
          }
-      }
 
-      /// <summary>
-      /// The TypePropertyInfoCache object.
-      /// </summary>
-      public static TypePropertyInfoCache TypePropertyInfoCache
-      {
-         get
+         public static bool operator ==(PropertySetKey first, PropertySetKey second)
          {
-            if (m_TypePropertyInfoCache == null)
-               m_TypePropertyInfoCache = new TypePropertyInfoCache();
-            return m_TypePropertyInfoCache;
+            if (first is null)
+               return second is null;
+            
+            if (second is null)
+               return false;
+
+            return first.EntityType == second.EntityType && 
+               first.PredefinedType == second.PredefinedType;
          }
-      }
 
-      /// <summary>
-      /// The PropertyInfoCache object.
-      /// </summary>
-      public static PropertyInfoCache PropertyInfoCache
-      {
-         get
+         public static bool operator !=(PropertySetKey first, PropertySetKey second)
          {
-            if (m_PropertyInfoCache == null)
-               m_PropertyInfoCache = new PropertyInfoCache();
-            return m_PropertyInfoCache;
+            return !(first == second);
          }
-      }
 
-      /// <summary>
-      /// The common property sets to be exported for an entity type, regardless of Object Type.
-      /// </summary>
-      public static IDictionary<IFCEntityType, IList<PropertySetDescription>> PropertySetsForTypeCache
-      {
-         get
+         public override bool Equals(object obj)
          {
-            if (m_PropertySetsForTypeCache == null)
-               m_PropertySetsForTypeCache = new Dictionary<IFCEntityType, IList<PropertySetDescription>>();
-            return m_PropertySetsForTypeCache;
+            if (obj is null)
+               return false;
+
+            PropertySetKey second = obj as PropertySetKey;
+            return this == second;
          }
-      }
 
-      /// <summary>
-      /// The common property sets to be exported for an entity type, conditional on the Object Type of the
-      /// entity matching that of the PropertySetDescription.
-      /// </summary>
-      public static IDictionary<IFCEntityType, IList<PropertySetDescription>> ConditionalPropertySetsForTypeCache
-      {
-         get
+         public override int GetHashCode()
          {
-            if (m_ConditionalPropertySetsForTypeCache == null)
-               m_ConditionalPropertySetsForTypeCache = new Dictionary<IFCEntityType, IList<PropertySetDescription>>();
-            return m_ConditionalPropertySetsForTypeCache;
-         }
-      }
-
-      /// <summary>
-      /// The material id to style handle cache.
-      /// </summary>
-      public static ElementToHandleCache MaterialIdToStyleHandleCache
-      {
-         get
-         {
-            if (m_MaterialIdToStyleHandleCache == null)
-               m_MaterialIdToStyleHandleCache = new ElementToHandleCache();
-            return m_MaterialIdToStyleHandleCache;
-         }
-      }
-
-      /// <summary>
-      /// The elements in assemblies cache.
-      /// </summary>
-      public static ISet<IFCAnyHandle> ElementsInAssembliesCache
-      {
-         get
-         {
-            if (m_ElementsInAssembliesCache == null)
-               m_ElementsInAssembliesCache = new HashSet<IFCAnyHandle>();
-            return m_ElementsInAssembliesCache;
+            return EntityType.GetHashCode() + 
+               (PredefinedType != null ? PredefinedType.GetHashCode() : 0);
          }
       }
 
@@ -1221,177 +858,161 @@ namespace Revit.IFC.Export.Utility
       }
 
       /// <summary>
-      /// The StairRampContainerInfoCache object.
-      /// </summary>
-      public static StairRampContainerInfoCache StairRampContainerInfoCache
-      {
-         get
-         {
-            if (m_StairRampContainerInfoCache == null)
-               m_StairRampContainerInfoCache = new StairRampContainerInfoCache();
-            return m_StairRampContainerInfoCache;
-         }
-      }
-
-      /// <summary>
-      /// The GridCache object.
-      /// </summary>
-      public static List<Element> GridCache
-      {
-         get
-         {
-            if (m_GridCache == null)
-               m_GridCache = new List<Element>();
-            return m_GridCache;
-         }
-      }
-
-      /// <summary>
-      /// This contains the mapping from Level element id to index in the IList returned by GetHostObjects.
-      /// This is redundant with a native list that is being deprecated, which has inadequate API access.
-      /// </summary>
-      public static IDictionary<ElementId, int> HostObjectsLevelIndex
-      {
-         get
-         {
-            if (m_HostObjectsLevelIndex == null)
-               m_HostObjectsLevelIndex = new Dictionary<ElementId, int>();
-            return m_HostObjectsLevelIndex;
-         }
-      }
-
-      /// <summary>
-      /// Ceiling and Space relationship cache. We need it to check whether a Ceiling should be contained in a Space later on when exporting Ceiling
-      /// </summary>
-      public static IDictionary<ElementId, IList<ElementId>> CeilingSpaceRelCache
-      {
-         get
-         {
-            if (m_CeilingSpaceRelCache == null)
-               m_CeilingSpaceRelCache = new Dictionary<ElementId, IList<ElementId>>();
-            return m_CeilingSpaceRelCache;
-         }
-      }
-
-      /// <summary>
-      /// The FabricArea id to FabricSheet handle cache.
-      /// </summary>
-      public static IDictionary<ElementId, HashSet<IFCAnyHandle>> FabricAreaHandleCache
-      {
-         get
-         {
-            if (m_FabricAreaHandleCache == null)
-               m_FabricAreaHandleCache = new Dictionary<ElementId, HashSet<IFCAnyHandle>>();
-            return m_FabricAreaHandleCache;
-         }
-      }
-
-      /// <summary>
       /// The PropertyMap cache
       /// </summary>
       public static IDictionary<Tuple<string, string>, string> PropertyMapCache
       {
          get
          {
-            if (m_PropertyMapCache == null)
-               m_PropertyMapCache = PropertyMap.LoadParameterMap();
-
+            m_PropertyMapCache ??= PropertyMap.LoadParameterMap();
             return m_PropertyMapCache;
          }
       }
 
       /// <summary>
-      /// The CertifiedEntitiesAndPsetCache
-      /// </summary>
-      public static IFCCertifiedEntitiesAndPSets CertifiedEntitiesAndPsetsCache
+      /// A local copy of the internal IfcCartesianPoint for the global 2D origin.
+      public static IFCAnyHandle Global2DOriginHandle
       {
          get
          {
-            if (m_CertifiedEntitiesAndPsetCache == null)
-               m_CertifiedEntitiesAndPsetCache = new IFCCertifiedEntitiesAndPSets();
-
-            return m_CertifiedEntitiesAndPsetCache;
+            m_Global2DOriginHandle ??= ExporterIFCUtils.GetGlobal2DOriginHandle();
+            return m_Global2DOriginHandle;
+         }
+      }
+      
+      /// <summary>
+      /// A local copy of the internal IfcCartesianPoint for the global origin.
+      public static IFCAnyHandle Global3DOriginHandle
+      {
+         get
+         {
+            m_Global3DOriginHandle ??= ExporterIFCUtils.GetGlobal3DOriginHandle();
+            return m_Global3DOriginHandle;
          }
       }
 
       /// <summary>
       /// Clear all caches contained in this manager.
       /// </summary>
-      public static void Clear()
+      public static void Clear(bool fullClear)
       {
-         if (m_AllocatedGeometryObjectCache != null)
-            m_AllocatedGeometryObjectCache.DisposeCache();
-         ParameterUtil.ClearParameterCache();
+         if (fullClear)
+         {
+            m_CategoryMappingTemplate = null;
+            CertifiedEntitiesAndPsetsCache = new IFCCertifiedEntitiesAndPSets(); // No Clear() for this, just remake.
+            ExporterIFC = null;
+            // Preserve the host document across the reset.  In the separate-links export path it is
+            // set (by the UI) on the ExportOptionsCache before the link sub-export begins, and must
+            // survive this clear so that the host document's data (such as the active-view filter and
+            // extended properties) remains available while exporting the linked document.
+            Document priorHostDocument = ExportOptionsCache?.HostDocument;
+            ExportOptionsCache = new() { HostDocument = priorHostDocument };    // This will need to be re-initialized before use.
+            m_Global2DOriginHandle = null;
+            m_Global3DOriginHandle = null;
+            Context2DHandles.Clear();
+            Context3DHandles.Clear();
+            DelayedWarnings = new();
+            GUIDCache.Clear();
+            IFCSchemaEntityTree = null;
+            HostParameterAccess = null;
+            OwnerHistoryHandle = null;
+            ParameterCache.Clear();
+            m_ParameterMappingTemplate = null;
+            ProjectHandle = null;
+            UnitsCache.Clear();
+         }
 
-         m_AllocatedGeometryObjectCache = null;
-         m_AreaSchemeCache = null;
-         m_AssemblyInstanceCache = null;
-         m_BeamSystemCache = null;
-         m_CanExportBeamGeometryAsExtrusionCache = null;
-         m_CategoryClassNameCache = null;
-         m_CategoryTypeCache = null;
-         m_CeilingSpaceRelCache = null;
-         m_ClassificationCache = null;
-         m_ClassificationLocationCache = null;
-         m_ClassificationReferenceCache = null;
-         m_ConditionalPropertySetsForTypeCache = null;
-         m_ContainmentCache = null;
-         m_CurveAnnotationCache = null;
-         m_DBViewsToExport = null;
-         m_DefaultCartesianTransformationOperator3D = null;
-         m_DoorWindowDelayedOpeningCreatorCache = null;
-         m_DummyHostCache = null;
-         m_ElementsInAssembliesCache = null;
-         m_ElementToHandleCache = null;
-         m_ElementTypeToHandleCache = null;
-         m_ExportOptionsCache = null;
-         m_FabricAreaHandleCache = null;
-         m_FamilySymbolToTypeInfoCache = null;
-         m_GridCache = null;
-         m_GroupCache = null;
-         m_GroupElementGeometryCache = null;
-         m_GUIDCache = null;
-         m_GUIDsToStoreCache = null;
-         m_HandleToElementCache = null;
-         m_HostObjectsLevelIndex = null;
-         m_HostPartsCache = null;
-         m_IsExternalParameterValueCache = null;
-         m_LevelInfoCache = null;
-         m_MaterialIdToStyleHandleCache = null;
-         m_MaterialSetUsageCache = null;
-         m_MaterialSetCache = null;
-         //m_MaterialConstituentCache = null;
-         m_MaterialConstituentSetCache = null;
-         m_MaterialHandleCache = null;
-         m_MaterialRelationsCache = null;
-         m_MEPCache = null;
-         m_OwnerHistoryHandle = null;
-         m_ParameterCache = null;
-         m_PartExportedCache = null;
-         m_PresentationLayerSetCache = null;
-         m_PresentationStyleCache = null;
-         m_ProjectHandle = null;
-         m_PropertyInfoCache = null;
-         m_PropertyMapCache = null;
-         m_PropertySetsForTypeCache = null;
-         m_RailingCache = null;
-         m_RailingSubElementCache = null;
-         m_SiteHandle = null;
-         m_SpaceBoundaryCache = null;
-         m_SpaceInfoCache = null;
-         m_SpaceOccupantInfoCache = null;
-         m_StairRampContainerInfoCache = null;
-         m_SystemsCache = null;
-         m_TrussCache = null;
-         m_TypePropertyInfoCache = null;
-         m_TypeRelationsCache = null;
-         m_ViewScheduleElementCache = null;
-         m_WallConnectionDataCache = null;
-         m_UnitsCache = null;
-         m_ZoneCache = null;
-         m_ZoneInfoCache = null;
+         // Special case: if we are sharing the IfcSite, don't clear it after the host
+         // document export.
+         if (fullClear || ExportOptionsCache.ExportLinkedFileAs != LinkedFileExportAs.ExportSameSite)
+         {
+            SiteExportInfo.Clear();
+         }
+
+         AllocatedGeometryObjectCache.DisposeCache();
+         ParameterUtil.ClearParameterValueCaches();
+
+         AreaSchemeCache.Clear();
+         AssemblyInstanceCache.Clear();
+         BaseLinkedDocumentGUID = null;
+         BeamSystemCache.Clear();
          BuildingHandle = null;
-         m_CertifiedEntitiesAndPsetCache = null;
+         CanExportBeamGeometryAsExtrusionCache.Clear();
+         CeilingSpaceRelCache.Clear();
+         ClassificationCache = null;
+         ClassificationLocationCache.Clear();
+         ContainmentCache.Clear();
+         ComplexPropertyCache.Clear();
+         TotalLayerWidthCache.Clear();
+         CreatedInternalPropertySets.Clear();
+         CreatedSpecialPropertySets.Clear();
+         CurveAnnotationCache.Clear();
+         DBViewsToExport.Clear();
+         m_DefaultCartesianTransformationOperator3D = null;
+         DoorWindowDelayedOpeningCreatorCache.Clear();
+         m_DocumentUnits = null;
+         DummyHostCache.Clear();
+         ElementsInAssembliesCache.Clear();
+         ElementIdMaterialParameterCache.Clear();
+         ElementToHandleCache.Clear();
+         ElementTypeToHandleCache.Clear();
+         m_ExportCeilingGrids = null;
+         ExportTypeInfoCache.Clear();
+         FabricAreaHandleCache.Clear();
+         FabricParamsCache.Clear();
+         FamilySymbolToTypeInfoCache.Clear();
+         GridCache.Clear();
+         GroupCache.Clear();
+         GUIDsToStoreCache.Clear();
+         HandleToDeleteCache.Clear();
+         HandleToElementCache.Clear();
+         HostObjectsLevelIndex.Clear();
+         HostPartsCache.Clear();
+         InternallyCreatedRootHandles.Clear();
+         IsExternalParameterValueCache.Clear();
+         LengthPrecision = MathUtil.Eps;
+         LevelInfoCache.Clear();
+         MaterialIdToStyleHandleCache.Clear();
+         MaterialSetUsageCache.Clear();
+         MaterialSetCache.Clear();
+         MaterialConstituentCache.Clear();
+         MaterialConstituentSetCache.Clear();
+         MaterialHandleCache.Clear();
+         MaterialRelationsCache.Clear();
+         MEPCache.Clear();
+         NonSpatialElements.Clear();
+         Object2DCurvesCache.Clear();
+         ParameterAccess = null;
+         ParameterInformationCache.Clear(fullClear);
+         PartExportedCache.Clear();
+         PresentationLayerSetCache.Clear();
+         PresentationStyleAssignmentCache.Clear();
+         PreservedParameterCacheElementIds.Clear();
+         PropertyInfoCache.Clear();
+         PropertyMappingCache.Clear();
+         m_PropertyMapCache = null;
+         PropertySetsForTypeCache.Clear();
+         PreDefinedPropertySetsForTypeCache.Clear();
+         RailingCache.Clear();
+         RailingSubElementCache.Clear();
+         // SelectedSiteProjectLocation is dealt with in ExportOptionsCache.UpdateForDocument().
+         SpaceBoundaryCache.Clear();
+         SpaceInfoCache.Clear();
+         SpaceOccupantInfoCache.Clear();
+         SpaceTypeCache.Clear();
+         StairRampContainerInfoCache.Clear();
+         SystemsCache.Clear();
+         TemporaryPartsCache.Clear();
+         TrussCache.Clear();
+         TypePropertyInfoCache.Clear();
+         TypeRelationsCache.Clear();
+         ViewScheduleElementCache.Clear();
+         WallConnectionDataCache.Clear();
+         WallCrossSectionCache.Clear();
+         ZoneCache.Clear();
+         ZoneInfoCache.Clear();
+         QtoSetCreated.Clear();
+         PreCreatedPsetProperties.Clear();
       }
    }
 }

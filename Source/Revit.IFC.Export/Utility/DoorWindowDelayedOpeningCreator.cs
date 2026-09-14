@@ -17,16 +17,12 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 //
 
-using System;
 using System.Collections.Generic;
-using System.Text;
-using Autodesk.Revit;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
 using Revit.IFC.Common.Enums;
 using Revit.IFC.Common.Utility;
 using Revit.IFC.Export.Toolkit;
-using Revit.IFC.Export.Exporter;
 
 namespace Revit.IFC.Export.Utility
 {
@@ -148,6 +144,49 @@ namespace Revit.IFC.Export.Utility
       }
 
       /// <summary>
+      /// Adds geometries from another creator.
+      /// </summary>
+      /// <param name="otherCreator">The other creator.</param>
+      public void AddGeometry(DoorWindowDelayedOpeningCreator otherCreator)
+      {
+         // Nothing to add.
+         if (!otherCreator.HasValidGeometry)
+         {
+            return;
+         }
+
+         bool copyExtrusionData = otherCreator.ExtrusionData != null;
+         if (ExtrusionData == null && copyExtrusionData)
+         {
+            ExtrusionData = otherCreator.ExtrusionData;
+            copyExtrusionData = false;
+         }
+
+         bool copySolids = otherCreator.Solids != null;
+         if (Solids == null && copySolids)
+         {
+            Solids = otherCreator.Solids;
+            copySolids = false;
+         }
+
+         if (copyExtrusionData)
+         {
+            foreach (IFCExtrusionData extrusionData in otherCreator.ExtrusionData)
+            {
+               ExtrusionData.Add(extrusionData);
+            }
+         }
+
+         if (copySolids)
+         {
+            foreach (Solid solid in otherCreator.Solids)
+            {
+               Solids.Add(solid);
+            }
+         }
+      }
+
+      /// <summary>
       /// Excutes the creator.
       /// </summary>
       /// <param name="exporterIFC">The exporter.</param>
@@ -162,13 +201,14 @@ namespace Revit.IFC.Export.Utility
          IList<DoorWindowOpeningInfo> doorWindowOpeningInfoList = new List<DoorWindowOpeningInfo>();
 
          Element doorElem = doc.GetElement(InsertId);
-         string openingGUID = GUIDUtil.CreateSubElementGUID(doorElem, (int)IFCDoorSubElements.DoorOpening);
+         string levelHash = "Level: " + LevelId.ToString();
          if (ExtrusionData != null)
          {
             foreach (IFCExtrusionData extrusionData in ExtrusionData)
             {
-               if (doorWindowOpeningInfoList.Count > 0)
-                  openingGUID = GUIDUtil.CreateGUID();
+               int index = doorWindowOpeningInfoList.Count;
+               string openingGUID = GUIDUtil.GenerateIFCGuidFrom(
+                  GUIDUtil.CreateGUIDString(doorElem, levelHash + " IfcOpeningElement: " + index.ToString()));
                DoorWindowOpeningInfo openingInfo = DoorWindowUtil.CreateOpeningForDoorWindow(exporterIFC, doc, hostObjHnd,
                    HostId, InsertId, openingGUID, extrusionData.GetLoops()[0], extrusionData.ExtrusionDirection,
                    UnitUtil.UnscaleLength(extrusionData.ScaledExtrusionLength), PosHingeSide, IsRecess);
@@ -181,8 +221,9 @@ namespace Revit.IFC.Export.Utility
          {
             foreach (Solid solid in Solids)
             {
-               if (doorWindowOpeningInfoList.Count > 0)
-                  openingGUID = GUIDUtil.CreateGUID();
+               int index = doorWindowOpeningInfoList.Count;
+               string openingGUID = GUIDUtil.GenerateIFCGuidFrom(
+                  GUIDUtil.CreateGUIDString(doorElem, levelHash + "IfcOpeningElement: " + index.ToString()));
                DoorWindowOpeningInfo openingInfo = DoorWindowUtil.CreateOpeningForDoorWindow(exporterIFC, doc, hostObjHnd,
                    HostId, InsertId, openingGUID, solid, ScaledHostWidth, IsRecess);
                if (openingInfo != null && !IFCAnyHandleUtil.IsNullOrHasNoValue(openingInfo.OpeningHnd))
@@ -214,14 +255,15 @@ namespace Revit.IFC.Export.Utility
                IFCAnyHandle openingHnd = openingInfo.OpeningHnd;
 
                foundOpening = true;
-               string relGUID = GUIDUtil.CreateGUID();
+               string relGUID = GUIDUtil.GenerateIFCGuidFrom(
+                  GUIDUtil.CreateGUIDString(IFCEntityType.IfcRelFillsElement, openingHnd, DoorWindowHnd));
                IFCInstanceExporter.CreateRelFillsElement(file, relGUID, ownerHistory, null, null, openingHnd, DoorWindowHnd);
 
                IFCAnyHandle openingPlacement = IFCAnyHandleUtil.GetObjectPlacement(openingHnd);
                if (!IFCAnyHandleUtil.IsNullOrHasNoValue(openingPlacement))
                {
                   IFCAnyHandle origObjectPlacement = IFCAnyHandleUtil.GetObjectPlacement(DoorWindowHnd);
-                  Transform relTransform = ExporterIFCUtils.GetRelativeLocalPlacementOffsetTransform(origObjectPlacement, openingPlacement);
+                  Transform relTransform = ExporterUtil.GetRelativePlacementOffsetTransform(exporterIFC, origObjectPlacement, openingPlacement);
 
                   IFCAnyHandle newLocalPlacement = ExporterUtil.CreateLocalPlacement(file, openingPlacement,
                       relTransform.Origin, relTransform.BasisZ, relTransform.BasisX);
@@ -240,13 +282,13 @@ namespace Revit.IFC.Export.Utility
                double openingHeight = openingInfo.OpeningHeight;
                double openingWidth = openingInfo.OpeningWidth;
 
-               if (openingHeight > MathUtil.Eps())
+               if (openingHeight > MathUtil.Eps)
                {
                   foundHeight = true;
                   IFCAnyHandleUtil.SetAttribute(DoorWindowHnd, "OverallHeight", UnitUtil.ScaleLength(openingHeight));
                }
 
-               if (openingWidth > MathUtil.Eps())
+               if (openingWidth > MathUtil.Eps)
                {
                   foundWidth = true;
                   IFCAnyHandleUtil.SetAttribute(DoorWindowHnd, "OverallWidth", UnitUtil.ScaleLength(openingWidth));

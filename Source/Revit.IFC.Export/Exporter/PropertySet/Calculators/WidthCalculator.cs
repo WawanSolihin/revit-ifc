@@ -24,6 +24,7 @@ using System.Text;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
 using Revit.IFC.Export.Utility;
+using Revit.IFC.Common.Enums;
 using Revit.IFC.Common.Utility;
 using Revit.IFC.Export.Toolkit;
 
@@ -59,7 +60,7 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// The ExporterIFC object.
       /// </param>
       /// <param name="extrusionCreationData">
-      /// The IFCExtrusionCreationData.
+      /// The IFCExportBodyParams.
       /// </param>
       /// <param name="element">
       /// The element to calculate the value.
@@ -70,7 +71,7 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// <returns>
       /// True if the operation succeed, false otherwise.
       /// </returns>
-      public override bool Calculate(ExporterIFC exporterIFC, IFCExtrusionCreationData extrusionCreationData, Element element, ElementType elementType)
+      public override bool Calculate(ExporterIFC exporterIFC, IFCAnyHandle handle, IFCExportBodyParams extrusionCreationData, Element element, ElementType elementType, EntryMap entryMap)
       {
          ShapeCalculator shapeCalculator = ShapeCalculator.Instance;
          if (shapeCalculator != null && shapeCalculator.GetCurrentElement() == element)
@@ -83,25 +84,61 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
                   // This is already scaled.
                   double? width = IFCAnyHandleUtil.GetDoubleAttribute(rectProfile, "XDim");
                   m_Width = width.HasValue ? width.Value : 0.0;
-                  if (m_Width > MathUtil.Eps())
+                  if (m_Width > MathUtil.Eps)
                      return true;
                }
             }
          }
 
-         if (ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "IfcQtyWidth", out m_Width) == null)
-            ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "Width", out m_Width);
+         (_, m_Width) = ParameterUtil.GetDoubleValueFromElementOrSymbol(element, entryMap.RevitParameterName, entryMap.CompatibleRevitParameterName, "IfcQtyWidth");
 
-         m_Width = UnitUtil.ScaleArea(m_Width);
-         if (m_Width > MathUtil.Eps())
+         if (m_Width > MathUtil.Eps)
+         {
+            m_Width = UnitUtil.ScaleLength(m_Width);
             return true;
+         }
+
+         ElementId categoryId = CategoryUtil.GetSafeCategoryId(element); 
+         IFCAnyHandle hnd = ExporterCacheManager.ElementToHandleCache.Find(element.Id);
+
+         if (IFCAnyHandleUtil.IsSubTypeOf(hnd, IFCEntityType.IfcDoor) || categoryId == new ElementId(BuiltInCategory.OST_Doors))
+         {
+            (_, m_Width) = ParameterUtil.GetDoubleValueFromElementOrSymbol(element, BuiltInParameter.DOOR_WIDTH);
+         }
+         else if (IFCAnyHandleUtil.IsSubTypeOf(hnd, IFCEntityType.IfcWindow) || categoryId == new ElementId(BuiltInCategory.OST_Windows))
+         {
+            (_, m_Width) = ParameterUtil.GetDoubleValueFromElementOrSymbol(element, BuiltInParameter.WINDOW_WIDTH);
+         }
+         else if (IFCAnyHandleUtil.IsSubTypeOf(hnd, IFCEntityType.IfcRampFlight)
+            || IFCAnyHandleUtil.IsSubTypeOf(hnd, IFCEntityType.IfcStairFlight))
+         {
+            (_, m_Width) = ParameterUtil.GetDoubleValueFromElementOrSymbol(element, BuiltInParameter.STAIRS_ATTR_TREAD_WIDTH);
+         }
+         else if (IFCAnyHandleUtil.IsSubTypeOf(hnd, IFCEntityType.IfcCurtainWall))
+         {
+            m_Width = (element as Wall)?.Width ?? 0.0;
+         }
+
+         if (m_Width > MathUtil.Eps)
+         {
+            m_Width = UnitUtil.ScaleLength(m_Width);
+            return true;
+         }
 
          if (extrusionCreationData == null)
             return false;
 
-         // Currently used for Slab Width
-         m_Width = extrusionCreationData.ScaledLength;
-         return m_Width > MathUtil.Eps();
+         // For Slab width is the length of the extrusion of the rectangle area profile (get it from ScaledHeight)
+         if (PropertyUtil.IsWidthLengthReversed(hnd))
+         {
+            m_Width = extrusionCreationData.ScaledHeight;
+         }
+         else
+         {
+            m_Width = extrusionCreationData.ScaledWidth;
+         }
+
+         return m_Width > MathUtil.Eps;
       }
 
       /// <summary>

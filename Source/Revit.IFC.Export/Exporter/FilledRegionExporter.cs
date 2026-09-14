@@ -26,6 +26,7 @@ using Autodesk.Revit.DB;
 using Revit.IFC.Export.Toolkit;
 using Revit.IFC.Export.Utility;
 using Revit.IFC.Common.Utility;
+using Revit.IFC.Common.Enums;
 
 namespace Revit.IFC.Export.Exporter
 {
@@ -39,16 +40,14 @@ namespace Revit.IFC.Export.Exporter
       /// </summary>
       /// <param name="exporterIFC">The ExporterIFC object.</param>
       /// <param name="filledRegion">The filled region element.</param>
-      /// <param name="geometryElement">The geometry element.</param>
       /// <param name="productWrapper">The ProductWrapper.</param>
-      public static void Export(ExporterIFC exporterIFC, FilledRegion filledRegion,
-          GeometryElement geometryElement, ProductWrapper productWrapper)
+      public static void Export(ExporterIFC exporterIFC, FilledRegion filledRegion, ProductWrapper productWrapper)
       {
-         if (filledRegion == null || geometryElement == null)
+         if (filledRegion == null)
             return;
 
          // Check the intended IFC entity or type name is in the exclude list specified in the UI
-         Common.Enums.IFCEntityType elementClassTypeEnum = Common.Enums.IFCEntityType.IfcAnnotation;
+         IFCEntityType elementClassTypeEnum = IFCEntityType.IfcAnnotation;
          if (ExporterCacheManager.ExportOptionsCache.IsElementInExcludeList(elementClassTypeEnum))
             return;
 
@@ -72,6 +71,10 @@ namespace Revit.IFC.Export.Exporter
             Transform orientTrf = GeometryUtil.CreateTransformFromPlane(plane);
             XYZ projectionDirection = plane.Normal;
 
+            Transform curveLcs = orientTrf;
+            if (RepresentationUtil.DocumentMirrorState.IsExportingMirroredLink())
+               curveLcs = orientTrf.Multiply(FederatedLinkManager.MirrorTransform);
+
             IList<IList<CurveLoop>> sortedLoops = ExporterIFCUtils.SortCurveLoops(boundaries);
             if (sortedLoops.Count == 0)
                return;
@@ -82,45 +85,62 @@ namespace Revit.IFC.Export.Exporter
             ElementId categoryId = CategoryUtil.GetSafeCategoryId(filledRegion);
 
             // Check for containment override
-            IFCAnyHandle overrideContainerHnd = null;
-            ElementId overrideContainerId = ParameterUtil.OverrideContainmentParameter(exporterIFC, filledRegion, out overrideContainerHnd);
-
-            using (PlacementSetter setter = PlacementSetter.Create(exporterIFC, filledRegion, null, orientTrf, overrideContainerId, overrideContainerHnd))
+            using (PlacementSetter setter = PlacementSetter.Create(exporterIFC, filledRegion, orientTrf))
             {
-               foreach (IList<CurveLoop> curveLoopList in sortedLoops)
+               IFCAnyHandle ownerHistory = ExporterCacheManager.OwnerHistoryHandle;
+               int loopCount = sortedLoops.Count;
+               IFCAnyHandle localPlacement = setter.LocalPlacement;
+
+               for (int loopIndex = 0; loopIndex < loopCount; loopIndex++)
                {
+                  IList<CurveLoop> curveLoopList = sortedLoops[loopIndex];
                   IFCAnyHandle outerCurve = null;
                   HashSet<IFCAnyHandle> innerCurves = null;
-                  for (int ii = 0; ii < curveLoopList.Count; ii++)
+                  foreach (CurveLoop curveLoop in curveLoopList)
                   {
-                     IFCAnyHandle ifcCurve = GeometryUtil.CreateIFCCurveFromCurveLoop(exporterIFC, curveLoopList[ii], orientTrf, projectionDirection);
-                     if (ii == 0)
-                        outerCurve = ifcCurve;
-                     else
+                     IFCAnyHandle ifcCurve = GeometryUtil.CreateIFCCurveFromCurveLoop(exporterIFC, curveLoop, curveLcs, projectionDirection);
+                     if (IFCAnyHandleUtil.IsNullOrHasNoValue(ifcCurve))
                      {
-                        if (innerCurves == null)
-                           innerCurves = new HashSet<IFCAnyHandle>();
-                        innerCurves.Add(ifcCurve);
+                        if (outerCurve == null)
+                           return;
+                        else
+                           continue;
                      }
+
+                     if (outerCurve == null)
+                     {
+                        outerCurve = ifcCurve;
+                        continue;
+                     }
+
+                     innerCurves ??= new();
+                     innerCurves.Add(ifcCurve);
                   }
 
-                  IFCAnyHandle representItem = IFCInstanceExporter.CreateAnnotationFillArea(file, outerCurve, innerCurves);
+                  IFCAnyHandle representItem = IFCInstanceExporter.CreateAnnotationFillArea(file,
+                     outerCurve, innerCurves);
                   file.CreateStyle(exporterIFC, representItem, color, foregroundPatternId);
 
-                  HashSet<IFCAnyHandle> bodyItems = new HashSet<IFCAnyHandle>();
-                  bodyItems.Add(representItem);
+                  HashSet<IFCAnyHandle> bodyItems = new HashSet<IFCAnyHandle>() { representItem };
+                  IFCAnyHandle context2D = ExporterCacheManager.Get2DContextHandle(IFCRepresentationIdentifier.Annotation);
                   IFCAnyHandle bodyRepHnd = RepresentationUtil.CreateAnnotationSetRep(exporterIFC, filledRegion, categoryId,
-                      exporterIFC.Get2DContextHandle(), bodyItems);
+                     context2D, bodyItems, false);
 
                   if (IFCAnyHandleUtil.IsNullOrHasNoValue(bodyRepHnd))
                      return;
 
-                  List<IFCAnyHandle> shapeReps = new List<IFCAnyHandle>();
-                  shapeReps.Add(bodyRepHnd);
+                  List<IFCAnyHandle> shapeReps = new List<IFCAnyHandle>() { bodyRepHnd };
 
-                  IFCAnyHandle productShape = IFCInstanceExporter.CreateProductDefinitionShape(file, null, null, shapeReps);
-                  IFCAnyHandle annotation = IFCInstanceExporter.CreateAnnotation(exporterIFC, filledRegion, GUIDUtil.CreateGUID(), ExporterCacheManager.OwnerHistoryHandle,
-                       setter.LocalPlacement, productShape);
+                  string index = (loopIndex + 1).ToString();
+                  string annotationGuid = GUIDUtil.GenerateIFCGuidFrom(
+                     GUIDUtil.CreateGUIDString(filledRegion, index));
+                  IFCAnyHandle productShape = IFCInstanceExporter.CreateProductDefinitionShape(file, 
+                     null, null, shapeReps);
+                  IFCAnyHandle currentLocalPlacement = (loopIndex == 0) ? localPlacement : 
+                     ExporterUtil.CopyLocalPlacement(file, localPlacement);
+                  IFCAnyHandle annotation = IFCInstanceExporter.CreateAnnotation(exporterIFC, 
+                     filledRegion, annotationGuid, ownerHistory, currentLocalPlacement, 
+                     productShape, null);
 
                   productWrapper.AddAnnotation(annotation, setter.LevelInfo, true);
                }

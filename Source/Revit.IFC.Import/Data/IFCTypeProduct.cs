@@ -21,9 +21,12 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
 using Revit.IFC.Common.Enums;
 using Revit.IFC.Common.Utility;
+using Revit.IFC.Import.Enums;
+using Revit.IFC.Import.Utility;
 
 namespace Revit.IFC.Import.Data
 {
@@ -83,7 +86,7 @@ namespace Revit.IFC.Import.Data
             return;
          }
 
-         string repType = representationMap.MappedRepresentation.Type;
+         string repType = representationMap.MappedRepresentation.RepresentationType;
          if (repType == null)
             repType = string.Empty;
 
@@ -114,8 +117,11 @@ namespace Revit.IFC.Import.Data
 
          Tag = IFCAnyHandleUtil.GetStringAttribute(ifcTypeProduct, "Tag");
 
+         if (IFCImportHybridInfo.IsValidElementId(IFCImportHybridInfo.GetHybridMapInformation(Id)))
+            return;
+
          IList<IFCAnyHandle> representationMapsHandle = IFCAnyHandleUtil.GetAggregateInstanceAttribute<List<IFCAnyHandle>>(ifcTypeProduct, "RepresentationMaps");
-         if (representationMapsHandle != null && representationMapsHandle.Count > 0)
+         if (representationMapsHandle?.Count > 0)
          {
             foreach (IFCAnyHandle representationMapHandle in representationMapsHandle)
             {
@@ -151,10 +157,14 @@ namespace Revit.IFC.Import.Data
          if (IFCImportFile.TheFile.EntityMap.TryGetValue(ifcTypeProduct.StepId, out typeProduct))
             return (typeProduct as IFCTypeProduct);
 
-         if (IFCAnyHandleUtil.IsSubTypeOf(ifcTypeProduct, IFCEntityType.IfcDoorStyle))
+         if (IFCImportFile.TheFile.SchemaVersionAtLeast(IFCSchemaVersion.IFC4Obsolete) && 
+            IFCAnyHandleUtil.IsValidSubTypeOf(ifcTypeProduct, IFCEntityType.IfcDoorType))
+               return IFCDoorType.ProcessIFCDoorType(ifcTypeProduct);
+
+         if (IFCAnyHandleUtil.IsValidSubTypeOf(ifcTypeProduct, IFCEntityType.IfcDoorStyle))
             return IFCDoorStyle.ProcessIFCDoorStyle(ifcTypeProduct);
 
-         if (IFCAnyHandleUtil.IsSubTypeOf(ifcTypeProduct, IFCEntityType.IfcElementType))
+         if (IFCAnyHandleUtil.IsValidSubTypeOf(ifcTypeProduct, IFCEntityType.IfcElementType))
             return IFCElementType.ProcessIFCElementType(ifcTypeProduct);
 
          return new IFCTypeProduct(ifcTypeProduct);

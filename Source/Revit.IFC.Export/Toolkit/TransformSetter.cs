@@ -24,6 +24,7 @@ using System.Text;
 using Autodesk.Revit.DB.IFC;
 using Autodesk.Revit.DB;
 using Revit.IFC.Common.Utility;
+using Revit.IFC.Export.Exporter;
 using Revit.IFC.Export.Utility;
 
 namespace Revit.IFC.Export.Toolkit
@@ -93,7 +94,7 @@ namespace Revit.IFC.Export.Toolkit
       /// <returns>The transform corresponding to the movement, if any.</returns>
       /// <remarks>This method will eventually be obsoleted by the InitializeFromBoundingBox/CreateLocalPlacementFromOffset pair below, which delays creating or updating the local placement
       /// until we are certain we will use it, saving time and reducing wasted line numbers.</remarks>
-      public Transform InitializeFromBoundingBox(ExporterIFC exporterIFC, IList<GeometryObject> geometryList, IFCExtrusionCreationData ecData)
+      public Transform InitializeFromBoundingBox(ExporterIFC exporterIFC, IList<GeometryObject> geometryList, IFCExportBodyParams ecData)
       {
          if (ecData == null)
             return null;
@@ -107,9 +108,9 @@ namespace Revit.IFC.Export.Toolkit
 
             // If the BBox passes through (0,0, 0), or no bbox, do nothing.
             if (bbox == null ||
-                ((bbox.Min.X < MathUtil.Eps() && bbox.Max.X > -MathUtil.Eps()) &&
-                 (bbox.Min.Y < MathUtil.Eps() && bbox.Max.Y > -MathUtil.Eps()) &&
-                 (bbox.Min.Z < MathUtil.Eps() && bbox.Max.Z > -MathUtil.Eps())))
+                ((bbox.Min.X < MathUtil.Eps && bbox.Max.X > -MathUtil.Eps) &&
+                 (bbox.Min.Y < MathUtil.Eps && bbox.Max.Y > -MathUtil.Eps) &&
+                 (bbox.Min.Z < MathUtil.Eps && bbox.Max.Z > -MathUtil.Eps)))
             {
                if (!ecData.ReuseLocalPlacement)
                   ecData.SetLocalPlacement(ExporterUtil.CopyLocalPlacement(file, localPlacement));
@@ -124,6 +125,13 @@ namespace Revit.IFC.Export.Toolkit
             XYZ lpOrig = scaledTrf.OfPoint(scaledOrig);
             if (!ecData.AllowVerticalOffsetOfBReps)
                lpOrig = new XYZ(lpOrig.X, lpOrig.Y, 0.0);
+
+            if (RepresentationUtil.DocumentMirrorState.IsExportingMirroredLink())
+            {
+               Transform mirrorTrf = FederatedLinkManager.MirrorTransform;
+               if (mirrorTrf != null)
+                  lpOrig = mirrorTrf.OfPoint(lpOrig);
+            }
 
             Transform scaledTrfInv = scaledTrf.Inverse;
             XYZ scaledInvOrig = scaledTrfInv.OfPoint(XYZ.Zero);
@@ -198,18 +206,23 @@ namespace Revit.IFC.Export.Toolkit
       }
 
       /// <summary>
-      ///    Initializes the transformation in the transform setter.
+      /// Initializes the transformation in the transform setter.
       /// </summary>
       /// <param name="exporterIFC">The exporter.</param>
       /// <param name="bbox">The bounding box.</param>
       /// <param name="ecData">The extrusion creation data which contains the local placement.</param>
       /// <param name="unscaledTrfOrig">The scaled local placement origin.</param>
+      /// <param name="location">The optional location.</param>
+      /// <param name="useInstanceGeometry">True if the instance geometry is used.</param>
       /// <returns>The transform corresponding to the movement, if any.</returns>
-      public Transform InitializeFromBoundingBox(ExporterIFC exporterIFC, BoundingBoxXYZ bbox, IFCExtrusionCreationData ecData, out XYZ unscaledTrfOrig)
+      public Transform InitializeFromBoundingBox(ExporterIFC exporterIFC, BoundingBoxXYZ bbox, IFCExportBodyParams ecData, Location location, bool useInstanceGeometry, out XYZ unscaledTrfOrig)
       {
          unscaledTrfOrig = new XYZ();
          if (ecData == null)
             return null;
+
+         LocationCurve locationCurve = location as LocationCurve;
+         LocationPoint locationPoint = location as LocationPoint;
 
          Transform trf = Transform.Identity;
          IFCAnyHandle localPlacement = ecData.GetLocalPlacement();
@@ -219,13 +232,33 @@ namespace Revit.IFC.Export.Toolkit
 
             // If the BBox passes through (0,0, 0), or no bbox, do nothing.
             if (bbox == null ||
-                ((bbox.Min.X < MathUtil.Eps() && bbox.Max.X > -MathUtil.Eps()) &&
-                 (bbox.Min.Y < MathUtil.Eps() && bbox.Max.Y > -MathUtil.Eps()) &&
-                 (bbox.Min.Z < MathUtil.Eps() && bbox.Max.Z > -MathUtil.Eps())))
+                ((bbox.Min.X < MathUtil.Eps && bbox.Max.X > -MathUtil.Eps) &&
+                 (bbox.Min.Y < MathUtil.Eps && bbox.Max.Y > -MathUtil.Eps) &&
+                 (bbox.Min.Z < MathUtil.Eps && bbox.Max.Z > -MathUtil.Eps)))
                return trf;
 
-            XYZ bboxMin = bbox.Min;
-            XYZ scaledOrig = UnitUtil.ScaleLength(bboxMin);
+            XYZ corner = bbox.Min;
+
+            // Rise the origin to the top corner for some linear inclined geometries
+            // to fix the problem of misalignment between Body and 'Curve2D' Axis
+            if (locationCurve != null && locationCurve.Curve is Line)
+            {
+               XYZ lineDir = (locationCurve.Curve as Line).Direction;
+               double angle = 0.0;
+               if (!MathUtil.IsAlmostZero(lineDir.X))
+                  angle = Math.Atan2(lineDir.Z, lineDir.X);
+               else
+                  angle = Math.Atan2(lineDir.Z, lineDir.Y);
+
+               if (angle > 0.5 * Math.PI && angle < Math.PI || angle > -0.5 * Math.PI && angle < 0)
+                  corner = new XYZ(corner.X, corner.Y, bbox.Max.Z);
+            }
+            else if (useInstanceGeometry && locationPoint != null)
+            {
+               corner = new XYZ(0.0, 0.0, locationPoint.Point.Z);
+            }
+
+            XYZ scaledOrig = UnitUtil.ScaleLength(corner);
 
             Transform scaledTrf = GeometryUtil.GetScaledTransform(exporterIFC);
 
@@ -238,7 +271,7 @@ namespace Revit.IFC.Export.Toolkit
 
             XYZ unscaledInvOrig = UnitUtil.UnscaleLength(scaledInvOrig);
 
-            unscaledTrfOrig = unscaledInvOrig - bboxMin;
+            unscaledTrfOrig = unscaledInvOrig - corner;
             if (!ecData.AllowVerticalOffsetOfBReps)
                unscaledTrfOrig = new XYZ(unscaledTrfOrig.X, unscaledTrfOrig.Y, 0.0);
 
@@ -288,7 +321,7 @@ namespace Revit.IFC.Export.Toolkit
                   }
                }
 
-               trf.Origin = lpOrig;
+               trf.Origin = UnitUtil.UnscaleLength(lpOrig);
             }
          }
          return trf;
@@ -302,7 +335,7 @@ namespace Revit.IFC.Export.Toolkit
       /// <param name="ecData">The extrusion creation data which contains the local placement.</param>
       /// <param name="lpOrig">The local placement origin.</param>
       /// <param name="unscaledTrfOrig">The unscaled local placement origin.</param>
-      public void CreateLocalPlacementFromOffset(ExporterIFC exporterIFC, BoundingBoxXYZ bbox, IFCExtrusionCreationData ecData, XYZ lpOrig, XYZ unscaledTrfOrig)
+      public void CreateLocalPlacementFromOffset(ExporterIFC exporterIFC, BoundingBoxXYZ bbox, IFCExportBodyParams ecData, XYZ lpOrig, XYZ unscaledTrfOrig)
       {
          if (ecData == null)
             return;
@@ -314,9 +347,9 @@ namespace Revit.IFC.Export.Toolkit
 
             // If the BBox passes through (0,0, 0), or no bbox, do nothing.
             if (bbox == null ||
-                ((bbox.Min.X < MathUtil.Eps() && bbox.Max.X > -MathUtil.Eps()) &&
-                 (bbox.Min.Y < MathUtil.Eps() && bbox.Max.Y > -MathUtil.Eps()) &&
-                 (bbox.Min.Z < MathUtil.Eps() && bbox.Max.Z > -MathUtil.Eps())))
+                ((bbox.Min.X < MathUtil.Eps && bbox.Max.X > -MathUtil.Eps) &&
+                 (bbox.Min.Y < MathUtil.Eps && bbox.Max.Y > -MathUtil.Eps) &&
+                 (bbox.Min.Z < MathUtil.Eps && bbox.Max.Z > -MathUtil.Eps)))
             {
                if (!ecData.ReuseLocalPlacement)
                   ecData.SetLocalPlacement(ExporterUtil.CopyLocalPlacement(file, localPlacement));

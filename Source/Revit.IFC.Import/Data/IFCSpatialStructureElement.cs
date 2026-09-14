@@ -33,7 +33,7 @@ namespace Revit.IFC.Import.Data
    /// <summary>
    /// Represents an IfcSpatialStructureElement.
    /// </summary>
-   public class IFCSpatialStructureElement : IFCProduct
+   public class IFCSpatialStructureElement : IFCSpatialElement
    {
       HashSet<IFCProduct> m_IFCProducts = null;
 
@@ -120,19 +120,19 @@ namespace Revit.IFC.Import.Data
       {
          base.CreateParametersInternal(doc, element);
 
+         if (element == null)
+            return;
 
-         if (element != null)
+         // Set "ObjectTypeOverride" parameter.
+         string longName = LongName;
+         if (!string.IsNullOrWhiteSpace(longName))
          {
-            // Set "ObjectTypeOverride" parameter.
-            string longName = LongName;
-            if (!string.IsNullOrWhiteSpace(longName))
-            {
-               string parameterName = "LongNameOverride";
-               if (element is ProjectInfo)
-                  parameterName = EntityType.ToString() + " " + parameterName;
+            string parameterName = "LongNameOverride";
+            if (element is ProjectInfo)
+               parameterName = EntityType.ToString() + " " + parameterName;
 
-               IFCPropertySet.AddParameterString(doc, element, parameterName, longName, Id);
-            }
+            Category category = IFCPropertySet.GetCategoryForParameterIfValid(element, Id);
+            ParametersToSet.AddStringParameter(doc, element, category, this, parameterName, longName, Id);
          }
       }
 
@@ -157,7 +157,7 @@ namespace Revit.IFC.Import.Data
                ProcessIFCRelContainedInSpatialStructure(elem);
          }
 
-         if (IFCImportFile.TheFile.SchemaVersion > IFCSchemaVersion.IFC2x || IFCAnyHandleUtil.IsSubTypeOf(ifcSpatialStructureElement, IFCEntityType.IfcBuilding))
+         if (IFCImportFile.TheFile.SchemaVersionAtLeast(IFCSchemaVersion.IFC2x2) || IFCAnyHandleUtil.IsSubTypeOf(ifcSpatialStructureElement, IFCEntityType.IfcBuilding))
          {
             HashSet<IFCAnyHandle> systemSet =
              IFCAnyHandleUtil.GetAggregateInstanceAttribute<HashSet<IFCAnyHandle>>(ifcSpatialStructureElement, "ServicedBySystems");
@@ -218,6 +218,83 @@ namespace Revit.IFC.Import.Data
          IFCSystem system = IFCSystem.ProcessIFCSystem(relatingSystem);
          if (system != null)
             Systems.Add(system);
+      }
+
+      protected void TryToFixFarawayOrigin()
+      {
+         // If we are using ATF, it should fix coordinate issues for us.
+         if (Importer.TheOptions.HybridImportOptions != null)
+         {
+            return;
+         }
+
+         if (!(ProjectScope?.IsSet ?? false))
+            return;
+
+         // It is amazing that this works at all, but basically if we set the ProjectScope,
+         // and it has a reasonable bounding box size that is far from the origin, and
+         // the relative (non-shared) portion of this spatial element (building or
+         // building storey only) is also far from the origin and close to the bounding box,
+         // then we move it closer to the origin by subtracting the min corner of the
+         // bounding box.
+         // This fixes some cases where we have buildings or building stories that are really
+         // far from the origin but aren't all over the place.
+         // Real solution: don't create this data.
+         // There may be some better solution, but this is a compromise between not doing
+         // anything at all and not having a regression in old code that just moved stuff
+         // back to the origin.
+         XYZ relativeOrigin = ObjectLocation?.RelativeTransform?.Origin;
+         if (relativeOrigin != null && !XYZ.IsWithinLengthLimits(relativeOrigin))
+         {
+            if (XYZ.IsWithinLengthLimits(ProjectScope.Max - ProjectScope.Min) &&
+               XYZ.IsWithinLengthLimits(relativeOrigin - ProjectScope.Min))
+            {
+               ObjectLocation.RelativeTransform.Origin -= ProjectScope.Min;
+            }
+         }
+      }
+
+      protected void CreatePostalParameters(Document doc, Element element, IFCPostalAddress postalAddress)
+      {
+         if (element is ProjectInfo && postalAddress != null)
+         {
+            Category category = IFCPropertySet.GetCategoryForParameterIfValid(element, Id);
+            string typeName = EntityType.ToString() + " ";
+
+            if (!string.IsNullOrWhiteSpace(postalAddress.Purpose))
+               ParametersToSet.AddStringParameter(doc, element, category, this, typeName + "Purpose", postalAddress.Purpose, Id);
+
+            if (!string.IsNullOrWhiteSpace(postalAddress.Description))
+               ParametersToSet.AddStringParameter(doc, element, category, this, typeName + "Description", postalAddress.Description, Id);
+
+            if (!string.IsNullOrWhiteSpace(postalAddress.UserDefinedPurpose))
+               ParametersToSet.AddStringParameter(doc, element, category, this, typeName + "UserDefinedPurpose", postalAddress.UserDefinedPurpose, Id);
+
+            if (!string.IsNullOrWhiteSpace(postalAddress.InternalLocation))
+               ParametersToSet.AddStringParameter(doc, element, category, this, typeName + "InternalLocation", postalAddress.InternalLocation, Id);
+
+            if (!string.IsNullOrWhiteSpace(postalAddress.PostalBox))
+               ParametersToSet.AddStringParameter(doc, element, category, this, typeName + "PostalBox", postalAddress.PostalBox, Id);
+
+            if (!string.IsNullOrWhiteSpace(postalAddress.Town))
+               ParametersToSet.AddStringParameter(doc, element, category, this, typeName + "Town", postalAddress.Town, Id);
+
+            if (!string.IsNullOrWhiteSpace(postalAddress.Region))
+               ParametersToSet.AddStringParameter(doc, element, category, this, typeName + "Region", postalAddress.Region, Id);
+
+            if (!string.IsNullOrWhiteSpace(postalAddress.PostalCode))
+               ParametersToSet.AddStringParameter(doc, element, category, this, typeName + "PostalCode", postalAddress.PostalCode, Id);
+
+            if (!string.IsNullOrWhiteSpace(postalAddress.Country))
+               ParametersToSet.AddStringParameter(doc, element, category, this, typeName + "Country", postalAddress.Country, Id);
+
+            if (postalAddress.AddressLines != null)
+            {
+               string jointAddress = string.Join(", ", postalAddress.AddressLines);
+               if (!string.IsNullOrWhiteSpace(jointAddress))
+                  ParametersToSet.AddStringParameter(doc, element, category, this, typeName + "AddressLines", jointAddress, Id);
+            }
+         }
       }
 
       /// <summary>

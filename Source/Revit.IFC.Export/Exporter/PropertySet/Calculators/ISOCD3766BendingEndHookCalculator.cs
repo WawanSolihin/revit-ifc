@@ -56,13 +56,13 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// Calculates the end hook angle for a rebar.
       /// </summary>
       /// <param name="exporterIFC">The ExporterIFC object.</param>
-      /// <param name="extrusionCreationData">The IFCExtrusionCreationData.</param>
+      /// <param name="extrusionCreationData">The IFCExportBodyParams.</param>
       /// <param name="element">The element to calculate the value.</param>
       /// <param name="elementType">The element type.</param>
       /// <returns>
       /// True if the operation succeed, false otherwise.
       /// </returns>
-      public override bool Calculate(ExporterIFC exporterIFC, IFCExtrusionCreationData extrusionCreationData, Element element, ElementType elementType)
+      public override bool Calculate(ExporterIFC exporterIFC, IFCAnyHandle handle, IFCExportBodyParams extrusionCreationData, Element element, ElementType elementType, EntryMap entryMap)
       {
          if (element is Rebar)
          {
@@ -79,7 +79,7 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
 
          if (bendData != null)
          {
-            if (bendData.HookLength1 > MathUtil.Eps())
+            if (bendData.HookLength1 > MathUtil.Eps)
             {
                // HookAngle1 is already in degress, so convert to radians and then scale.
                double hookAngleInRadians = bendData.HookAngle1 * (Math.PI / 180.0);

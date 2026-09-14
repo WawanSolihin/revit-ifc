@@ -26,6 +26,7 @@ using Autodesk.Revit.DB.Architecture;
 using Autodesk.Revit.DB.IFC;
 using Revit.IFC.Export.Utility;
 using Revit.IFC.Common.Utility;
+using Revit.IFC.Common.Enums;
 
 namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
 {
@@ -59,7 +60,7 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// The ExporterIFC object.
       /// </param>
       /// <param name="extrusionCreationData">
-      /// The IFCExtrusionCreationData.
+      /// The IFCExportBodyParams.
       /// </param>
       /// <param name="element">
       /// The element to calculate the value.
@@ -70,11 +71,11 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// <returns>
       /// True if the operation succeed, false otherwise.
       /// </returns>
-      public override bool Calculate(ExporterIFC exporterIFC, IFCExtrusionCreationData extrusionCreationData, Element element, ElementType elementType)
+      public override bool Calculate(ExporterIFC exporterIFC, IFCAnyHandle handle, IFCExportBodyParams extrusionCreationData, Element element, ElementType elementType, EntryMap entryMap)
       {
-         double lengthFromParam = 0;
-         if (ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "IfcQtyLength", out lengthFromParam) == null)
-            ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "Length", out lengthFromParam);
+         (_, double lengthFromParam) = ParameterUtil.GetDoubleValueFromElementOrSymbol(element, entryMap.RevitParameterName, 
+            entryMap.CompatibleRevitParameterName, "IfcQtyLength");
+
          m_Length = UnitUtil.ScaleLength(lengthFromParam);
 
          // Check for Stair Run - Do special computation for the length
@@ -83,32 +84,62 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
             StairsRun flight = element as StairsRun;
             double flightLen = flight.GetStairsPath().GetExactLength();
             flightLen = UnitUtil.ScaleLength(flightLen);
-            if (flightLen > MathUtil.Eps())
+            if (flightLen > MathUtil.Eps)
             {
                m_Length = flightLen;
                return true;
             }
             // consider override as specified in a parameter
-            else if (m_Length > MathUtil.Eps())
+            else if (m_Length > MathUtil.Eps)
                return true;
             // exit when none for StairsRun
             else
                return false;
          }
+         else if (element is Railing)
+         {
+            (_, lengthFromParam) = ParameterUtil.GetDoubleValueFromElementOrSymbol(element, BuiltInParameter.CURVE_ELEM_LENGTH);
+            m_Length = UnitUtil.ScaleLength(lengthFromParam);
+         }
+         else if (element is Wall)
+         {
+            Wall wallElement = element as Wall;
+            if (wallElement != null && wallElement.Location != null)
+            {
+               Curve wallAxis = (wallElement.Location as LocationCurve).Curve;
+               if (wallAxis != null)
+               {
+                  m_Length = UnitUtil.ScaleLength(wallAxis.Length);
+               }
+            }
+         }
 
          // For others
-         if (m_Length > MathUtil.Eps())
+         if (m_Length > MathUtil.Eps)
             return true;
 
          if (extrusionCreationData == null)
          {
-            if (ParameterUtil.GetDoubleValueFromElement(element, BuiltInParameter.EXTRUSION_LENGTH, out m_Length) != null)
-               m_Length = UnitUtil.ScaleLength(m_Length);
+            if (ParameterUtil.TryGetDoubleValueFromElement(element.Id, BuiltInParameter.EXTRUSION_LENGTH) is double lengthVal)
+               m_Length = UnitUtil.ScaleLength(lengthVal);
          }
          else
-            m_Length = extrusionCreationData.ScaledLength;
+         {
+            // For Slab, length is the major edge of the rectangle area profile (get it from ScaledWidth)
+            // Also for Stair support
+            IFCAnyHandle hnd = ExporterCacheManager.ElementToHandleCache.Find(element.Id);
+            if (PropertyUtil.IsWidthLengthReversed(hnd) ||
+               CategoryUtil.GetSafeCategoryId(element).Value == (long)BuiltInCategory.OST_StairsStringerCarriage)
+            {
+               m_Length = extrusionCreationData.ScaledWidth;
+            }
+            else
+            {
+               m_Length = extrusionCreationData.ScaledLength;
+            }
+         }
 
-         if (m_Length > MathUtil.Eps())
+         if (m_Length > MathUtil.Eps)
             return true;
 
          return false;

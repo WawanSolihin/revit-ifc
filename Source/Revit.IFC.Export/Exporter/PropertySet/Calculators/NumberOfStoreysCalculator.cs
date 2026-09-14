@@ -23,6 +23,7 @@ using System.Linq;
 using System.Text;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
+using Revit.IFC.Export.Utility;
 
 namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
 {
@@ -56,7 +57,7 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// The ExporterIFC object.
       /// </param>
       /// <param name="extrusionCreationData">
-      /// The IFCExtrusionCreationData.
+      /// The IFCExportBodyParams.
       /// </param>
       /// <param name="element,">
       /// The element to calculate the value.
@@ -67,9 +68,9 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// <returns>
       /// True if the operation succeed, false otherwise.
       /// </returns>
-      public override bool Calculate(ExporterIFC exporterIFC, IFCExtrusionCreationData extrusionCreationData, Element element, ElementType elementType)
+      public override bool Calculate(ExporterIFC exporterIFC, IFCAnyHandle handle, IFCExportBodyParams extrusionCreationData, Element element, ElementType elementType, EntryMap entryMap)
       {
-         m_NumberOfStoreys = ExporterIFCUtils.GetNumBuildingStoreys(exporterIFC);
+         m_NumberOfStoreys = ExporterCacheManager.LevelInfoCache?.LevelsById?.Count ?? 0;
          return true;
       }
 
@@ -80,6 +81,17 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// The integer value.
       /// </returns>
       public override int GetIntValue()
+      {
+         return m_NumberOfStoreys;
+      }
+
+      /// <summary>
+      /// Gets the calculated double value.
+      /// </summary>
+      /// <returns>
+      /// The double value.
+      /// </returns>
+      public override double GetDoubleValue()
       {
          return m_NumberOfStoreys;
       }

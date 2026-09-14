@@ -23,6 +23,7 @@ using Autodesk.Revit.DB.IFC;
 using Revit.IFC.Export.Utility;
 using Revit.IFC.Export.Toolkit;
 using Revit.IFC.Common.Utility;
+using System.Collections.Generic;
 
 namespace Revit.IFC.Export.Exporter
 {
@@ -88,13 +89,9 @@ namespace Revit.IFC.Export.Exporter
 
          using (IFCTransaction tr = new IFCTransaction(file))
          {
-            // Check for containment override
-            IFCAnyHandle overrideContainerHnd = null;
-            ElementId overrideContainerId = ParameterUtil.OverrideContainmentParameter(exporterIFC, element, out overrideContainerHnd);
-
-            using (PlacementSetter setter = PlacementSetter.Create(exporterIFC, element, null, null, overrideContainerId, overrideContainerHnd))
+            using (PlacementSetter setter = PlacementSetter.Create(exporterIFC, element, null))
             {
-               using (IFCExtrusionCreationData ecData = new IFCExtrusionCreationData())
+               using (IFCExportBodyParams ecData = new IFCExportBodyParams())
                {
                   ecData.SetLocalPlacement(setter.LocalPlacement);
 
@@ -105,7 +102,7 @@ namespace Revit.IFC.Export.Exporter
                      ElementId catId = CategoryUtil.GetSafeCategoryId(element);
 
 
-                     matId = BodyExporter.GetBestMaterialIdFromGeometryOrParameter(geometryElement, exporterIFC, element);
+                     matId = BodyExporter.GetBestMaterialIdFromGeometryOrParameter(geometryElement, element);
                      BodyExporterOptions bodyExporterOptions = new BodyExporterOptions(true, ExportOptionsCache.ExportTessellationLevel.ExtraLow);
                      prodRep = RepresentationUtil.CreateAppropriateProductDefinitionShape(exporterIFC,
                         element, catId, geometryElement, bodyExporterOptions, null, ecData, true);
@@ -119,27 +116,25 @@ namespace Revit.IFC.Export.Exporter
                   string instanceGUID = GUIDUtil.CreateGUID(element);
 
                   string footingType = GetIFCFootingType(ifcEnumType);    // need to keep it for legacy support when original data follows slightly diff naming
-                                                                          //footingType = IFCValidateEntry.GetValidIFCPredefinedType(element, footingType, "IfcFootingType");
-                  IFCExportInfoPair exportInfo = new IFCExportInfoPair();
-                  exportInfo.SetValueWithPair(elementClassTypeEnum, footingType);
-
-                  IFCAnyHandle footing = IFCInstanceExporter.CreateFooting(exporterIFC, element, instanceGUID, ExporterCacheManager.OwnerHistoryHandle,
-                      ecData.GetLocalPlacement(), prodRep, footingType);
-
+                  IFCExportInfoPair exportInfo = new IFCExportInfoPair(elementClassTypeEnum, footingType);
                   // TODO: to allow shared geometry for Footings. For now, Footing export will not use shared geometry
-                  if (exportInfo.ExportType != Common.Enums.IFCEntityType.UnKnown)
-                  {
-                     IFCAnyHandle type = ExporterUtil.CreateGenericTypeFromElement(element, exportInfo, file, ExporterCacheManager.OwnerHistoryHandle, exportInfo.ValidatedPredefinedType, productWrapper);
-                     ExporterCacheManager.TypeRelationsCache.Add(type, footing);
-                  }
+                  IFCAnyHandle typeHandle = (exportInfo.ExportType != Common.Enums.IFCEntityType.UnKnown) ?
+                     ExporterUtil.CreateGenericTypeFromElement(element, exportInfo, file, productWrapper) : null;
+
+                  IFCAnyHandle footing = IFCInstanceExporter.CreateGenericIFCEntity(exportInfo, file, element, typeHandle, instanceGUID,
+                     ExporterCacheManager.OwnerHistoryHandle, ecData.GetLocalPlacement(), prodRep);
+                  if (IFCAnyHandleUtil.IsNullOrHasNoValue(footing))
+                     return;
+
+                  ExporterCacheManager.TypeRelationsCache.Add(typeHandle, footing);
 
                   if (exportParts)
                   {
-                     PartExporter.ExportHostPart(exporterIFC, element, footing, productWrapper, setter, setter.LocalPlacement, null);
+                     PartExporter.ExportHostPart(exporterIFC, element, footing, setter, setter.LocalPlacement, null);
                   }
                   else
                   {
-                     if (matId != ElementId.InvalidElementId)
+                     if (!MathUtil.IsInvalidElementId(matId))
                      {
                         CategoryUtil.CreateMaterialAssociation(exporterIFC, footing, matId);
                      }
@@ -156,6 +151,15 @@ namespace Revit.IFC.Export.Exporter
          }
       }
 
+      static readonly Dictionary<NamingUtil.IFCStringKey, string> FootingTypesPre4 = new()
+      {
+         { new NamingUtil.IFCStringKey("FOOTINGBEAM"), "FOOTING_BEAM" },
+         { new NamingUtil.IFCStringKey("PADFOOTING"), "PAD_FOOTING" },
+         { new NamingUtil.IFCStringKey("PILECAP"), "PILE_CAP" },
+         { new NamingUtil.IFCStringKey("STRIPFOOTING"), "STRIP_FOOTING" },
+         { new NamingUtil.IFCStringKey("USERDEFINED"), "USERDEFINED" }
+      };
+
       /// <summary>
       /// Gets IFC footing type from a string.
       /// </summary>
@@ -163,25 +167,16 @@ namespace Revit.IFC.Export.Exporter
       /// <returns>The IFCFootingType.</returns>
       public static string GetIFCFootingType(string value)
       {
-         if (String.IsNullOrEmpty(value))
+         if (string.IsNullOrEmpty(value))
             return "NOTDEFINED";
 
-         string newValue = NamingUtil.RemoveSpacesAndUnderscores(value);
+         NamingUtil.IFCStringKey compValue = new(value);
+         if (FootingTypesPre4.TryGetValue(compValue, out string footingType))
+            return footingType;
 
-         if (String.Compare(newValue, "USERDEFINED", true) == 0)
-            return "USERDEFINED";
-         if (String.Compare(newValue, "FOOTINGBEAM", true) == 0)
-            return "FOOTING_BEAM";
-         if (String.Compare(newValue, "PADFOOTING", true) == 0)
-            return "PAD_FOOTING";
-         if (String.Compare(newValue, "PILECAP", true) == 0)
-            return "PILE_CAP";
-         if (String.Compare(newValue, "STRIPFOOTING", true) == 0)
-            return "STRIP_FOOTING";
-
-         if (ExporterCacheManager.ExportOptionsCache.ExportAs4)
+         if (!ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4)
          {
-            if (String.Compare(newValue, "CAISSONFOUNDATION", true) == 0)
+            if (compValue.IsEqualTo("CAISSONFOUNDATION"))
                return "CAISSON_FOUNDATION";
          }
 

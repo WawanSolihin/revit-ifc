@@ -1,10 +1,8 @@
-﻿<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
 <html xmlns="http://www.w3.org/TR/REC-html40" xml:lang="en" dir="ltr" class="js">
 <head>
 <meta http-equiv=Content-Type content="text/html; charset=utf-8">
 <title>Revit Exchange - Revit IFC Help</title>
-</head>
-
 <style> 
 html, body, div, dl, dt, dd, ul, ol, li, h1, h2, h3, h4, h5, h6, hr, pre, code, form, fieldset, legend, input, textarea, blockquote, table, th, td {
   padding: 0;
@@ -47,13 +45,29 @@ h3 {font-size:14.0px;line-height:16px;height:14px;margin-bottom:3px;margin-top:1
 	font-size:11.0pt;
 	font-family:"Calibri","sans-serif";
 	}
+* {
+  box-sizing: border-box;
+}
+
+.column {
+  float: left;
+  width: 30%;
+  padding: 5px;
+}
+
+/* Clearfix (clear floats) */
+.row::after {
+  content: "";
+  clear: both;
+  display: table;
+}
 </style>
 <body>
 <div id="heading">
 	<div id="plugin-icon"><img width=85 height=85 id="Rectangle 3" src="IFCExporter.png"></div>
-	<div id="plugin-name"><h1 class="separator-line">Revit IFC 2019</h1></div>
+	<div id="plugin-name"><h1 class="separator-line">Revit IFC 2027</h1></div>
 	<p id="plugin-description">
-	This application seamlessly replaces the built-in IFC capabilities of Revit 2019.  It contains enhancements to functionality and defect fixes provided by Autodesk and Open Source contributors that did not appear in the initial shipping version.
+	This application seamlessly replaces the built-in IFC capabilities of Revit 2027.  It contains enhancements to functionality and defect fixes provided by Autodesk and Open Source contributors that did not appear in the initial shipping version.
     </p>
 </div>
 
@@ -65,7 +79,7 @@ h3 {font-size:14.0px;line-height:16px;height:14px;margin-bottom:3px;margin-top:1
 	<div class="command name">Revit IFC</div>
 	<div class="command description">
     <p> 
-    Revit IFC 2019 contains up-to-date improvements on the default IFC capabilities of Revit contributed by Autodesk and our Open 
+    Revit IFC 2027 contains up-to-date improvements on the default IFC capabilities of Revit contributed by Autodesk and our Open 
     Source contributors.  While this app is not necessary for IFC support, it is recommended that users that depend on the quality of their IFC 
     download this app and keep it up-to-date, as new enhancements and defect fixes are added,  For more information on IFC, 
     please visit the <a href="http://buildingsmart.com/standards/ifc" target=_blank>buildingSMART website</a> or the Revit wiki.
@@ -85,12 +99,14 @@ The export alternate interface is loaded when users access the Export functional
 <li>IFC 2x3 Coordination View 2.0</li>
 <li>IFC 2x3 Coordination View</li>
 <li>IFC 2x2 Coordination View</li>
-<li>IFC 2x2 Singapore BCA e-Plan Check</li>
 <li>IFC 2x3 GSA Concept Design BIM 2010 – This is a variant of the standard IFC 2x3 used for submitting files to the US Government Services Administration.  Additional property sets will be included.</li> 
-<li>IFC 2x2 Singapore BCA e-Plan Check - This is a certified variant of IFC 2x2 used for submitting files to the Singapore BCA e-Plan Check Server. When exporting to this file type, you should make sure that all room-bounding elements are selected.</li
-<li>IFC 4 Reference View</li>
+<li>IFC 4 Reference View - This version is buildingSMART IFC certification (IFC4 RV 1.2) certified version for Architectural and Structural export Exchange Requirements. MEP export and Import are still on-going</li>
 <li>IFC 4 Design Transfer View</li>
 </menu>
+<p><strong>Exchange Requirement</strong>: Exchange Requirements (only for IFC4 Reference View)</p>
+<menu><li>Architectural Reference Exchange</li>
+<li>Structural Reference Exchange</li>
+<li>MEP Reference Exchange</li>
 <p><strong>File Type</strong>: The file format</p>
 <menu><li>IFC</li>
 <li>IFC XML</li>
@@ -103,50 +119,65 @@ The export alternate interface is loaded when users access the Export functional
 <li>1st level – the room/space boundaries are included but are not optimized to split elements with respect to spaces on the opposite side of the boundary</li>
 <li>2nd level – the room/space boundaries are included and are split with respect to spaces on the opposite side of the boundary</li>
 </menu>
-<p><strong>Project Origin</strong>: The origin of the exported file.  Can be one of:</p>
+<p><strong>Coordinate Base</strong>: The origin of the exported file.  Can be one of:</p>
 <menu>
-<li>Current shared coordinates origin (default)</li>
-<li>Internal Revit coordinates</li>
+<li>Shared Coordinates (default)</li>
+<li>Survey Point</li>
 <li>Project Base Point</li>
-<li>Site Survey Point</li>
+<li>Internal Origin</li>
 </menu>
-
-<p><strong>Export only elements visible in view</strong>: Checked to export only the visible elements of the current view (based on filtering and/or element and category hiding), unchecked to export the entire model.  
-<p><strong>Export rooms in 3D views</strong>: If the "export only elements visible in view" is checked, checking this option will export all of the rooms that are contained inside the section box of the selected 3D view.  If there is no active section box, all rooms will be exported.
-<p><strong>Export Bounding Box</strong>: Checked to export bounding box representations, Unchecked to exclude them.  This is the the default for GSA export.</p>
-<p><strong>Export Linked Files as Separate IFCs</strong>: Checked to export any Revit links in the project as separate IFCs, unchecked to exclude them.  Each linked instance in the file will export as a separate IFC file with the right positioning relative to the host file.  Multiple instances of the same linked document will export as separate files, identical except for their position and orientation.  Note that linked IFC files will be re-exported, so may suffer data loss on roundtrip.
-
+<p><strong>Projected Coordinate System Reference</strong>: Map/GIS Projected Coordinate System used:</p>
+<menu>
+		  <li>Name: the name of the Projected Coordinate System. Auto-populated based on the EPSG Code in the model or user input</li>
+		  <li>Description: description of the Projected Coordinate System. It is auto-populated</li>
+		  <li>EPSG Code: the EPSG Code. It is pre-populated if the Revit file has SiteLocation information, otherwise user input</li>
+		  <li>Geodetic Datum: the geodetic datum used. It is Auto-populated</li>
+		  <li>Eastings: the Easting. It is updated based on the Coordinate Based selected. For a proper geo-reference export, use either Project Based Point or Survey Point</li>
+		  <li>Northings: the Northing. It is updated based on the Coordinate Based selected. For a proper geo-reference export, use either Project Based Point or Survey Point</li>
+		  <li>Reset (button). It resets the Projected Coordinate System setting to the original values</li>
+</menu>
 <p><strong>Split walls and columns by Level</strong>: Whether or not to split walls and columns by building stories.</p>
+<p><strong>Include Steel Elements</strong>: Export Steel connection elements</p>
+
 <p><strong>Export 2D plan view elements</strong>: Checked to include 2D elements supported by IFC export (notes and filled regions), unchecked to exclude them. </p>
+<p><strong>Export Linked Files as Separate IFCs</strong>: Checked to export any Revit links in the project as separate IFCs, unchecked to exclude them.  Each linked instance in the file will export as a separate IFC file with the right positioning relative to the host file.  Multiple instances of the same linked document will export as separate files, identical except for their position and orientation.  Note that linked IFC files will be re-exported, so may suffer data loss on roundtrip.</p>
+<p><strong>Export only elements visible in view</strong>: Checked to export only the visible elements of the current view (based on filtering and/or element and category hiding), unchecked to export the entire model.</p>
+<p><strong>Export rooms, areas and spaces in 3D views</strong>: If the "export only elements visible in view" is checked, checking this option will export all of the rooms that are contained inside the section box of the selected 3D view.  If there is no active section box, all rooms will be exported.
 
 <p><strong>Export Revit property sets</strong>: Checked to include the Revit-specific property sets based on parameter groups.  Unchecked to exclude them.</p>
 <p><strong>Export IFC Common property sets</strong>: Checked to include the IFC common property sets, unchecked to exclude them.</p>
+<p><strong>Export base quantities</strong>: Whether or not to include base quantities for model elements in the export data.  Base quantities are generated from model geometry to reflect actual physical quantity values, independent of measurement rules or methods.</p>
 <p><strong>Export Schedules as property sets</strong>: Checked to export schedules as custom property sets.  The name of the schedule is the property set name; the column names are the IFC parameter names.</p>
 <p><strong>Export only schedules containing IFC, Pset, or Common in the title</strong>: When checked, restricts the schedules exported to only those that contain "IFC", "PSet", or "Common" in their title.
 <p><strong>Export user defined property sets</strong>: Checked to export user-defined property set.  If checked, the use can specify the name of a text file that contains the property set definitions.</p>
+<p><strong>Export parameter mapping table</strong>: Export parameter mapping table to a specified file</p>
 
-<p><strong>Export base quantities</strong>: Whether or not to include base quantities for model elements in the export data.  Base quantities are generated from model geometry to reflect actual physical quantity values, independent of measurement rules or methods.</p>
+<p><strong>Level of detail for some element geometry</strong>: Allows control of the level of tessellation for some Revit elements.  Disabling this option will generally result in larger, but more accurate, BRep and profile representations.  The main Revit elements affected by this control are: elbows, floors, pipe fittings, railings, ramps, spaces and stairs.  Highly detailed extrusion profiles are also affected.for these items.</p>
 
 <p><strong>Export parts as building elements</strong>: Checked to export parts as standard IFC elements, Unchecked to export them as IfcBuildingElementPart.</p>
 <p><strong>Allow use of mixed "Solid Model" representation</strong>: Checked to allow for mixing BRep and extrusion geometries for an entity.  This can result in smaller IFC files, but which are not strictly within the standard IFC MVDs.</p>
-<p><strong>Level of detail for some element geometry</strong>: Allows control of the level of tessellation for some Revit elements.  Disabling this option will generally result in larger, but more accurate, BRep and profile representations.  The main Revit elements affected by this control are: elbows, floors, pipe fittings, railings, ramps, spaces and stairs.  Highly detailed extrusion profiles are also affected.for these items.</p>
-</p>
+<p><strong>Use active view when creating geometry</strong>: This option exports the geometry according to the view including view constrained using section box</p>
 <p><strong>Use family and type name for references</strong>: Checked to use the family and type name for references, unchecked to use the type name only.</p>
 <p><strong>Use 2D room boundaries for room volume</strong>: Checked to use a simplified approach to calculation of room volumes (based on extrusion of 2D room boundaries) which is also the default when exporting to IFC 2x2.   Unchecked to use the Revit calculated room geometry to represent the room volumes (which is the default when exporting to IFC 2x3).</p>
 <p><strong>Include IFCSITE elevation in the site local placement origin</strong>: Checked to include the elevation from the Z offset of the IFCSITE local placement, unchecked to exclude it.</p>
-<p><strong>Store IFC GUID in file after export</strong>: Optionally allow storing the generated IFC GUIDs into the project file after export. This will add "IFC GUID" parameters to elements and their types, and Project Information for Project, Site, and Building GUIDS. This requires v2.12 of the expoter to add the parameter values, and also requires a manual save. 
+<p><strong>Store IFC GUID in file after export</strong>: Optionally allow storing the generated IFC GUIDs into the project file after export. This will add "IFC GUID" parameters to elements and their types, and Project Information for Project, Site, and Building GUIDS. This requires v2.12 of the exporter to add the parameter values, and also requires a manual save. 
 </p>
+<p><strong>Export Bounding Box</strong>: Checked to export bounding box representations, Unchecked to exclude them.  This is the default for GSA export.</p>
+<p><strong>Keep Tessellated Geometry as Triangulation</strong>: This option will not optimize Brep to be exported as IfcPolygonalFaceSet in IFC4 RV export. This option may speed up export for models that have large and complex geometries</p>
+<p><strong>Use Type name only for IFCType name</strong>: This option override the default type name using just the name of the type</p>
+<p><strong>Use visible Revit name as the IFCEntity name</strong>: Ths option override the default element name using what shown in Revit as the object name</p>
 
-<p>There are 9 built-in setups in the user interface:</p>    
+<p>There are 10 built-in setups in the user interface:</p>    
 <menu>
 <li>IFC 2x3 Coordination View 2.0</li>
 <li>IFC 2x3 Coordination View</li>
 <li>IFC 2x3 GSA Concept Design BIM 2010</li>
 <li>IFC 2x3 Basic FM Handover View</li>
-<li>IFC 2x3 Extended FM Handover View</li>
 <li>IFC 2x2 Coordination View</li>
-<li>IFC 2x2 Singapore BCA e-Plan Check</li>
-<li>IFC 4 Reference View</li>
+<li>IFC 2x3 COBie 2.4 Design Deliverable</li>
+<li>IFC 4 Reference View [Architecture]</li>
+<li>IFC 4 Reference View [Structural]</li>
+<li>IFC 4 Reference View [BuildingService]</li>
 <li>IFC 4 Design Transfer View</li>
 
 </menu>
@@ -177,10 +208,11 @@ To uninstall this plug-in, exit Revit if you are currently running it,
   
 <h2 id="AdditionalInfo" name="AdditionalInfo">Additional Information</h2>
 <p>
-The source code for this application is available on open source, at the SourceForge project :
+From Revit 2019 and onward the open source codes have been relocated to Github at the following address: <a href="https://github.com/Autodesk/revit-ifc" target=_blank>https://github.com/Autodesk/revit-ifc</a></p>
+The older source code for this application (prior to 2019) is still available at the SourceForge project :
 <a href="http://sourceforge.net/p/ifcexporter/home/Home/" target=_blank>http://sourceforge.net/p/ifcexporter/home/Home/</a></p>
 <h3>Known Issues</h3>
-<p>The alternate export UI is currently provided only in English and French.  The help is currently provided only in English.</p>
+<p>The alternate export UI is currently provided only in English, German and French.  The help is currently provided only in English.</p>
 <p>The third party toolkit we use to write out IFC files has a limit on the maximum size of IFC file it can create.  
 While there is no absolute metric for this, in practice it is about 1.5 GB.  The toolkit provider is aware of these issues and is 
 working on expanding and eventually removing this limit, and we will be tracking their progress on this issue.</p>
@@ -203,103 +235,60 @@ working on expanding and eventually removing this limit, and we will be tracking
 <h2 id="VersionHistory" name="VersionHistory">Version History</h2>
 
 <div class="versionset">
+	<div class="version">27.3.0.12</div><div class="versioninfo-bullet">
+      <br><p>
+         Bug Fixes:
 
-<div class="version">19.1.0.0</div><div class="versioninfo-bullet">
+         </p><ul>
+            <li>Fixed IFC export failing when exporting directly to a network location.</li>
+            <li>Fixed rooms being exported with shifted or incorrect geometry.</li>
+            <li>Fixed assemblies being mirrored or shifted during export.</li>
+            <li>Fixed doors within assemblies being vertically displaced.</li>
+            <li>Fixed void cuts from structural connection families being exported in the wrong location.</li>
+            <li>Fixed walls cut with sloped voids not being exported correctly to IFC4.</li>
+            <li>Fixed incorrect geometry for exported parts.</li>
+            <li>Fixed multi-flight ramp components being exported as IfcSlab.</li>
+            <li>Fixed pipe fittings becoming misaligned when exporting to IFC4x3.</li>
+            <li>Fixed MEP fabrication elements being exported twice.</li>
+            <li>Fixed MEP insulation being assigned to the wrong level.</li>
+            <li>Fixed model lines being invisible in some IFC viewers.</li>
+            <li>Fixed colors in IFC4 Reference View not matching the colors in the model.</li>
+            <li>Fixed incorrect width, height and length in footing base quantities.</li>
+            <li>Fixed incorrect slab base quantities.</li>
+            <li>Fixed missing net area and width in base quantities for stair landings.</li>
+            <li>Fixed missing gross footprint area in base quantities for multilayer walls.</li>
+            <li>Fixed missing room schedule parameters in property set export.</li>
+            <li>Fixed the stair stringer type parameter not being exported with a user-defined property set.</li>
+            <li>Fixed the Initial Color and Initial Intensity parameters of lighting fixtures not being exported.</li>
+            <li>Fixed ObjectType not being exported for IfcProject in IFC4 and IFC4x3.</li>
+            <li>Fixed the predefined type not being set when changing "Export to IFC As".</li>
+            <li>Fixed problems adding a user-defined property set to a project (GitHub #971).</li>
+            <li>Import: fixed levels from a linked IFC file being placed in the wrong position.</li>
+            <li>Import: fixed doors being misplaced when opening IFC files from other applications.</li>
+         </ul>
+   </div>
+</div>
+<div class="versionset">
+	<div class="version">27.0.1.1</div><div class="versioninfo-bullet">
+      <br><p>
+         Bug Fixes:
 
-<br><p>General:
-
-<ul>
-<li>Some of the naming conventions for elements have changed.  Please discuss in the forums if this causes problems.
-<li>This is generally a bug fix release with some new Link IFC functionality.
-</ul>
-
-<br><p>New Export Functionality:
-
-<ul>
-<li>Add the ability to import and export custom configuration setups.
-<li>Add the ability to choose the project origin of the exported file.  There are 4 options:
-	- Current shared coordinates origin
-	- Internal Revit coordinates
-	- Project Base Point
-	- Site Survey Point
-<li>A number of IFC4 Reference View improvements, including:
-	- Export some profile names with geometry when appropriate
-	- Fix scaling of triangulation coordinates
-	- Improve export of beam axis
-	- Restrict use of many disallowed IFC entities and geometries
-<li>Allow columns to be space bounding elements.
-<li>Allow remapping of IFC entity attributes in addition to properties.
-<li>Create more associated type entities for IFC objects.
-<li>Consistent ability to override name, object type and description for all entities
-<li>Export connectors even if they aren't connected to other elements.
-<li>Export parts whose host elements are in linked files, regardless of if "Export Parts as Building Elements" is checked or not.
-<li>Improved creation of IFCBUILDING and IFCSITE entities
-<li>Better support for Illuminance and Volume parameter types.
-<li>Include the exchange requirement information in the File Header for COBie export.
-<li>New UI to allow assigning the address filled out in the export options to the building and/or site.
-<li>Reduce the facet count for some element geometries.
-<li>Support export of fabrication parts.
-<li>Remove unneeded "Triangulation only" checkbox in the "Level of Detail" export options tab.
-</ul>
-
-<p>Export Bug Fixes:
-
-<ul>
-<li>Export "NetVolume" and "NetSideArea" quantities instead of "Gross" ones.
-<li>Export PredefinedType/ShapeType for ramps, stairs and vibration isolators.
-<li>Fix export of certain elements so that they are of the right type instead of IfcBuildingElementProxy orIfcBuildingElementProxyType.
-<li>Fix export of some multi-story stairs.
-<li>Fix export of some space with empty Occupant fields.
-<li>Fix material assignment for some elements.
-<li>Fix missing predefined type for some elements.
-<li>Fix missing profile names for some beams.
-<li>Fix slope calculations for some elements.
-<li>Fix unexpected error when exporting a floor as an IfcRamp (for IFC2x3 only).
-<li>Fix unexpected error when exporting a site from a 3D view when exporting the active view geometry (for IFC4 RV only).
-<li>More fixes to correct "unexpected errors" of certain entity types.
-<li>Only allow unconnected elements if they are of type IfcDistributionElement.
-<li>Restore calculations for "concealed" and "is external" properties.
-<li>Restore proper mapping of Revit Grids to IfcGrids.
-<li>Restore proper GUID for some door, windows, and property sets.
-<li>Restore remapping of some deprecated IFC2x3 and IFC4 entitites.
-<li>Restore support for parameter mapping files.
-<li>Restore support for provisions for voids in IFC2x3.
-<li>Restore support for IfcSpace "ElevationWithFlooring" attribute.
-<li>Restore tag for IfcCurtainWallType.
-<li>Restore tessellation level of detail for coarse tessellations.
-<li>Restore use of built-in parameters for populating some IFC parameters.
-<li>(Pre-IFC4) Stop converting space heater types to electric heater types.
-<li>(IFC4) Properly export some trimmed edges in advanced BReps.
-<li>(IFC4) Limit distribution ports to IfcDistributionElements only.
-</ul>
-
-<br><p>New Import Functionality:
-
-<ul>
-<li>(IFC4) Support IfcCartesianPointList2D, IfcIndexedPolyCurve
-</ul>
-
-<p>Import Bug Fixes:
-
-<ul>
-<li>Accept structural items that have an undefined LoadBearing parameter.
-<li>Better processing of slightly non-planar faces.
-<li>Better processing of some sweeps that have unnecessary start and end parameters.
-<li>Correct orientation of some objects on import with incomplete placement information.
-<li>Make sure all created schedules and parameters have unique names.
-<li>Improve import of some circular extruded geometries whose outer profile curves are slightly disjointed.
-<li>Improve use of shared geometry across different type elements.
-<li>Properly cut some geometry when the bounded curve for the half-space solid is missing.
-<li>(IFC4) Better import of some geometry with NURBS curve-based edges.
-</ul>
-
+         </p><ul>
+            <li>Fixed an issue where shared parameters could not be added to user-defined property sets.</li>
+            <li>Fixed a bug where room geometry was shifted during export (GitHub #924).</li>
+         </ul>
+   </div>
 </div>
 
-<div class="version">19.0.0.0</div><div class="versioninfo-bullet">
+<div class="versionset">
+	<div class="version">27.0.1.0</div><div class="versioninfo-bullet">
+      <br><p>
+         General:
 
-<br>Initial Revit 2019 release
-
-</div>
+         </p><ul>
+            <li>This is the first version of IFC Extension for Revit 2027.
+         </li></ul>
+   </div>
 </div>
 
 </body>

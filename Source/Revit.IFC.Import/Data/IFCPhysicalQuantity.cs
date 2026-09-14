@@ -38,30 +38,12 @@ namespace Revit.IFC.Import.Data
       /// <summary>
       /// The name.
       /// </summary>
-      protected string m_Name;
+      public string Name { get; protected set; }
 
       /// <summary>
       /// The optional description.
       /// </summary>
-      protected string m_Description;
-
-      /// <summary>
-      /// The name.
-      /// </summary>
-      public string Name
-      {
-         get { return m_Name; }
-         protected set { m_Name = value; }
-      }
-
-      /// <summary>
-      /// The optional description.
-      /// </summary>
-      public string Description
-      {
-         get { return m_Description; }
-         protected set { m_Description = value; }
-      }
+      public string Description { get; protected set; }
 
       protected IFCPhysicalQuantity()
       {
@@ -108,7 +90,8 @@ namespace Revit.IFC.Import.Data
             if (IFCAnyHandleUtil.IsSubTypeOf(ifcPhysicalQuantity, IFCEntityType.IfcPhysicalSimpleQuantity))
                return IFCPhysicalSimpleQuantity.ProcessIFCPhysicalSimpleQuantity(ifcPhysicalQuantity);
 
-            // IfcPhysicalComplexProperty not supported.
+            if (IFCAnyHandleUtil.IsSubTypeOf(ifcPhysicalQuantity, IFCEntityType.IfcPhysicalComplexQuantity))
+               return IFCPhysicalComplexQuantity.ProcessIFCPhysicalComplexQuantity(ifcPhysicalQuantity);
          }
          catch (Exception ex)
          {
@@ -125,9 +108,12 @@ namespace Revit.IFC.Import.Data
       /// </summary>
       /// <param name="doc">The document.</param>
       /// <param name="element">The element being created.</param>
-      /// <param name="parameterMap">The parameters of the element.  Cached for performance.</param>
-      /// <param name="propertySetName">The name of the containing property set.</param>
+      /// <param name="category">The element's category.</param>
+      /// <param name="parameterGroupMap">The parameters of the element.  Cached for performance.</param>
+      /// <param name="quantityFullName">The name of the containing quantity set with quantity name.</param>
       /// <param name="createdParameters">The names of the created parameters.</param>
-      public abstract void Create(Document doc, Element element, IFCParameterSetByGroup parameterGroupMap, string propertySetName, ISet<string> createdParameters);
+      public abstract void Create(Document doc, Element element, Category category, IFCObjectDefinition objDef, 
+         IFCParameterSetByGroup parameterGroupMap, string quantityFullName, ISet<string> createdParameters,
+         ParametersToSet parametersToSet);
    }
 }

@@ -58,7 +58,7 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// The ExporterIFC object.
       /// </param>
       /// <param name="extrusionCreationData">
-      /// The IFCExtrusionCreationData.
+      /// The IFCExportBodyParams.
       /// </param>
       /// <param name="element">
       /// The element to calculate the value.
@@ -69,31 +69,34 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// <returns>
       /// True if the operation succeed, false otherwise.
       /// </returns>
-      public override bool Calculate(ExporterIFC exporterIFC, IFCExtrusionCreationData extrusionCreationData, Element element, ElementType elementType)
+      public override bool Calculate(ExporterIFC exporterIFC, IFCAnyHandle handle, IFCExportBodyParams extrusionCreationData, Element element, ElementType elementType, EntryMap entryMap)
       {
-         double crossSectionArea = 0;
-
-         // 1. Use the builtin parameter first
-         if (ParameterUtil.GetDoubleValueFromElement(element, BuiltInParameter.HOST_AREA_COMPUTED, out crossSectionArea) != null)
+         // 1. Check override parameter
+         (EvaluatedParameter parameter, double crossSectionArea) = 
+             ParameterUtil.GetDoubleValueFromElementOrSymbol(element, entryMap.RevitParameterName, entryMap.CompatibleRevitParameterName, "IfcQtyCrossSectionArea");
+         if (parameter != null)
          {
             m_Area = UnitUtil.ScaleArea(crossSectionArea);
-            if (m_Area > MathUtil.Eps() * MathUtil.Eps())
+            if (m_Area > MathUtil.Eps * MathUtil.Eps)
                return true;
          }
 
-         // 2. Check override parameter
-         if (ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "IfcQtyCrossSectionArea", out crossSectionArea) == null)
-               ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "CrossSectionArea", out crossSectionArea);
-         m_Area = UnitUtil.ScaleArea(crossSectionArea);
-         if (m_Area > MathUtil.Eps() * MathUtil.Eps())
-            return true;
+         // 2. try using extrusion data
+         if (extrusionCreationData != null)
+         {
+            m_Area = extrusionCreationData.ScaledArea;
+            if (m_Area > MathUtil.Eps * MathUtil.Eps)
+               return true;
+         }
 
-         // 3. try using extrusion data
-         if (extrusionCreationData == null)
-            return false;
-
-         m_Area = extrusionCreationData.ScaledArea;
-         return m_Area > MathUtil.Eps() * MathUtil.Eps();
+         // 3. Use the builtin parameter after extrusionCreationData because the HOST_AREA_COMPUTED returns total area
+         if (ParameterUtil.TryGetDoubleValueFromElement(element.Id, BuiltInParameter.HOST_AREA_COMPUTED) is double areaVal)
+         {
+            m_Area = UnitUtil.ScaleArea(areaVal);
+            if (m_Area > MathUtil.Eps * MathUtil.Eps)
+               return true;
+         }
+         return false;
       }
 
       /// <summary>

@@ -17,24 +17,16 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 //
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using Autodesk.Revit.DB;
-using Autodesk.Revit.DB.IFC;
-using Revit.IFC.Common.Utility;
 using Revit.IFC.Common.Enums;
-using Revit.IFC.Import.Data;
-using UnitSystem = Autodesk.Revit.DB.DisplayUnit;
-using UnitName = Autodesk.Revit.DB.DisplayUnitType;
 
 namespace Revit.IFC.Import.Utility
 {
    /// <summary>
    /// A class that contains the GeometryObject, Id, and material information for created Revit geometry.
    /// </summary>
-   /// <remarks>TODO: Rename to IFCGeometryObjectInfo, as it can contain Solids, Meshes, and Curves.</remarks>
+   /// <remarks>TODO: Rename to IFCGeometryObjectInfo, as it can contain Solids, Meshes, 
+   /// Curves and Points.</remarks>
    public class IFCSolidInfo
    {
       /// <summary>
@@ -45,7 +37,7 @@ namespace Revit.IFC.Import.Utility
       /// <summary>
       /// The representation that created the geometry.
       /// </summary>
-      public IFCRepresentationIdentifier RepresentationType { get; set; }
+      public IFCRepresentationIdentifier RepresentationIdentifier { get; set; }
 
       /// <summary>
       /// The created geometry.
@@ -55,7 +47,7 @@ namespace Revit.IFC.Import.Utility
       protected IFCSolidInfo()
       {
          Id = -1;
-         RepresentationType = IFCRepresentationIdentifier.Unhandled;
+         RepresentationIdentifier = IFCRepresentationIdentifier.Other;
          GeometryObject = null;
       }
 
@@ -71,7 +63,7 @@ namespace Revit.IFC.Import.Utility
       /// <param name="id">The id associated with the geometry in the IFC file.</param>
       /// <param name="geometryObject">The created geometry.</param>
       /// <returns>The IFCSolidInfo class.</returns>
-      /// <remarks>The RepresentationType is intended to be added in the AddGeometry function call.</remarks>
+      /// <remarks>The RepresentationIdentifier is intended to be added in the AddGeometry function call.</remarks>
       public static IFCSolidInfo Create(int id, GeometryObject geometryObject)
       {
          return new IFCSolidInfo(id, geometryObject);

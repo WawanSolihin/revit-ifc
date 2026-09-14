@@ -20,145 +20,439 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
+using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
+using Revit.IFC.Common.Utility;
+using Revit.IFC.Export.Exporter.PropertySet;
+using Revit.IFC.Export.Toolkit;
+using Revit.IFC.Export.Utility;
+using static Revit.IFC.Export.Utility.ParameterUtil;
 
 namespace Revit.IFC.Export.Exporter
 {
+   /// <summary>
+   /// A label associated with a zone property.
+   /// </summary>
+   public enum ZoneInfoLabel
+   {
+      Name,
+      ObjectType,
+      Description,
+      LongName,
+      ClassificationCode,
+      GroupName
+   }
+
+   /// <summary>
+   /// Class to assist in finding property values associated with zones.
+   /// </summary>
+   public class ZoneInfoFinder
+   {
+      const int MaxIterations = 1000;
+
+      /// <summary>
+      /// The list of base zone parameter names we are looking for.
+      /// </summary>
+      static IDictionary<ZoneInfoLabel, string> BasePropZoneLabels = null;
+
+      public IDictionary<ZoneInfoLabel, string> CurrentPropZoneLabels { get; protected set; } = null;
+
+      public IDictionary<ZoneInfoLabel, string> CurrentPropZoneValues { get; protected set; } = null;
+
+      void InitBasePropZoneLabels()
+      {
+         if (BasePropZoneLabels != null)
+            return;
+
+         BasePropZoneLabels = new Dictionary<ZoneInfoLabel, string>();
+         foreach (ZoneInfoLabel key in Enum.GetValues(typeof(ZoneInfoLabel)))
+         {
+            string labelName = string.Format("Zone{0}", key.ToString());
+            BasePropZoneLabels.Add(key, labelName);
+         }
+      }
+
+      public int CurrentZoneNumber { get; private set; } = 1;
+
+      private void SetPropZoneLabels()
+      {
+         if (CurrentZoneNumber == 1)
+         {
+            CurrentPropZoneLabels = BasePropZoneLabels;
+         }
+         else
+         {
+            CurrentPropZoneLabels = new Dictionary<ZoneInfoLabel, string>();
+            foreach (KeyValuePair<ZoneInfoLabel, string> propZoneLabel in BasePropZoneLabels)
+            {
+               CurrentPropZoneLabels.Add(
+                  new KeyValuePair<ZoneInfoLabel, string>(propZoneLabel.Key, propZoneLabel.Value + " " + CurrentZoneNumber));
+            }
+         }
+      }
+
+      /// <summary>
+      /// Returns the current shared parameter name for a particular type of zone parameter.
+      /// </summary>
+      /// <param name="label">The type of zone parameter.</param>
+      /// <returns>The name of the shared parameter for this zone for this iteration.</returns>
+      public string GetPropZoneLabel(ZoneInfoLabel label)
+      {
+         string value = null;
+         if (CurrentPropZoneLabels == null || !CurrentPropZoneLabels.TryGetValue(label, out value))
+            return null;
+         return value;
+      }
+
+      /// <summary>
+      /// Returns the value of the current shared parameter name for a particular type of zone parameter.
+      /// </summary>
+      /// <param name="label">The type of zone parameter.</param>
+      /// <returns>The value of the shared parameter for this zone for this iteration.</returns>
+      public string GetPropZoneValue(ZoneInfoLabel label)
+      {
+         string value = null;
+         if (CurrentPropZoneValues == null || !CurrentPropZoneValues.TryGetValue(label, out value))
+            return null;
+         return value;
+      }
+
+      /// <summary>
+      /// Collects the zone parameter values from an element.
+      /// </summary>
+      /// <param name="element">The element potentially containing the shared parameter information.</param>
+      /// <returns>True if the zone name parameter was found, even if empty; false otherwise.</returns>
+      /// <remarks>CurrentPropZoneLabels will be null if zone name parameter wasn't found,
+      /// and empty if it was found but had no value.</remarks>
+      public bool SetPropZoneValues(Element element)
+      {
+         CurrentPropZoneValues = null;
+
+         SetPropZoneLabels();
+         if (CurrentPropZoneLabels == null)
+            return false;
+
+         string zoneNameLabel = GetPropZoneLabel(ZoneInfoLabel.Name);
+         (_, string zoneName) = ParameterUtil.GetStringValueFromElementOrSymbol(element, null, true, zoneNameLabel);
+         if (string.IsNullOrEmpty(zoneName))
+            return false;
+
+         CurrentPropZoneValues = new Dictionary<ZoneInfoLabel, string>();
+
+         if (!string.IsNullOrWhiteSpace(zoneName))
+         {
+            CurrentPropZoneValues.Add(ZoneInfoLabel.Name, zoneName);
+            foreach (KeyValuePair<ZoneInfoLabel, string> propZoneLabel in CurrentPropZoneLabels)
+            {
+               if (propZoneLabel.Key == ZoneInfoLabel.Name)
+                  continue;
+
+               string zoneValue;
+               (_, zoneValue) = ParameterUtil.GetStringValueFromElementOrSymbol(element, null, false, propZoneLabel.Value);
+               CurrentPropZoneValues.Add(propZoneLabel.Key, zoneValue);
+            }
+         }
+
+         return true;
+      }
+
+      /// <summary>
+      /// Increment the current zone number.
+      /// </summary>
+      /// <returns>True if he haven't reached the maximum number of iterations, false otherwise.</returns>
+      public bool IncrementCount()
+      {
+         return (CurrentZoneNumber++ < MaxIterations);
+      }
+
+      /// <summary>
+      /// The constructor.
+      /// </summary>
+      public ZoneInfoFinder()
+      {
+         InitBasePropZoneLabels();
+      }
+   }
+
    /// <summary>
    /// The class contains information for creating IFC zone.
    /// </summary>
    public class ZoneInfo
    {
       /// <summary>
-      /// The object type of this zone.
-      /// </summary>
-      private string m_ObjectType = String.Empty;
-
-      /// <summary>
-      /// The description.
-      /// </summary>
-      private string m_Description = String.Empty;
-
-      /// <summary>
-      /// The long name, for IFC4+.
-      /// </summary>
-      private string m_LongName = String.Empty;
-
-      /// <summary>
-      /// The associated room handles.
-      /// </summary>
-      private HashSet<IFCAnyHandle> m_AssocRoomHandles = new HashSet<IFCAnyHandle>();
-
-      /// <summary>
-      /// The associated IfcClassificationReference handles.
-      /// </summary>
-      private Dictionary<string, IFCAnyHandle> m_ClassificationReferences = new Dictionary<string, IFCAnyHandle>();
-
-      /// <summary>
-      /// The associated ePset_SpatialZoneEnergyAnalysis handle, if any.
-      /// </summary>
-      private IFCAnyHandle m_EnergyAnalysisProperySetHandle = null;
-
-      /// <summary>
-      /// The associated Pset_ZoneCommon handle, if any.
-      /// </summary>
-      private IFCAnyHandle m_ZoneCommonProperySetHandle = null;
-
-      /// <summary>
       /// Constructs a ZoneInfo object.
       /// </summary>
-      /// <param name="objectType">The type of zone.</param>
-      /// <param name="description">The description.</param>
-      /// <param name="longName">The long name, for IFC4+.</param>
+      /// <param name="zoneInfoFinder">Container with string information.</param>
       /// <param name="roomHandle">The room handle for this zone.</param>
-      /// <param name="classificationReferences">The room handle for this zone.</param>
-      /// <param name="energyAnalysisHnd">The ePset_SpatialZoneEnergyAnalysis handle for this zone.</param>
-      /// <param name="zoneCommonPSetHandle">The Pset_ZoneCommon handle for this zone.</param>
-      public ZoneInfo(string objectType, string description, string longName, IFCAnyHandle roomHandle,
-          Dictionary<string, IFCAnyHandle> classificationReferences, IFCAnyHandle energyAnalysisHnd, IFCAnyHandle zoneCommonPSetHandle)
+      public ZoneInfo(ZoneInfoFinder zoneInfoFinder, IFCAnyHandle roomHandle)
       {
-         ObjectType = objectType;
-         Description = description;
-         LongName = longName;
+         if (zoneInfoFinder != null)
+         {
+            ObjectType = zoneInfoFinder.GetPropZoneValue(ZoneInfoLabel.ObjectType);
+            Description = zoneInfoFinder.GetPropZoneValue(ZoneInfoLabel.Description);
+            LongName = zoneInfoFinder.GetPropZoneValue(ZoneInfoLabel.LongName);
+            GroupName = zoneInfoFinder.GetPropZoneValue(ZoneInfoLabel.GroupName);
+         }
+
          RoomHandles.Add(roomHandle);
-         ClassificationReferences = classificationReferences;
-         EnergyAnalysisProperySetHandle = energyAnalysisHnd;
-         ZoneCommonProperySetHandle = zoneCommonPSetHandle;
       }
 
       /// <summary>
       /// The object type of this zone.
       /// </summary>
-      public string ObjectType
-      {
-         get { return m_ObjectType; }
-         set
-         {
-            if (!String.IsNullOrEmpty(value))
-               m_ObjectType = value;
-         }
-      }
+      public string ObjectType { get; private set; } = string.Empty;
 
       /// <summary>
       /// The description.
       /// </summary>
-      public string Description
+      public string Description { get; private set; } = string.Empty;
+
+      /// <summary>
+      /// The group name for this zone.
+      /// </summary>
+      public string GroupName { get; private set; } = string.Empty;
+
+      /// <summary>
+      /// Sets the zone information from the ZoneInfoFinder, if previously unset.
+      /// </summary>
+      /// <param name="zoneInfoFinder">Container with string information.</param>
+      public void UpdateZoneInfo(ZoneInfoFinder zoneInfoFinder)
       {
-         get { return m_Description; }
-         set
+         if (zoneInfoFinder == null)
+            return;
+
+         if (string.IsNullOrEmpty(ObjectType))
+            ObjectType = zoneInfoFinder.GetPropZoneValue(ZoneInfoLabel.ObjectType);
+
+         if (string.IsNullOrEmpty(Description))
+            Description = zoneInfoFinder.GetPropZoneValue(ZoneInfoLabel.Description);
+
+         if (string.IsNullOrEmpty(LongName))
+            LongName = zoneInfoFinder.GetPropZoneValue(ZoneInfoLabel.LongName);
+
+         if (string.IsNullOrEmpty(GroupName))
+            GroupName = zoneInfoFinder.GetPropZoneValue(ZoneInfoLabel.GroupName);
+      }
+
+      /// <summary>
+      /// Create classification reference (IfcClassificationReference) entity, and add new classification to cache (if it is new classification)
+      /// </summary>
+      /// <param name="file">The IFC file class.</param>
+      /// <param name="classificationKeyString">The classification name.</param>
+      /// <param name="classificationCode">The classification code.</param>
+      /// <param name="classificationDescription">The classification description.</param>
+      /// <param name="location">The location of the classification.</param>
+      /// <returns></returns>
+      /// <summary>
+      /// Creates and add a classification reference to the zone info if it doesn't already exist. 
+      /// </summary>
+      /// <param name="file">The IFCFile, used to create the instance.</param>
+      /// <param name="zoneClassificationCode">The name of the classification code.</param>
+      public void ConditionalAddClassification(IFCFile file, string zoneClassificationCode)
+      {
+         if (string.IsNullOrEmpty(zoneClassificationCode))
+            return;
+
+         if (ClassificationReferences.ContainsKey(zoneClassificationCode))
+            return;
+
+         ClassificationUtil.ParseClassificationCode(zoneClassificationCode, null,
+            out string classificationName, out string classificationCode,
+            out string classificationRefName);
+         ExporterCacheManager.ClassificationLocationCache.TryGetValue(classificationName,
+            out string location);
+
+         IFCAnyHandle classification;
+
+         // Check whether Classification is already defined before
+         if (!ExporterCacheManager.ClassificationCache.ClassificationHandles.TryGetValue(
+            classificationName, out classification))
          {
-            if (!String.IsNullOrEmpty(value))
-               m_Description = value;
+            classification = IFCInstanceExporter.CreateClassification(file, "", "", 0, 0, 0,
+               classificationName, null, location);
+            ExporterCacheManager.ClassificationCache.ClassificationHandles.Add(classificationName, classification);
          }
+
+         ClassificationReferenceKey key = new ClassificationReferenceKey(location,
+            classificationCode, classificationRefName, null, classification);
+         ClassificationReferences[zoneClassificationCode] =
+            ExporterCacheManager.ClassificationCache.FindOrCreateClassificationReference(file, key);
+      }
+
+      static private IFCAnyHandle CreateLabelPropertyFromPattern(string[] patterns, string basePropertyName,
+         IFCFile file, Element element)
+      {
+         PropertyDescription propertyDescription = new PropertyDescription(basePropertyName);
+
+         foreach (string pattern in patterns)
+         {
+            string propertyName = string.Format(pattern, basePropertyName);
+            IFCAnyHandle propSingleValue = PropertyUtil.CreateLabelPropertyFromElement(file, element,
+               propertyName, BuiltInParameter.INVALID, propertyDescription, PropertyValueType.SingleValue,
+               null);
+            if (!IFCAnyHandleUtil.IsNullOrHasNoValue(propSingleValue))
+               return propSingleValue;
+         }
+         return null;
+      }
+
+      static private IFCAnyHandle CreateIdentifierPropertyFromPattern(string[] patterns, string basePropertyName,
+         IFCFile file, Element element)
+      {
+         PropertyDescription propertyDescription = new PropertyDescription(basePropertyName);
+
+         foreach (string pattern in patterns)
+         {
+            string propertyName = string.Format(pattern, basePropertyName);
+            IFCAnyHandle propSingleValue = PropertyUtil.CreateIdentifierPropertyFromElement(file,
+               element, propertyName, BuiltInParameter.INVALID, propertyDescription,
+               PropertyValueType.SingleValue);
+            if (!IFCAnyHandleUtil.IsNullOrHasNoValue(propSingleValue))
+               return propSingleValue;
+         }
+         return null;
+      }
+
+      static private IFCAnyHandle CreateAreaMeasurePropertyFromPattern(string[] patterns, string basePropertyName,
+         IFCFile file, Element element)
+      {
+         PropertyDescription propertyDescription = new PropertyDescription(basePropertyName);
+
+         foreach (string pattern in patterns)
+         {
+            string propertyName = string.Format(pattern, basePropertyName);
+            IFCAnyHandle propSingleValue = PropertyUtil.CreateAreaPropertyFromElement(file,
+               element, propertyName, BuiltInParameter.INVALID, propertyDescription,
+               PropertyValueType.SingleValue);
+            if (!IFCAnyHandleUtil.IsNullOrHasNoValue(propSingleValue))
+               return propSingleValue;
+         }
+         return null;
+      }
+
+      static private IFCAnyHandle CreateBooleanPropertyFromPattern(string[] patterns, string basePropertyName,
+         IFCFile file, Element element)
+      {
+         PropertyDescription propertyDescription = new PropertyDescription(basePropertyName);
+
+         foreach (string pattern in patterns)
+         {
+            string propertyName = string.Format(pattern, basePropertyName);
+            IFCAnyHandle propSingleValue = PropertyUtil.CreateBooleanPropertyFromElement(file, element,
+               propertyName, propertyDescription, PropertyValueType.SingleValue);
+            if (!IFCAnyHandleUtil.IsNullOrHasNoValue(propSingleValue))
+               return propSingleValue;
+         }
+         return null;
+      }
+
+      /// <summary>
+      /// Get the name of the net planned area property, depending on the current schema, for levels and zones.
+      /// </summary>
+      /// <returns>The name of the net planned area property.</returns>
+      /// <remarks>Note that Pset_SpaceCommon has had the property "NetPlannedArea" since IFC2x3.</remarks>
+      static private string GetLevelAndZoneNetPlannedAreaName()
+      {
+         return ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4 ? "NetAreaPlanned" : "NetPlannedArea";
+      }
+
+      /// <summary>
+      /// Get the name of the gross planned area property, depending on the current schema, for levels and zones.
+      /// </summary>
+      /// <returns>The name of the net planned area property.</returns>
+      /// <remarks>Note that Pset_SpaceCommon has had the property "GrossPlannedArea" since IFC2x3.</remarks>
+      static private string GetLevelAndZoneGrossPlannedAreaName()
+      {
+         return ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4 ? "GrossAreaPlanned" : "GrossPlannedArea";
+      }
+
+      /// <summary>
+      /// Collect the information needed to create Pset_ZoneCommon.
+      /// </summary>
+      /// <param name="file">The IFC file.</param>
+      /// <param name="element">The Revit element.</param>
+      /// <param name="index">The index of the zone for the current space.</param>
+      public void CollectZoneCommonPSetData(IFCFile file, Element element, int index)
+      {
+         // We don't use the generic Property Set mechanism because Zones aren't "real" elements.
+         string indexString = (index > 1) ? index.ToString() : string.Empty;
+         const string basePSetName = "Pset_ZoneCommon";
+
+         string[] patterns = new string[2] {
+            basePSetName + indexString + ".{0}",
+            "Zone" + "{0}" + indexString
+         };
+
+         ZoneCommonHandles.AddIfNotNullAndNewKey("Category",
+            CreateLabelPropertyFromPattern(patterns, "Category", file, element));
+
+         string grossPlannedAreaName = GetLevelAndZoneGrossPlannedAreaName();
+         ZoneCommonHandles.AddIfNotNullAndNewKey(grossPlannedAreaName,
+            CreateAreaMeasurePropertyFromPattern(patterns, grossPlannedAreaName, file,
+            element));
+
+         string netPlannedAreaName = GetLevelAndZoneNetPlannedAreaName();
+         ZoneCommonHandles.AddIfNotNullAndNewKey(netPlannedAreaName, 
+            CreateAreaMeasurePropertyFromPattern(patterns, netPlannedAreaName, file, element));
+
+         ZoneCommonHandles.AddIfNotNullAndNewKey("PubliclyAccessible",
+            CreateBooleanPropertyFromPattern(patterns, "PubliclyAccessible", file, element));
+
+         ZoneCommonHandles.AddIfNotNullAndNewKey("HandicapAccessible",
+            CreateBooleanPropertyFromPattern(patterns, "HandicapAccessible", file, element));
+
+         ZoneCommonHandles.AddIfNotNullAndNewKey("IsExternal",
+            CreateBooleanPropertyFromPattern(patterns, "IsExternal", file, element));
+
+         if (ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4x3)
+         {
+            ZoneCommonHandles.AddIfNotNullAndNewKey("Reference",
+               CreateIdentifierPropertyFromPattern(patterns, "Reference", file, element));
+         }
+
+         if (ZoneCommonHandles.Count > 0 && ZoneCommonGUID == null)
+         {
+            string psetName = basePSetName + indexString;
+            ZoneCommonGUID = GUIDUtil.GenerateIFCGuidFrom(
+               GUIDUtil.CreateGUIDString(element, psetName));
+         }
+      }
+
+      /// <summary>
+      /// Create the Pset_ZoneCommon property set, if applicable.
+      /// </summary>
+      /// <param name="file">The IFCFile parameter.</param>
+      /// <returns>The handle to the Pset_ZoneCommon property set, if created.</returns>
+      public IFCAnyHandle CreateZoneCommonPSetData(IFCFile file)
+      {
+         if (ZoneCommonHandles.Count == 0 || ZoneCommonGUID == null)
+            return null;
+
+         return IFCInstanceExporter.CreatePropertySet(file, ZoneCommonGUID,
+            ExporterCacheManager.OwnerHistoryHandle, "Pset_ZoneCommon", null,
+            ZoneCommonHandles.Values.ToHashSet());
       }
 
       /// <summary>
       /// The long name, for IFC4+.
       /// </summary>
-      public string LongName
-      {
-         get { return m_LongName; }
-         set
-         {
-            if (!String.IsNullOrEmpty(value))
-               m_LongName = value;
-         }
-      }
+      public string LongName { get; private set; } = string.Empty;
 
       /// <summary>
       /// The associated room handles.
       /// </summary>
-      public HashSet<IFCAnyHandle> RoomHandles
-      {
-         get { return m_AssocRoomHandles; }
-      }
+      public HashSet<IFCAnyHandle> RoomHandles { get; } = [];
 
       /// <summary>
-      /// The associated IfcClassificationReference handles.
+      /// A list of the names of already created IfcClassificationReferences.
       /// </summary>
-      public Dictionary<string, IFCAnyHandle> ClassificationReferences
-      {
-         get { return m_ClassificationReferences; }
-         set { m_ClassificationReferences = value; }
-      }
+      public Dictionary<string, IFCAnyHandle> ClassificationReferences { get; set; } = [];
+
+      public Dictionary<string, IFCAnyHandle> ZoneCommonHandles { get; set; } = [];
 
       /// <summary>
-      /// The associated ePset_SpatialZoneEnergyAnalysis handle.
+      /// The GUID for the Pset_ZoneCommon.
       /// </summary>
-      public IFCAnyHandle EnergyAnalysisProperySetHandle
-      {
-         get { return m_EnergyAnalysisProperySetHandle; }
-         set { m_EnergyAnalysisProperySetHandle = value; }
-      }
-
-      /// <summary>
-      /// The associated Pset_ZoneCommon handle.
-      /// </summary>
-      public IFCAnyHandle ZoneCommonProperySetHandle
-      {
-         get { return m_ZoneCommonProperySetHandle; }
-         set { m_ZoneCommonProperySetHandle = value; }
-      }
+      public string ZoneCommonGUID { get; private set; } = null;
    }
 }

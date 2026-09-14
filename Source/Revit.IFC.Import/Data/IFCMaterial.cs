@@ -83,16 +83,19 @@ namespace Revit.IFC.Import.Data
 
          Name = IFCImportHandleUtil.GetRequiredStringAttribute(ifcMaterial, "Name", true);
 
-         List<IFCAnyHandle> hasRepresentation = null;
-         if (IFCImportFile.TheFile.SchemaVersion >= IFCSchemaVersion.IFC2x3)
-            hasRepresentation = IFCAnyHandleUtil.GetAggregateInstanceAttribute<List<IFCAnyHandle>>(ifcMaterial, "HasRepresentation");
-
-         if (hasRepresentation != null && hasRepresentation.Count == 1)
+         if (Importer.TheOptions.HybridImportOptions == null)
          {
-            if (!IFCAnyHandleUtil.IsSubTypeOf(hasRepresentation[0], IFCEntityType.IfcMaterialDefinitionRepresentation))
-               Importer.TheLog.LogUnexpectedTypeError(hasRepresentation[0], IFCEntityType.IfcMaterialDefinitionRepresentation, false);
-            else
-               MaterialDefinitionRepresentation = IFCProductRepresentation.ProcessIFCProductRepresentation(hasRepresentation[0]);
+            List<IFCAnyHandle> hasRepresentation = null;
+            if (IFCImportFile.TheFile.SchemaVersionAtLeast(IFCSchemaVersion.IFC2x3))
+               hasRepresentation = IFCAnyHandleUtil.GetAggregateInstanceAttribute<List<IFCAnyHandle>>(ifcMaterial, "HasRepresentation");
+
+            if ((hasRepresentation?.Count ?? 0) == 1)
+            {
+               if (!IFCAnyHandleUtil.IsSubTypeOf(hasRepresentation[0], IFCEntityType.IfcMaterialDefinitionRepresentation))
+                  Importer.TheLog.LogUnexpectedTypeError(hasRepresentation[0], IFCEntityType.IfcMaterialDefinitionRepresentation, false);
+               else
+                  MaterialDefinitionRepresentation = IFCProductRepresentation.ProcessIFCProductRepresentation(hasRepresentation[0]);
+            }
          }
 
          Importer.TheLog.AddToElementCount();
@@ -108,7 +111,7 @@ namespace Revit.IFC.Import.Data
          if (revitMaterialName != null)
             return revitMaterialName;
 
-         return String.Format(Resources.IFCDefaultMaterialName, id);
+         return string.Format(Resources.IFCDefaultMaterialName, id);
       }
 
       /// <summary>
@@ -116,8 +119,7 @@ namespace Revit.IFC.Import.Data
       /// </summary>
       public IList<IFCMaterial> GetMaterials()
       {
-         IList<IFCMaterial> materials = new List<IFCMaterial>();
-         materials.Add(this);
+         IList<IFCMaterial> materials = new List<IFCMaterial>() { this };
          return materials;
       }
 
@@ -134,6 +136,9 @@ namespace Revit.IFC.Import.Data
          ElementId createdElementId = Importer.TheCache.CreatedMaterials.FindMatchingMaterial(originalName, id, materialInfo);
          if (createdElementId != ElementId.InvalidElementId)
             return createdElementId;
+
+         if (!materialInfo.IsValid())
+            return ElementId.InvalidElementId;
 
          string revitMaterialName = GetMaterialName(id, originalName);
 

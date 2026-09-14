@@ -66,19 +66,19 @@ namespace Revit.IFC.Import.Data
 
          double currPropertyValue = IFCImportHandleUtil.GetOptionalScaledLengthAttribute(ifcDoorPanelProperties, "PanelDepth", -1e+30);
          if (!MathUtil.IsAlmostEqual(currPropertyValue, -1e+30))
-            DoubleProperties[new Tuple<string, UnitType, AllowedValues>(GeneratePropertyName("PanelDepth"),
-                UnitType.UT_Length, AllowedValues.Positive)] = currPropertyValue;
+            DoubleProperties[Tuple.Create(GeneratePropertyName("PanelDepth"),
+                SpecTypeId.Length, AllowedValues.Positive)] = currPropertyValue;
 
          currPropertyValue = IFCImportHandleUtil.GetOptionalRealAttribute(ifcDoorPanelProperties, "PanelWidth", -1e+30);
          if (!MathUtil.IsAlmostEqual(currPropertyValue, -1e+30))
-            DoubleProperties[new Tuple<string, UnitType, AllowedValues>(GeneratePropertyName("PanelWidth"),
-                UnitType.UT_Length, AllowedValues.NonNegative)] = currPropertyValue;
+            DoubleProperties[Tuple.Create(GeneratePropertyName("PanelWidth"),
+                SpecTypeId.Number, AllowedValues.NonNegative)] = currPropertyValue;
 
-         string currPropertyValueString = IFCImportHandleUtil.GetOptionalStringAttribute(ifcDoorPanelProperties, "PanelOperation", null);
+         string currPropertyValueString = IFCAnyHandleUtil.GetEnumerationAttribute(ifcDoorPanelProperties, "PanelOperation");
          if (!string.IsNullOrEmpty(currPropertyValueString))
             StringProperties[GeneratePropertyName("PanelOperation")] = currPropertyValueString;
 
-         currPropertyValueString = IFCImportHandleUtil.GetOptionalStringAttribute(ifcDoorPanelProperties, "PanelPosition", null);
+         currPropertyValueString = IFCAnyHandleUtil.GetEnumerationAttribute(ifcDoorPanelProperties, "PanelPosition");
          if (!string.IsNullOrEmpty(currPropertyValueString))
             StringProperties[GeneratePropertyName("PanelPosition")] = currPropertyValueString;
       }

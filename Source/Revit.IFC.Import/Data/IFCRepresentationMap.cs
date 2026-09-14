@@ -17,15 +17,11 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 //
 
-using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
 using Revit.IFC.Common.Enums;
 using Revit.IFC.Common.Utility;
-using Revit.IFC.Import.Enums;
 using Revit.IFC.Import.Geometry;
 using Revit.IFC.Import.Utility;
 
@@ -97,12 +93,11 @@ namespace Revit.IFC.Import.Data
       /// Create geometry for a particular representation map.
       /// </summary>
       /// <param name="shapeEditScope">The geometry creation scope.</param>
-      /// <param name="lcs">Local coordinate system for the geometry, without scale.</param>
       /// <param name="scaledLcs">Local coordinate system for the geometry, including scale, potentially non-uniform.</param>
       /// <remarks>For this function, if lcs is null, we will create a library item for the geometry.</remarks>
-      public void CreateShape(IFCImportShapeEditScope shapeEditScope, Transform lcs, Transform scaledLcs, string guid)
+      public void CreateShape(IFCImportShapeEditScope shapeEditScope, Transform scaledLcs, string guid)
       {
-         bool creatingLibraryDefinition = (lcs == null);
+         bool creatingLibraryDefinition = (scaledLcs == null);
 
          if (MappedRepresentation != null)
          {
@@ -113,20 +108,9 @@ namespace Revit.IFC.Import.Data
                   return;
             }
 
-            Transform mappingTransform = null;
-            if (lcs == null)
-               mappingTransform = MappingOrigin;
-            else
-            {
-               if (MappingOrigin == null)
-                  mappingTransform = lcs;
-               else
-                  mappingTransform = lcs.Multiply(MappingOrigin);
-            }
-
             Transform scaledMappingTransform = null;
             if (scaledLcs == null)
-               scaledMappingTransform = mappingTransform;
+               scaledMappingTransform = MappingOrigin;
             else
             {
                if (MappingOrigin == null)
@@ -138,7 +122,7 @@ namespace Revit.IFC.Import.Data
             int numExistingSolids = shapeEditScope.Creator.Solids.Count;
             int numExistingCurves = shapeEditScope.Creator.FootprintCurves.Count;
 
-            MappedRepresentation.CreateShape(shapeEditScope, mappingTransform, scaledMappingTransform, guid);
+            MappedRepresentation.CreateShape(shapeEditScope, scaledMappingTransform, guid);
 
             if (creatingLibraryDefinition)
             {
@@ -147,10 +131,23 @@ namespace Revit.IFC.Import.Data
 
                if ((numExistingSolids != numNewSolids) || (numExistingCurves != numNewCurves))
                {
-                  IList<GeometryObject> mappedSolids = new List<GeometryObject>();
+                  List<GeometryObject> mappedSolids = new List<GeometryObject>();
                   for (int ii = numExistingSolids; ii < numNewSolids; ii++)
                   {
-                     mappedSolids.Add(shapeEditScope.Creator.Solids[numExistingSolids].GeometryObject);
+                     GeometryObject originalObject = shapeEditScope.Creator.Solids[numExistingSolids].GeometryObject;
+                     if (originalObject != null)
+                     {
+                        // We only check curves, not solids, here, so we don't pass in a DirectShape.
+                        IList<GeometryObject> processedList = IFCGeometryUtil.AdjustGeometryObjectsIfNeeded(originalObject, null, Id);
+                        if (processedList != null)
+                        {
+                           mappedSolids.AddRange(processedList);
+                        }
+                        else
+                        {
+                           mappedSolids.Add(originalObject);
+                        }
+                     }
                      shapeEditScope.Creator.Solids.RemoveAt(numExistingSolids);
                   }
 
@@ -166,25 +163,33 @@ namespace Revit.IFC.Import.Data
                   DirectShapeType directShapeType = null;
 
                   IFCTypeProduct typeProduct = null;
+                  int typeId = -1;
                   if (Importer.TheCache.RepMapToTypeProduct.TryGetValue(Id, out typeProduct) && typeProduct != null)
                   {
                      ElementId directShapeTypeId = ElementId.InvalidElementId;
                      if (Importer.TheCache.CreatedDirectShapeTypes.TryGetValue(typeProduct.Id, out directShapeTypeId))
                      {
                         directShapeType = doc.GetElement(directShapeTypeId) as DirectShapeType;
+                        typeId = typeProduct.Id;
                      }
                   }
 
                   if (directShapeType == null)
                   {
                      string directShapeTypeName = Id.ToString();
-                     directShapeType = IFCElementUtil.CreateElementType(doc, directShapeTypeName, shapeEditScope.CategoryId, Id);
+                     directShapeType = IFCElementUtil.CreateElementType(doc, directShapeTypeName, 
+                        shapeEditScope.CategoryId, Id, null, EntityType);
+                     typeId = Id;
                   }
 
-                  // Note that this assumes that there is only one 2D rep per DirectShapeType.
-                  directShapeType.AppendShape(mappedSolids);
-                  if (mappedCurves.Count != 0)
-                     shapeEditScope.SetPlanViewRep(directShapeType);
+                  if (!Importer.TheProcessor.PostProcessRepresentationMap(typeId, mappedCurves, mappedSolids))
+                  {
+                     // Do the "default" here instead of the processor, since we don't want the processor
+                     // to know about Revit.IFC.Import stuff.
+                     directShapeType.AppendShape(mappedSolids);
+                     if (mappedCurves.Count != 0)
+                        shapeEditScope.SetPlanViewRep(directShapeType);
+                  }
 
                   IFCImportFile.TheFile.ShapeLibrary.AddDefinitionType(Id.ToString(), directShapeType.Id);
                }

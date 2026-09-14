@@ -34,6 +34,8 @@ using ICSharpCode.SharpZipLib.Zip;
 using ICSharpCode.SharpZipLib.Core;
 using System.Xml;
 using IFCImportOptions = Revit.IFC.Import.Utility.IFCImportOptions;
+using System.Reflection;
+using static Revit.IFC.Import.Utility.IFCImportOptions;
 
 namespace Revit.IFC.Import.Data
 {
@@ -42,66 +44,64 @@ namespace Revit.IFC.Import.Data
    /// </summary>
    public class IFCImportFile
    {
-      private IFCImportOptions m_Options = null;
-
-      private Document m_Document = null;
-
-      private DirectShapeLibrary m_ShapeLibrary = null;
-
       /// <summary>
       /// The transaction for the import.
       /// </summary>
-      private Transaction m_Transaction = null;
+      private Transaction ReferenceTransaction { get; set; } = null;
 
-      static IFCImportFile m_sIFCImportFile;
-
-      static string m_OverrideSchemaFileName = null;
-
-      IFCFile m_IfcFile = null;
-
-      IFCProject m_IFCProject;
-
-      // A list of entities that aren't inside of the IFCProject that should regardless be created.
-      ICollection<IFCObjectDefinition> m_OtherEntitiesToCreate = new HashSet<IFCObjectDefinition>();
-
-      IFCUnits m_IFCUnits = new IFCUnits();
-
-      IDictionary<int, IFCEntity> m_EntityMap = new Dictionary<int, IFCEntity>();
-
-      IDictionary<int, Transform> m_TransformMap = new Dictionary<int, Transform>();
-
-      IDictionary<int, XYZ> m_XYZMap = new Dictionary<int, XYZ>();
-
-      // Anything in this map should also be in XYZMap.  This caches normalized values useful for Transforms.
-      IDictionary<int, XYZ> m_NormalizedXYZMap = new Dictionary<int, XYZ>();
-
-      IFCSchemaVersion m_SchemaVersion = IFCSchemaVersion.IFC2x3; // default
-
+      
       /// <summary>
       /// An element that keeps track of the created DirectShapeTypes, for geometry sharing.
       /// </summary>
-      public DirectShapeLibrary ShapeLibrary
-      {
-         get { return m_ShapeLibrary; }
-         protected set { m_ShapeLibrary = value; }
-      }
+      public DirectShapeLibrary ShapeLibrary { get; protected set; } = null;
 
       /// <summary>
       /// The import options associated with the file, generally set via UI.
       /// </summary>
-      public IFCImportOptions Options
-      {
-         get { return m_Options; }
-         protected set { m_Options = value; }
-      }
+      public IFCImportOptions Options { get; protected set; } = null;
 
       /// <summary>
       /// The document that will contain the elements created from the IFC import operation.
       /// </summary>
-      public Document Document
+      public Document Document { get; protected set; } = null;
+
+      private IFCFile IFCFile { get; set; } = null;
+
+      private static void StoreIFCCreatorInfo(IFCFile ifcFile, ProjectInfo projectInfo)
       {
-         get { return m_Document; }
-         protected set { m_Document = value; }
+         if (ifcFile == null || projectInfo == null)
+            return;
+
+         IList<IFCAnyHandle> applications = ifcFile.GetInstances(IFCAnyHandleUtil.GetIFCEntityTypeName(IFCEntityType.IfcApplication), false);
+         IFCAnyHandle application = applications.FirstOrDefault();
+         if (application != null)
+         {
+            var appFullName = IFCAnyHandleUtil.GetStringAttribute(application, "ApplicationFullName");
+            if (!string.IsNullOrEmpty(appFullName))
+            {
+               var applicationNameId = new ElementId(BuiltInParameter.IFC_APPLICATION_NAME);
+               ExporterIFCUtils.AddValueString(projectInfo, applicationNameId, appFullName);
+            }
+
+            var appVersion = IFCAnyHandleUtil.GetStringAttribute(application, "Version");
+            if (!string.IsNullOrEmpty(appVersion))
+            {
+               var applicationVersionId = new ElementId(BuiltInParameter.IFC_APPLICATION_VERSION);
+               ExporterIFCUtils.AddValueString(projectInfo, applicationVersionId, appVersion);
+            }
+         }
+
+         IList<IFCAnyHandle> organisations = ifcFile.GetInstances(IFCAnyHandleUtil.GetIFCEntityTypeName(IFCEntityType.IfcOrganization), false);
+         IFCAnyHandle organisation = organisations.LastOrDefault();
+         if (organisation != null)
+         {
+            var orgName = IFCAnyHandleUtil.GetStringAttribute(organisation, "Name");
+            if (!string.IsNullOrEmpty(orgName))
+            {
+               var organizationId = new ElementId(BuiltInParameter.IFC_ORGANIZATION);
+               ExporterIFCUtils.AddValueString(projectInfo, organizationId, orgName);
+            }
+         }
       }
 
       /// <summary>
@@ -120,7 +120,6 @@ namespace Revit.IFC.Import.Data
 
             IFCFileReadOptions readOptions = new IFCFileReadOptions();
             readOptions.FileName = importer.FullFileName;
-            readOptions.XMLConfigFileName = Path.Combine(DirectoryUtil.RevitProgramPath, "EDM\\ifcXMLconfiguration.xml");
 
             ifcFile.Read(readOptions);
             importer.SetFile(ifcFile);
@@ -133,111 +132,132 @@ namespace Revit.IFC.Import.Data
             IFCAnyHandle project = projects[0];
 
             importer.ProcessIFCProject(project);
+
+            if (schemaVersion >= IFCSchemaVersion.IFC4)
+            {
+               FailureMessage fm = new FailureMessage(BuiltInFailures.ImportFailures.IFCPartialSchemaSupport);
+               importer.Document.PostFailure(fm);
+            }
+
+            StoreIFCCreatorInfo(ifcFile, importer.Document.ProjectInformation);
          }
          finally
          {
-            if (ifcFile != null)
-            {
-               ifcFile.Close();
-               ifcFile = null;
-            }
+            ifcFile?.Close();
+            ifcFile = null;
          }
       }
 
       /// <summary>
       /// The file.
       /// </summary>
-      public static IFCImportFile TheFile
-      {
-         get { return m_sIFCImportFile; }
-      }
+      public static IFCImportFile TheFile { get; protected set; }
 
       /// <summary>
       /// Override the schema file name, incluing the path.
       /// </summary>
-      public static string OverrideSchemaFileName
-      {
-         get { return m_OverrideSchemaFileName; }
-         set { m_OverrideSchemaFileName = value; }
-      }
+      public static string OverrideSchemaFileName { get; set; } = null;
 
       /// <summary>
       /// A map of all of the already created IFC entities.  This is necessary to prevent duplication and redundant work.
       /// </summary>
-      public IDictionary<int, IFCEntity> EntityMap
-      {
-         get { return m_EntityMap; }
-      }
+      public IDictionary<long, IFCEntity> EntityMap { get; } = new Dictionary<long, IFCEntity>();
 
       /// <summary>
       /// A map of all of the already created transforms for IFCLocation.  This is necessary to prevent duplication and redundant work.
       /// </summary>
-      public IDictionary<int, Transform> TransformMap
-      {
-         get { return m_TransformMap; }
-      }
+      public IDictionary<int, Transform> TransformMap { get; } = new Dictionary<int, Transform>();
 
       /// <summary>
       /// A map of all of the already created points for IFCPoint sub-types.  This is necessary to prevent duplication and redundant work.
       /// </summary>
-      public IDictionary<int, XYZ> XYZMap
-      {
-         get { return m_XYZMap; }
-      }
+      public IDictionary<int, XYZ> XYZMap { get; } = new Dictionary<int, XYZ>();
 
       /// <summary>
       /// A map of all of the already created vectors for IFCPoint sub-types.  
       /// This is necessary to prevent duplication and redundant work.
       /// Any value in this map should be identical to XYZMap[key].Normalize().
       /// </summary>
-      public IDictionary<int, XYZ> NormalizedXYZMap
-      {
-         get { return m_NormalizedXYZMap; }
-      }
+      public IDictionary<int, XYZ> NormalizedXYZMap { get; } = new Dictionary<int, XYZ>();
 
       /// <summary>
       /// The project in the file.
       /// </summary>
-      public IFCProject IFCProject
-      {
-         get { return m_IFCProject; }
-         set { m_IFCProject = value; }
-      }
+      public IFCProject IFCProject { get; set; }
+
+      /// <summary>
+      /// The vertex tolerance for this import.  Convenience function.
+      /// </summary>
+      public double VertexTolerance { get; set; } = 0.0;
+
+      /// <summary>
+      /// The short curve tolerance for this import.  Convenience function.
+      /// </summary>
+      public double ShortCurveTolerance { get; set; } = 0.0;
 
       /// <summary>
       /// A list of entities not contained in IFCProject to create.  This could include, e.g., zones.
       /// </summary>
-      public ICollection<IFCObjectDefinition> OtherEntitiesToCreate
-      {
-         get { return m_OtherEntitiesToCreate; }
-      }
+      public ICollection<IFCObjectDefinition> OtherEntitiesToCreate { get; } = new HashSet<IFCObjectDefinition>();
 
       /// <summary>
       /// The schema version of the IFC file.
       /// </summary>
-      public IFCSchemaVersion SchemaVersion
+      private IFCSchemaVersion SchemaVersion { get; set; } = IFCSchemaVersion.IFC2x3; // default
+
+      /// <summary>
+      /// Constructs IFCImportFile object using transaction that may already be started.
+      /// </summary>
+      /// <param name="transaction">Transaction for IFCImportFile.</param>
+      protected IFCImportFile (Transaction transaction = null)
       {
-         get { return m_SchemaVersion; }
-         set { m_SchemaVersion = value; }
+         ReferenceTransaction = transaction;
+      }
+      
+      /// <summary>
+      /// Checks if the schema version of this file is at least the specified version.
+      /// </summary>
+      /// <param name="version">The version to checif the schema version of this file is at least the specified version. against.</param>
+      /// <returns>True if the schema version of this file is at least the specified version, false otherwise.</returns>
+      /// <remarks>IFC4Obsolete is the "base" IFC4 version, and should be the version used
+      /// to generally check for IFC4 files, unless a feature is known to be in a newer version.</remarks>
+      public bool SchemaVersionAtLeast(IFCSchemaVersion version)
+      {
+         return SchemaVersion >= version;
+      }
+
+      /// <summary>
+      /// Downgrade the current version of IFC4 to an obsolete version, if it is older.
+      /// </summary>
+      /// <param name="version">The version to downgrade to.</param>
+      /// <remarks>This is intended to allow us to "detect" obsolete versions of
+      /// IFC4 the first time we try to get an attribute that doesn't exist.</remarks>
+      public void DowngradeIFC4SchemaTo(IFCSchemaVersion version)
+      {
+         if (version != IFCSchemaVersion.IFC4Obsolete && version != IFCSchemaVersion.IFC4Add1Obsolete)
+            throw new ArgumentException("Version can only be IFC4Obsolete or IFC4Add1Obsolete.");
+
+         if (!SchemaVersionAtLeast(IFCSchemaVersion.IFC4Obsolete))
+            throw new InvalidOperationException("Can only downgrade IFC4 files.");
+
+         if (version < SchemaVersion)
+            SchemaVersion = version;
+      }
+
+      /// <summary>
+      /// Checks if an exception is based on an undefined attribute.
+      /// </summary>
+      /// <param name="ex">The exception.</param>
+      /// <returns>True if it is.</returns>
+      static public bool HasUndefinedAttribute(Exception ex)
+      {
+         return (ex != null && ex.Message == "IFC: EDM Toolkit Error: Attribute undefined.");
       }
 
       /// <summary>
       /// Units in the IFC project.
       /// </summary>
-      public IFCUnits IFCUnits
-      {
-         get { return m_IFCUnits; }
-      }
-
-      private void InitializeOpenTransaction(string name)
-      {
-         m_Transaction.Start(Resources.IFCOpenReferenceFile);
-
-         FailureHandlingOptions options = m_Transaction.GetFailureHandlingOptions();
-         //options.SetFailuresPreprocessor(Log);
-         options.SetForcedModalHandling(true);
-         options.SetClearAfterRollback(true);
-      }
+      public IFCUnits IFCUnits { get; } = new IFCUnits();
 
       public static string TheFileName { get; protected set; }
       public static int TheBrepCounter { get; set; }
@@ -247,24 +267,23 @@ namespace Revit.IFC.Import.Data
       /// </summary>
       /// <param name="ifcFilePath">The IFC file name.</param>
       /// <returns>True if the file read was successful, false otherwise.</returns>
-      private bool ProcessFile(string ifcFilePath)
+      private void ProcessFile(string ifcFilePath)
       {
          IFCFileReadOptions readOptions = new IFCFileReadOptions();
          readOptions.FileName = ifcFilePath;
-         readOptions.XMLConfigFileName = Path.Combine(DirectoryUtil.RevitProgramPath, "EDM\\ifcXMLconfiguration.xml");
 
          int numErrors = 0;
          int numWarnings = 0;
 
          try
          {
-            Importer.TheCache.StatusBar.Set(String.Format(Resources.IFCReadingFile, TheFileName));
-            m_IfcFile.Read(readOptions, out numErrors, out numWarnings);
+            Importer.TheCache.StatusBar.Set(Resources.IFCReadingFile, TheFileName);
+            IFCFile.Read(readOptions, out numErrors, out numWarnings);
          }
          catch (Exception ex)
          {
             Importer.TheLog.LogError(-1, "There was an error reading the IFC file: " + ex.Message + ".  Aborting import.", false);
-            return false;
+            throw;
          }
 
          if (numErrors > 0 || numWarnings > 0)
@@ -281,8 +300,6 @@ namespace Revit.IFC.Import.Data
                Importer.TheLog.LogWarning(-1, "There were " + numWarnings + " warnings reading the IFC file.  Please look at the log information at the end of this report for more information.", false);
             }
          }
-
-         return true;
       }
 
       private bool PostProcessReference()
@@ -292,28 +309,90 @@ namespace Revit.IFC.Import.Data
          ISet<IFCEntity> alreadyProcessed = new HashSet<IFCEntity>();
          // Processing an entity may result in a new entity being processed for the first time.  We'll have to post-process it also.
          // Post-processing should be fast, and do nothing if called multiple times, so we won't bother 
+
+         int oldTotal = 0;
+         int newTotal = 0;
          do
          {
-            int total = IFCImportFile.TheFile.EntityMap.Count;
+            oldTotal = IFCImportFile.TheFile.EntityMap.Count;
             List<IFCEntity> currentValues = IFCImportFile.TheFile.EntityMap.Values.ToList();
             foreach (IFCEntity entity in currentValues)
             {
-               if (alreadyProcessed.Contains(entity))
+               if (entity == null || alreadyProcessed.Contains(entity))
                   continue;
 
                entity.PostProcess();
                count++;
-               Importer.TheLog.ReportPostProcessedEntity(count, total);
+               Importer.TheLog.ReportPostProcessedEntity(count, oldTotal);
+               alreadyProcessed.Add(entity);
             }
 
-            int newTotal = IFCImportFile.TheFile.EntityMap.Values.Count;
-            if (total == newTotal)
-               break;
-
-            alreadyProcessed.UnionWith(currentValues);
-         } while (true);
+            newTotal = IFCImportFile.TheFile.EntityMap.Values.Count;
+         } while (oldTotal != newTotal);
 
          return true;
+      }
+
+      private void PreProcessStyledItems()
+      {
+         // As an optimization, we are going to avoid the "StyledByItem" INVERSE attribute, which is expensive.
+         // As such, we will find all IFCStyledItems in the file.
+         if (IFCImportFile.TheFile.SchemaVersionAtLeast(IFCSchemaVersion.IFC2x2))
+         {
+            IList<IFCAnyHandle> styledItems = IFCImportFile.TheFile.GetInstances(IFCEntityType.IfcStyledItem, true);
+            foreach (IFCAnyHandle styledItem in styledItems)
+            {
+               IFCAnyHandle itemHnd = IFCAnyHandleUtil.GetInstanceAttribute(styledItem, "Item");
+               if (IFCAnyHandleUtil.IsNullOrHasNoValue(itemHnd))
+                  continue;
+
+               ICollection<IFCAnyHandle> itemStyledItemHnds;
+               if (!Importer.TheCache.StyledByItems.TryGetValue(itemHnd, out itemStyledItemHnds))
+               {
+                  itemStyledItemHnds = new List<IFCAnyHandle>();
+                  Importer.TheCache.StyledByItems[itemHnd] = itemStyledItemHnds;
+               }
+               itemStyledItemHnds.Add(styledItem);
+            }
+         }
+      }
+
+      private void PreProcessPresentationLayers()
+      {
+         // As an optimization, we are going to avoid the "LayerAssignment(s)" INVERSE attribute, which is expensive.
+         // As such, we will find all IFCPresentationLayerAssignments in the file.
+         if (IFCImportFile.TheFile.SchemaVersionAtLeast(IFCSchemaVersion.IFC2x2))
+         {
+            IList<IFCAnyHandle> layerAssignments = IFCImportFile.TheFile.GetInstances(IFCEntityType.IfcPresentationLayerAssignment, true);
+            foreach (IFCAnyHandle layerAssignmentHnd in layerAssignments)
+            {
+               IList<IFCAnyHandle> assignedItems = 
+                  IFCAnyHandleUtil.GetAggregateInstanceAttribute<List<IFCAnyHandle>>(layerAssignmentHnd, "AssignedItems");
+               if (assignedItems == null)
+                  continue;
+
+               foreach (IFCAnyHandle assignedItem in assignedItems)
+               {
+                  if (IFCAnyHandleUtil.IsNullOrHasNoValue(assignedItem))
+                     continue;
+
+                  IFCAnyHandle existingLayerAssignmentHnd;
+                  if (Importer.TheCache.LayerAssignment.TryGetValue(assignedItem, out existingLayerAssignmentHnd))
+                  {
+                     if (existingLayerAssignmentHnd.Id != layerAssignmentHnd.Id)
+                        Importer.TheLog.LogWarning(assignedItem.Id, "Multiple inconsistent layer assignment items found for this item; using first one.", false);
+                     continue;
+                  }
+                  Importer.TheCache.LayerAssignment[assignedItem] = layerAssignmentHnd;
+               }
+            }
+         }
+      }
+      
+      private void PreProcessInverseCaches()
+      {
+         PreProcessStyledItems();
+         PreProcessPresentationLayers();
       }
 
       /// <summary>
@@ -322,7 +401,11 @@ namespace Revit.IFC.Import.Data
       /// <returns>True if the process is successful, false otherwise.</returns>
       private bool ProcessReference()
       {
-         InitializeOpenTransaction("Open IFC Reference File");
+         if (TransactionStatus.Started != Importer.StartReferenceIFCTransaction(ReferenceTransaction))
+         {
+            Importer.TheLog.LogError(-1, "Unable to start Transaction for ReferenceIFC Import", true);
+            return false;
+         }
 
          //If there is more than one project, we will be ignoring all but the first one.
          IList<IFCAnyHandle> projects = IFCImportFile.TheFile.GetInstances(IFCEntityType.IfcProject, false);
@@ -332,36 +415,15 @@ namespace Revit.IFC.Import.Data
             return false;
          }
 
+         PreProcessInverseCaches();
+
+         // This is where the main work happens.
          IFCProject.ProcessIFCProject(projects[0]);
-
-         // The IFC toolkit relies on the IFC schema definition to read in the file. The schema definition has entities that have data fields,
-         // and INVERSE relationships. Unfortunately, the standard IFC 2x3 schema has a "bug" where one of the inverse relationships is missing. 
-         // Normally we don't care all that much, but now we do. So if we don't allow using this inverse (because if we did, it would just constantly 
-         // throw exceptions), we need another way to get the zones. This is the way.
-         // We are also using this to find IfcSystems that don't have the optional IfcRelServicesBuildings set.
-         if (!IFCImportFile.TheFile.Options.AllowUseHasAssignments)
-         {
-            IList<IFCAnyHandle> zones = IFCImportFile.TheFile.GetInstances(IFCEntityType.IfcZone, false);
-            foreach (IFCAnyHandle zone in zones)
-            {
-               IFCZone ifcZone = IFCZone.ProcessIFCZone(zone);
-               if (ifcZone != null)
-                  OtherEntitiesToCreate.Add(ifcZone);
-            }
-
-            IList<IFCAnyHandle> systems = IFCImportFile.TheFile.GetInstances(IFCEntityType.IfcSystem, false);
-            foreach (IFCAnyHandle system in systems)
-            {
-               IFCSystem ifcSystem = IFCSystem.ProcessIFCSystem(system);
-               if (ifcSystem != null)
-                  OtherEntitiesToCreate.Add(ifcSystem);
-            }
-         }
 
          return PostProcessReference();
       }
 
-      private bool Process(string ifcFilePath, IFCImportOptions options, Document doc)
+      private void Process(string ifcFilePath, IFCImportOptions options, Document doc)
       {
          TheFileName = ifcFilePath;
          TheBrepCounter = 0;
@@ -369,34 +431,45 @@ namespace Revit.IFC.Import.Data
          try
          {
             IFCSchemaVersion schemaVersion;
-            m_IfcFile = CreateIFCFile(ifcFilePath, out schemaVersion);
+            IFCFile = CreateIFCFile(ifcFilePath, out schemaVersion);
             SchemaVersion = schemaVersion;
          }
          catch (Exception ex)
          {
             Importer.TheLog.LogError(-1, "There was an error reading the IFC file: " + ex.Message + ".  Aborting import.", false);
-            return false;
+            throw;
          }
 
          Options = options;
-
+         
          // The DirectShapeLibrary must be reset to potentially remove stale pointers from the last use.
          Document = doc;
          ShapeLibrary = DirectShapeLibrary.GetDirectShapeLibrary(doc);
          ShapeLibrary.Reset();
 
-         bool readFile = ProcessFile(ifcFilePath);
-         if (!readFile)
-            return false;
+         ProcessFile(ifcFilePath);
 
-         m_Transaction = new Transaction(doc);
+         if (ReferenceTransaction == null)
+         {
+            ReferenceTransaction = new Transaction(doc);
+         }
+
+         bool success = true;
          switch (options.Intent)
          {
             case IFCImportIntent.Reference:
-               return ProcessReference();
+               success = ProcessReference();
+               break;
          }
 
-         return true;
+         if (success)
+            StoreIFCCreatorInfo(IFCFile, doc.ProjectInformation);
+         else
+         {
+            string errorMsg = "Error whlie processing reference";
+            Importer.TheLog.LogError(-1, "There was an error reading the IFC file: " + errorMsg + ".  Aborting import.", false);
+            throw new InvalidOperationException(errorMsg);
+         }
       }
 
       /// <summary>
@@ -405,25 +478,43 @@ namespace Revit.IFC.Import.Data
       /// <param name="ifcFilePath">The path of the file.</param>
       /// <param name="options">The IFC import options.</param>
       /// <param name="doc">The optional document argument.  If importing into Revit, not supplying a document may reduce functionality later.</param>
+      /// <param name="transaction">Transaction, if one has already been started.</param>
       /// <returns>The IFCImportFile.</returns>
-      public static IFCImportFile Create(string ifcFilePath, IFCImportOptions options, Document doc)
+      public static IFCImportFile Create(string ifcFilePath, IFCImportOptions options, Document doc, Transaction transaction = null)
       {
-         m_sIFCImportFile = new IFCImportFile();
-         bool success = TheFile.Process(ifcFilePath, options, doc);
-         if (success)
-         {
+         TheFile = new IFCImportFile(transaction);
+         try
+         { 
+            TheFile.Process(ifcFilePath, options, doc);
+
             // Store the original levels in the template file for Open IFC.  On export, we will delete these levels if we created any.
             // Note that we always have to preserve one level, regardless of what the ActiveView is.
             if (doc != null)
             {
-               IFCBuildingStorey.ExistingLevelIdToReuse = ElementId.InvalidElementId;
+               // At this point, we have a Document that may contain Levels already.
+               // The first unconstrained one should be used when "creating" the IFCBuildingStorey later.
+               // If there is none, create a new Level corresponding to the first constrained one.
+               IFCBuildingStorey.ExistingUnConstrainedLevelToReuse = ElementId.InvalidElementId;
+               IFCBuildingStorey.ExistingConstrainedLevel = ElementId.InvalidElementId;
 
+               // First check ActiveView Level.  If set, then use it either as constrained or unconstrained Level.
                View activeView = doc.ActiveView;
                if (activeView != null)
                {
                   Level genLevel = activeView.GenLevel;
+
                   if (genLevel != null)
-                     IFCBuildingStorey.ExistingLevelIdToReuse = genLevel.Id;
+                  {
+                     if (IFCBuildingStorey.IsConstrainedToScopeBox(genLevel))
+                     {
+                        Importer.TheCache.ConstrainedLevels.Add(genLevel.Id);
+                        IFCBuildingStorey.ExistingConstrainedLevel = genLevel.Id;
+                     }
+                     else
+                     {
+                        IFCBuildingStorey.ExistingUnConstrainedLevelToReuse = genLevel.Id;
+                     }
+                  }
                }
 
                // For Link IFC, we will delete any unused levels at the end.  Instead, we want to try to reuse them.
@@ -433,15 +524,38 @@ namespace Revit.IFC.Import.Data
                FilteredElementCollector levelCollector = new FilteredElementCollector(doc);
                ICollection<Element> levels = levelCollector.OfClass(typeof(Level)).ToElements();
                ICollection<ElementId> levelIdsToDelete = new HashSet<ElementId>();
-               foreach (Element level in levels)
+               foreach (Element element in levels)
                {
+                  Level level = element as Level;
                   if (level == null)
                      continue;
 
-                  if (IFCBuildingStorey.ExistingLevelIdToReuse == ElementId.InvalidElementId)
-                     IFCBuildingStorey.ExistingLevelIdToReuse = level.Id;
-                  else if (level.Id != IFCBuildingStorey.ExistingLevelIdToReuse)
+                  bool constrainedToScopeBox = IFCBuildingStorey.IsConstrainedToScopeBox(level);
+                  if (constrainedToScopeBox)
+                  {
+                     Importer.TheCache.ConstrainedLevels.Add(level.Id);
+                  }
+
+                  if (IFCBuildingStorey.ExistingUnConstrainedLevelToReuse == ElementId.InvalidElementId)
+                  {
+                     if (!constrainedToScopeBox)
+                     {
+                        IFCBuildingStorey.ExistingUnConstrainedLevelToReuse = level.Id;
+                        if (IFCBuildingStorey.ExistingConstrainedLevel != ElementId.InvalidElementId)
+                        {
+                           levelIdsToDelete.Add(IFCBuildingStorey.ExistingConstrainedLevel);
+                           IFCBuildingStorey.ExistingConstrainedLevel = ElementId.InvalidElementId;
+                        }
+                     }
+                     else if (IFCBuildingStorey.ExistingConstrainedLevel == ElementId.InvalidElementId)
+                     {
+                        IFCBuildingStorey.ExistingConstrainedLevel = level.Id;
+                     }
+                  }
+                  else if ((level.Id != IFCBuildingStorey.ExistingUnConstrainedLevelToReuse) && (level.Id != IFCBuildingStorey.ExistingConstrainedLevel))
+                  {
                      levelIdsToDelete.Add(level.Id);
+                  }
                }
 
                if (deleteLevelsNow)
@@ -459,13 +573,14 @@ namespace Revit.IFC.Import.Data
                }
             }
          }
-         else
+         catch
          {
-            // Close up the log file, set m_sIFCImportFile to null.
+            // Close up the log file, set TheFile to null.
             TheFile.Close();
+            throw;
          }
 
-         return m_sIFCImportFile;
+         return TheFile;
       }
 
       /// <summary>
@@ -473,9 +588,9 @@ namespace Revit.IFC.Import.Data
       /// </summary>
       public void Close()
       {
-         if (m_IfcFile != null)
-            m_IfcFile.Close();
-         m_sIFCImportFile = null;
+         if (IFCFile != null)
+            IFCFile.Close();
+         TheFile = null;
       }
 
       private static void UpdateDocumentFileMetrics(Document doc, string ifcFileName)
@@ -511,28 +626,45 @@ namespace Revit.IFC.Import.Data
             return;
 
          Parameter originalImporterVersion = projInfo.LookupParameter("Revit Importer Version");
-         if (originalTimeStampParam != null && originalTimeStampParam.StorageType != StorageType.String)
+         if (originalImporterVersion != null && originalImporterVersion.StorageType != StorageType.String)
             return;
 
-         if (originalFileName != null)
-            originalFileName.Set(ifcFileName);
-         else
-            IFCPropertySet.AddParameterString(doc, projInfo, "Original IFC File Name", ifcFileName, -1);
+         Parameter originalImportMethod = projInfo.LookupParameter(IFCImportOptions.ImportMethodParameter);
+         if (originalImportMethod != null && originalImportMethod.StorageType != StorageType.String)
+            return;
+         
+         Category category = IFCPropertySet.GetCategoryForParameterIfValid(projInfo, -1);
 
-         if (originalFileSizeParam != null)
-            originalFileSizeParam.Set(ifcFileLength.ToString());
-         else
-            IFCPropertySet.AddParameterString(doc, projInfo, "Original IFC File Size", ifcFileLength.ToString(), -1);
+         using (ParameterSetter setter = new ParameterSetter())
+         {
+            ParametersToSet parametersToSet = setter.ParametersToSet;
 
-         if (originalTimeStampParam != null)
-            originalTimeStampParam.Set(ticks.ToString());
-         else
-            IFCPropertySet.AddParameterString(doc, projInfo, "Revit File Last Updated", ticks.ToString(), -1);
+            if (originalFileName != null)
+               parametersToSet.AddStringParameter(originalFileName, ifcFileName);
+            else
+               parametersToSet.AddStringParameter(doc, projInfo, category, TheFile.IFCProject, "Original IFC File Name", ifcFileName, -1);
 
-         if (originalImporterVersion != null)
-            originalImporterVersion.Set(IFCImportOptions.ImporterVersion);
-         else
-            IFCPropertySet.AddParameterString(doc, projInfo, "Revit Importer Version", IFCImportOptions.ImporterVersion, -1);
+            if (originalFileSizeParam != null)
+               parametersToSet.AddStringParameter(originalFileSizeParam, ifcFileLength.ToString());
+            else
+               parametersToSet.AddStringParameter(doc, projInfo, category, TheFile.IFCProject, "Original IFC File Size", ifcFileLength.ToString(), -1);
+
+            if (originalTimeStampParam != null)
+               parametersToSet.AddStringParameter(originalTimeStampParam, ticks.ToString());
+            else
+               parametersToSet.AddStringParameter(doc, projInfo, category, TheFile.IFCProject, "Revit File Last Updated", ticks.ToString(), -1);
+
+            if (originalImporterVersion != null)
+               parametersToSet.AddStringParameter(originalImporterVersion, IFCImportOptions.ImporterVersion);
+            else
+               parametersToSet.AddStringParameter(doc, projInfo, category, TheFile.IFCProject, "Revit Importer Version", IFCImportOptions.ImporterVersion, -1);
+
+            string legacyOrHybrid = IFCHybridImportOptions.ToString(Importer.TheOptions.HybridImportOptions);
+            if (originalImportMethod != null)
+               parametersToSet.AddStringParameter(originalImportMethod, legacyOrHybrid);
+            else
+               parametersToSet.AddStringParameter(doc, projInfo, category, TheFile.IFCProject, ImportMethodParameter, legacyOrHybrid, -1);
+         }
       }
 
       private bool DontDeleteSpecialElement(ElementId elementId)
@@ -541,7 +673,7 @@ namespace Revit.IFC.Import.Data
 
          // Don't delete the last level in the document, even if it wasn't used.  This would happen when
          // updating a document with 1 level with a new document with 0 levels.
-         if (elementId == IFCBuildingStorey.ExistingLevelIdToReuse)
+         if ((elementId == IFCBuildingStorey.ExistingUnConstrainedLevelToReuse) || Importer.TheCache.ConstrainedLevels.Contains(elementId))
             return true;
 
          return false;
@@ -563,6 +695,9 @@ namespace Revit.IFC.Import.Data
 
             foreach (ElementId elementId in Importer.TheCache.GUIDToElementMap.Values)
             {
+               if (Importer.TheHybridInfo?.HybridElements.Contains(elementId) ?? false)
+                  continue;
+
                if (DontDeleteSpecialElement(elementId))
                   continue;
 
@@ -578,11 +713,26 @@ namespace Revit.IFC.Import.Data
 
             foreach (ElementId elementId in Importer.TheCache.GridNameToElementMap.Values)
             {
+               if (Importer.TheHybridInfo?.HybridElements.Contains(elementId) ?? false)
+                  continue;
+
                Element element = doc.GetElement(elementId);
                if (element == null)
                   continue;
 
                otherElementsToDelete.Add(elementId);
+            }
+
+            // Some Elements may have been identified as deletion candidates during Hybrid IFC Import.
+            if ((Importer.TheHybridInfo?.ElementsToDelete.Count ?? 0) > 0)
+            {
+               foreach (ElementId elementId in Importer.TheHybridInfo.ElementsToDelete)
+               {
+                  if (elementId != ElementId.InvalidElementId)
+                  {
+                     otherElementsToDelete.Add(elementId);
+                  }
+               }
             }
 
             // Don't expect this to fail.
@@ -611,8 +761,8 @@ namespace Revit.IFC.Import.Data
             //TheLog.LogError(-1, ex.Message, false);
          }
 
-         if (m_Transaction != null)
-            m_Transaction.Commit();
+         if (ReferenceTransaction != null)
+            ReferenceTransaction.Commit();
       }
 
       /// <summary>
@@ -638,6 +788,100 @@ namespace Revit.IFC.Import.Data
       }
 
       /// <summary>
+      /// This rotates the Link such that North in the Link is North in the Revit Project.  May differ from True North.
+      /// </summary>
+      /// <param name="document">The document into which Link is placed, and will define North.</param>
+      /// <param name="instance">The Link instance to place in the Document.</param>
+      private static void RotateInstanceToProjectNorth(Document document, RevitLinkInstance instance)
+      {
+         if (document == null || instance == null)
+            return;
+
+         ProjectLocation projectLocation = document.ActiveProjectLocation;
+         if (projectLocation == null)
+            return;
+
+         Transform projectNorthRotation = projectLocation.GetTransform();
+         if (projectNorthRotation == null)
+            return;
+
+         XYZ rotatedNorth = projectNorthRotation.OfVector(XYZ.BasisY);
+         double angle = Math.Atan2(-rotatedNorth.X, rotatedNorth.Y);
+         if (MathUtil.IsAlmostZero(angle))
+            return;
+
+         Line zAxis = Line.CreateBound(XYZ.Zero, XYZ.BasisZ);
+         Location instanceLocation = instance.Location;
+         if (!instanceLocation.Rotate(zAxis, angle))
+         {
+            Importer.TheLog.LogError(-1, "Couldn't rotate link to project north.  This may result in an incorrect orientation.", false);
+         }
+      }
+
+      /// <summary>
+      /// This rotates the Link such that North will be defined as it is in the Link, not as what is defined in the Host Document.
+      /// </summary>
+      /// <param name="linkInstance">The Link that defines the coordinate system used to find True North.</param>
+      private static void RotateInstanceToLinkNorth(RevitLinkInstance linkInstance)
+      {
+         if (linkInstance == null)
+            return;
+
+         Document linkDocument = linkInstance.GetLinkDocument();
+         ProjectLocation linkLocation = linkDocument?.ActiveProjectLocation;
+         ProjectPosition linkPosition = linkLocation?.GetProjectPosition(XYZ.Zero);
+         if (linkPosition == null)
+            return;
+
+         double linkAngle = linkPosition.Angle;
+
+         if (MathUtil.IsAlmostZero(linkAngle))
+            return;
+
+         Line zAxis = Line.CreateBound(XYZ.Zero, XYZ.BasisZ);
+         Location instanceLocation = linkInstance.Location;
+         if (!instanceLocation.Rotate(zAxis, linkAngle))
+         {
+            Importer.TheLog.LogError(-1, "Couldn't rotate link according to its north.  This may result in an incorrect orientation.", false);
+         }
+      }
+
+      /// <summary>
+      /// Moves the Link to the corresponding place within the Host Document.
+      /// </summary>
+      /// <param name="originalDocument">The Document into which Link instance is placed.</param>
+      /// <param name="linkInstance">The Link Instance ussed to position the Link.</param>
+      /// <param name="position">This defines where to place the Link.</param>
+      private static void MoveInstanceToAlignPoint(Document originalDocument, RevitLinkInstance linkInstance, IFCLinkPosition position)
+      {
+         if ((originalDocument == null) || (linkInstance == null))
+            return;
+
+         if ((position != IFCLinkPosition.ProjectBasePoint) && (position != IFCLinkPosition.SurveyPoint))
+            return;
+
+         Document linkedDocument = linkInstance.GetLinkDocument();
+         if (linkedDocument == null)
+            return;
+
+         XYZ originalPoint = (position == IFCLinkPosition.ProjectBasePoint) ? BasePoint.GetProjectBasePoint(originalDocument)?.Position : BasePoint.GetSurveyPoint(originalDocument)?.Position;
+         XYZ linkedPoint = BasePoint.GetProjectBasePoint(linkedDocument)?.Position;
+
+         if ((originalPoint == null) || (linkedPoint == null))
+            return;
+
+         XYZ translationVector = originalPoint - linkedPoint;
+         if (translationVector.IsZeroLength())
+            return;
+
+         Location instanceLocation = linkInstance.Location;
+         if (!instanceLocation.Move(translationVector))
+         {
+            Importer.TheLog.LogError(-1, $"Couldn't move link to position defined by {position}.  This may result in an incorrect position.", false);
+         }
+      }
+
+      /// <summary>
       /// Link in the new created document to parent document.
       /// </summary>
       /// <param name="originalIFCFileName">The full path to the original IFC file.  Same as baseLocalFileName if the IFC file is not on a server.</param>
@@ -645,12 +889,16 @@ namespace Revit.IFC.Import.Data
       /// <param name="ifcDocument">The newly imported IFC file document.</param>
       /// <param name="originalDocument">The document to contain the IFC link.</param>
       /// <param name="useExistingType">True if the RevitLinkType already exists.</param>
-      /// <param name="doSave">True if we should save the document.  This should only be false if we are reusing a cached document.</param>
+      /// <param name="doSave">Indicates whether the .IFC.RVT file (also used for IFC cache on reload) should be saved.</param>
       /// <returns>The element id of the RevitLinkType for this link operation.</returns>
-      public static ElementId LinkInFile(string originalIFCFileName, string baseLocalFileName, Document ifcDocument, Document originalDocument, bool useExistingType, bool doSave)
+      public static ElementId LinkInFile(string originalIFCFileName, string baseLocalFileName,
+                                         Document ifcDocument, Document originalDocument,
+                                         bool useExistingType, bool doSave)
       {
          bool saveSucceded = true;
          string fileName = GenerateRevitFileName(baseLocalFileName);
+
+         #region SaveLinkedFile
 
          if (doSave)
          {
@@ -692,6 +940,8 @@ namespace Revit.IFC.Import.Data
             }
          }
 
+         #endregion
+
          if (!ifcDocument.IsLinked)
             ifcDocument.Close(false);
 
@@ -731,9 +981,11 @@ namespace Revit.IFC.Import.Data
          if (ifcResource == null)
             Importer.TheLog.LogError(-1, "Couldn't create local IFC cached file.  Aborting import.", true);
 
-
          if (!doReloadFrom)
          {
+
+            #region Link Without Reload
+
             Transaction linkTransaction = new Transaction(originalDocument);
             linkTransaction.Start(Resources.IFCLinkFile);
 
@@ -748,16 +1000,116 @@ namespace Revit.IFC.Import.Data
                }
 
                if (revitLinkTypeId != ElementId.InvalidElementId)
-                  RevitLinkInstance.Create(originalDocument, revitLinkTypeId);
+               {
+                  RevitLinkInstance linkInstance = RevitLinkInstance.Create(originalDocument, revitLinkTypeId);
+                  Document linkDocument = linkInstance?.GetLinkDocument();
+                  if (linkDocument == null)
+                  {
+                     Importer.TheLog.LogError(-1, "Unable to create Link Instance for IFC File in Host Document -- Aborting Link.", true);
+                  }
+
+                  XYZ hostSharedCoordinatesOrigin = GetGlobalSurveyPointPosition(originalDocument);
+                  XYZ hostProjectBasePointShared = BasePoint.GetProjectBasePoint(originalDocument)?.SharedPosition;
+                  XYZ hostInternalOriginShared = (hostSharedCoordinatesOrigin == null) ? null : -hostSharedCoordinatesOrigin;
+                  if ((hostSharedCoordinatesOrigin == null) || (hostProjectBasePointShared == null) || (hostInternalOriginShared == null))
+                  {
+                     Importer.TheLog.LogError(-1, "Unable to retrieve three primary shared origins Host Document -- Aborting Link.", true);
+                  }
+
+                  // Log all coordinates for Verbose Logging.
+                  if (Importer.TheOptions.VerboseLogging)
+                  {
+                     XYZ hostProjectBasePoint = BasePoint.GetProjectBasePoint(originalDocument).Position;
+
+                     XYZ hostSurveyPointShared = BasePoint.GetSurveyPoint(originalDocument).SharedPosition;
+
+                     XYZ linkProjectBasePoint = BasePoint.GetProjectBasePoint(linkDocument).Position;
+                     XYZ linkProjectBasePointShared = BasePoint.GetProjectBasePoint(linkDocument).SharedPosition;
+                     XYZ linkSurveyPoint = BasePoint.GetSurveyPoint(linkDocument)?.Position;
+                     XYZ linkSurveyPointShared = BasePoint.GetSurveyPoint(linkDocument).SharedPosition;
+
+                     XYZ internalOrigin = XYZ.Zero;
+                     XYZ linkInternalOriginShared = -linkSurveyPoint;
+
+                     Importer.TheLog.LogComment(-1, $"-------------------------------- BEGIN IFC LINK POSITION INFO -----------------", false);
+                     Importer.TheLog.LogComment(-1, $"> HOST DOCUMENT > Internal Origin:  Position: {internalOrigin}. Shared Position: {hostInternalOriginShared}", false);
+                     Importer.TheLog.LogComment(-1, $"> HOST DOCUMENT > Project Base Point:  Position: {hostProjectBasePoint}, Shared Position: {hostProjectBasePointShared}", false);
+                     Importer.TheLog.LogComment(-1, $"> HOST DOCUMENT > Survey Point:  Position: {hostSharedCoordinatesOrigin}, Shared Position: {hostSurveyPointShared}", false);
+                     Importer.TheLog.LogComment(-1, $"> LINK DOCUMENT > Internal Origin:  Position: {internalOrigin}. Shared Position: {linkInternalOriginShared}", false);
+                     Importer.TheLog.LogComment(-1, $"> LINK DOCUMENT > Project Base Point:  Position: {linkProjectBasePoint}, Shared Position: {linkProjectBasePointShared}", false);
+                     Importer.TheLog.LogComment(-1, $"> LINK DOCUMENT > Survey Point:  Position: {linkSurveyPoint}, Shared Position: {linkSurveyPointShared}", false);
+                     Importer.TheLog.LogComment(-1, $"> Large Coordinate Offset:  Original: {Importer.TheHybridInfo.OriginalLargeCoordinateOriginOffset}, Current: {Importer.TheHybridInfo.LargeCoordinateOriginOffset}", false);
+                     Importer.TheLog.LogComment(-1, $"> Destination Position: {Importer.TheOptions.LinkPosition.ToString()}, Destination Orientation: {Importer.TheOptions.LinkOrientation.ToString()}", false);
+                     Importer.TheLog.LogComment(-1, $"-------------------------------- END IFC LINK POSITION INFO -----------------", false);
+                  }
+
+                  #region Large Coordinates post-processing
+
+                  // LargeCoordinateOriginOffset equals the distance that the Link Instance has been moved from its original position, to the Revit Internal Origin.
+                  // To move the Link Instance back to its original location, use the inverse of the OriginalLargeCoordinateOriginOffset.
+                  // Subtract the shared coordinates of the target point to ensure correct coordinates.
+                  XYZ originalLargeCoordinateOriginOffset = Importer.TheHybridInfo?.OriginalLargeCoordinateOriginOffset ?? XYZ.Zero;
+                  if (!originalLargeCoordinateOriginOffset.IsZeroLength())
+                  {
+                     XYZ targetPoint = Importer.TheOptions.LinkPosition switch
+                     {
+                        IFCLinkPosition.InternalOrigin => hostInternalOriginShared,
+                        IFCLinkPosition.ProjectBasePoint => hostProjectBasePointShared,
+                        IFCLinkPosition.SurveyPoint => hostSharedCoordinatesOrigin,
+                        _ => hostInternalOriginShared    // Always defaulting to Internal Origin.
+                     };
+
+                     XYZ adjustmentOffset = (-originalLargeCoordinateOriginOffset) - targetPoint;
+                     if (XYZ.IsWithinLengthLimits(adjustmentOffset))
+                     {
+                        Location rvtLinkLocation = linkInstance.Location;
+                        rvtLinkLocation.Move(adjustmentOffset);
+                     }
+                     else
+                     {
+                        Importer.TheLog.LogWarning(-1, $"IFC Import:  IFC Origin is outside IFC Import Threshold.  IFC Origin has been moved to target point:  {Importer.TheOptions.LinkPosition}.", false);
+                     }
+                  }
+
+                  #endregion
+
+                  #region Link Orientation
+
+                  // Default:  Rotate link to Revit Project North (not True North).
+                  RotateInstanceToProjectNorth(originalDocument, linkInstance);
+
+                  // Handle True North orientation.
+                  if (Importer.TheOptions.LinkOrientation == IFCLinkOrientation.TrueNorth)
+                  {
+                     RotateInstanceToLinkNorth(linkInstance);
+                  }
+
+                  #endregion
+
+                  #region Link Positioning
+
+                  // For targets of ProjectBasePoint and SurveyPoint only, move the LinkInstance to align with the target point.
+                  // If the IFC Origin was outside IFC Import Threshold, treat as if the target is "Internal Origin".
+                  if (Importer.TheOptions.LinkPosition != IFCLinkPosition.InternalOrigin)
+                  {
+                     MoveInstanceToAlignPoint(originalDocument, linkInstance, Importer.TheOptions.LinkPosition);
+                  }
+
+                  #endregion
+               }
 
                Importer.PostDelayedLinkErrors(originalDocument);
                linkTransaction.Commit();
+
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                linkTransaction.RollBack();
-               throw ex;
+               throw;
             }
+
+            #endregion
+
          }
          else // reload from
          {
@@ -771,6 +1123,26 @@ namespace Revit.IFC.Import.Data
          }
 
          return revitLinkTypeId;
+      }
+
+      /// <summary>
+      /// Gets the survey point position transformed to global coordinates using the project location's rotation.
+      /// </summary>
+      /// <param name="document">The Revit document.</param>
+      /// <returns>The survey point position in global coordinates, or null if not available.</returns>
+      public static XYZ GetGlobalSurveyPointPosition(Document document)
+      {
+         if (document == null)
+            return null;
+
+         XYZ surveyPointPosition = BasePoint.GetSurveyPoint(document)?.Position;
+         if (surveyPointPosition == null)
+            return null;
+
+         ProjectLocation projectLocation = document.ActiveProjectLocation;
+         double tnAngle = projectLocation?.GetProjectPosition(XYZ.Zero)?.Angle ?? 0.0;
+         Transform rotationTrfAtInternal = Transform.CreateRotationAtPoint(XYZ.BasisZ, tnAngle, XYZ.Zero);
+         return rotationTrfAtInternal.OfPoint(surveyPointPosition);
       }
 
       /// <summary>
@@ -980,44 +1352,56 @@ namespace Revit.IFC.Import.Data
          {
             modelOptions.SchemaFile = OverrideSchemaFileName;
          }
-         else if (string.Compare(schemaName, "IFC2X3", true) == 0)
+         else if (schemaName.Equals("IFC2X3", StringComparison.OrdinalIgnoreCase))
          {
-            modelOptions.SchemaFile = Path.Combine(DirectoryUtil.RevitProgramPath, "EDM\\IFC2X3_TC1.exp");
             schemaVersion = IFCSchemaVersion.IFC2x3;
          }
-         else if (string.Compare(schemaName, "IFC2X_FINAL", true) == 0)
+         else if (schemaName.Equals("IFC2X_FINAL", StringComparison.OrdinalIgnoreCase))
          {
-            modelOptions.SchemaFile = Path.Combine(DirectoryUtil.RevitProgramPath, "EDM\\IFC2X_PROXY.exp");
             schemaVersion = IFCSchemaVersion.IFC2x;
          }
-         else if (string.Compare(schemaName, "IFC2X2_FINAL", true) == 0)
+         else if (schemaName.Equals("IFC2X2_FINAL", StringComparison.OrdinalIgnoreCase))
          {
-            modelOptions.SchemaFile = Path.Combine(DirectoryUtil.RevitProgramPath, "EDM\\IFC2X2_ADD1.exp");
             schemaVersion = IFCSchemaVersion.IFC2x2;
          }
-         else if (string.Compare(schemaName, "IFC4", true) == 0)
+         else if (schemaName.Equals("IFC4", StringComparison.OrdinalIgnoreCase))
          {
-            // We will still temporarily support the old IFC4.exp file.
-            string ifc4Add1Path = Path.Combine(DirectoryUtil.RevitProgramPath, "EDM\\IFC4_ADD1.exp");
-            string ifc4Add2Path = Path.Combine(DirectoryUtil.RevitProgramPath, "EDM\\IFC4_ADD2.exp");
-            if (File.Exists(ifc4Add2Path))
-            {
-               modelOptions.SchemaFile = ifc4Add2Path;
-               schemaVersion = IFCSchemaVersion.IFC4Add2;
-            }
-            else if (File.Exists(ifc4Add1Path))
-            {
-               modelOptions.SchemaFile = ifc4Add1Path;
-               schemaVersion = IFCSchemaVersion.IFC4Add1;
-            }
-            else
-            {
-               modelOptions.SchemaFile = Path.Combine(DirectoryUtil.RevitProgramPath, "EDM\\IFC4.exp");
-               schemaVersion = IFCSchemaVersion.IFC4;
-            }
+            schemaVersion = IFCSchemaVersion.IFC4;
+         }
+         else if (schemaName.Equals("IFC4X1", StringComparison.OrdinalIgnoreCase))
+         {
+            schemaVersion = IFCSchemaVersion.IFC4x1;
+         }
+         else if (schemaName.Equals("IFC4X2", StringComparison.OrdinalIgnoreCase))
+         {
+            schemaVersion = IFCSchemaVersion.IFC4x2;
+         }
+         else if (schemaName.Equals("IFC4X3_RC1", StringComparison.OrdinalIgnoreCase))
+         {
+            schemaVersion = IFCSchemaVersion.IFC4x3_RC1;
+         }
+         else if (schemaName.Equals("IFC4X3_RC4", StringComparison.OrdinalIgnoreCase))
+         {
+            schemaVersion = IFCSchemaVersion.IFC4x3_RC4;
+         }
+         else if (schemaName.Equals("IFC4X3", StringComparison.OrdinalIgnoreCase))
+         {
+            schemaVersion = IFCSchemaVersion.IFC4x3;
+         }
+         else if (schemaName.Equals("IFC4X3_ADD2", StringComparison.OrdinalIgnoreCase))
+         {
+            schemaVersion = IFCSchemaVersion.IFC4x3_ADD2;
          }
          else
             throw new ArgumentException("Invalid or unsupported schema: " + schemaName);
+
+         if (schemaVersion >= IFCSchemaVersion.IFC4x1)
+         {
+            if (Importer.TheLog != null)
+            {
+               Importer.TheLog.LogWarning(-1, "Schema " + schemaName + " is not fully supported. Some elements may be missed or imported incorrectly.", false);
+            }
+         }
 
          return modelOptions;
       }
@@ -1092,7 +1476,7 @@ namespace Revit.IFC.Import.Data
       /// <returns>The instance handles.</returns>
       public IList<IFCAnyHandle> GetInstances(IFCEntityType type, bool includeSubTypes)
       {
-         return m_IfcFile.GetInstances(IFCAnyHandleUtil.GetIFCEntityTypeName(type), includeSubTypes);
+         return IFCFile.GetInstances(IFCAnyHandleUtil.GetIFCEntityTypeName(type), includeSubTypes);
       }
    }
 }

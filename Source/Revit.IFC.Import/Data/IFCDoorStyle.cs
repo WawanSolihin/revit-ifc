@@ -113,15 +113,24 @@ namespace Revit.IFC.Import.Data
 
          if (element != null)
          {
-            Parameter operationTypeParameter = element.get_Parameter(BuiltInParameter.DOOR_OPERATION_TYPE);
-            if (operationTypeParameter != null)
-               operationTypeParameter.Set(OperationType.ToString());
-            IFCPropertySet.AddParameterString(doc, element, "IfcOperationType", OperationType.ToString(), Id);
+            Category category = IFCPropertySet.GetCategoryForParameterIfValid(element, Id);
+            if (category != null)
+            {
+               IFCDefaultProcessor processor = Importer.TheProcessor as IFCDefaultProcessor;
+               if (processor != null)
+               {
+                  processor.SetElementStringParameter(element, Id, BuiltInParameter.DOOR_OPERATION_TYPE, OperationType.ToString(), false, ParametersToSet);
+                  processor.SetElementStringParameter(element, Id, BuiltInParameter.DOOR_CONSTRUCTION_TYPE, ConstructionType.ToString(), false, ParametersToSet);
+               }
+               else
+               {
+                  Importer.TheProcessor.SetStringParameter(element, Id, BuiltInParameter.DOOR_OPERATION_TYPE, OperationType.ToString(), false);
+                  Importer.TheProcessor.SetStringParameter(element, Id, BuiltInParameter.DOOR_CONSTRUCTION_TYPE, ConstructionType.ToString(), false);
+               }
 
-            Parameter constructionTypeParameter = element.get_Parameter(BuiltInParameter.DOOR_CONSTRUCTION_TYPE);
-            if (constructionTypeParameter != null)
-               constructionTypeParameter.Set(ConstructionType.ToString());
-            IFCPropertySet.AddParameterString(doc, element, "IfcConstructionType", ConstructionType.ToString(), Id);
+               ParametersToSet.AddStringParameter(doc, element, category, this, "IfcOperationType", OperationType.ToString(), Id);
+               ParametersToSet.AddStringParameter(doc, element, category, this, "IfcConstructionType", ConstructionType.ToString(), Id);
+            }
          }
       }
    }

@@ -37,20 +37,6 @@ namespace Revit.IFC.Export.Exporter
    /// </summary>
    class AssemblyInstanceExporter
    {
-      private static IFCElementAssemblyType GetPredefinedTypeFromObjectType(string objectType)
-      {
-         if (String.IsNullOrEmpty(objectType))
-            return IFCElementAssemblyType.NotDefined;
-
-         foreach (IFCElementAssemblyType val in Enum.GetValues(typeof(IFCElementAssemblyType)))
-         {
-            if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(objectType, val.ToString()))
-               return val;
-         }
-
-         return IFCElementAssemblyType.UserDefined;
-      }
-
       /// <summary>
       /// Exports an element as an IFC assembly.
       /// </summary>
@@ -64,10 +50,18 @@ namespace Revit.IFC.Export.Exporter
          if (element == null)
             return false;
 
-         IFCFile file = exporterIFC.GetFile();
+         if (ExporterCacheManager.AssemblyInstanceCache.TryGetValue(element.Id,
+            out AssemblyInstanceInfo info) &&
+            !IFCAnyHandleUtil.IsNullOrHasNoValue(info.AssemblyInstanceHandle))
+            return true;      // Already processed before
 
-         using (IFCTransaction tr = new IFCTransaction(file))
+         IFCFile file = exporterIFC.GetFile();
+         using (IFCTransaction tr = new(file))
          {
+            IFCExportInfoPair exportAs = ExporterUtil.GetObjectExportType(element, out string ifcEnumType);
+            IFCAnyHandle typeHnd = ExporterUtil.CreateGenericTypeFromElement(element, exportAs,
+               file, productWrapper);
+            
             IFCAnyHandle assemblyInstanceHnd = null;
 
             string guid = GUIDUtil.CreateGUID(element);
@@ -76,33 +70,27 @@ namespace Revit.IFC.Export.Exporter
             PlacementSetter placementSetter = null;
             IFCLevelInfo levelInfo = null;
             bool relateToLevel = true;
+            ElementId overrideContainerId = ElementId.InvalidElementId;
 
-            string ifcEnumType;
-            IFCExportInfoPair exportAs = ExporterUtil.GetExportType(exporterIFC, element, out ifcEnumType);
             if (exportAs.ExportInstance == IFCEntityType.IfcSystem)
             {
                string name = NamingUtil.GetNameOverride(element, NamingUtil.GetIFCName(element));
                string description = NamingUtil.GetDescriptionOverride(element, null);
-               string objectType = NamingUtil.GetObjectTypeOverride(element, NamingUtil.GetFamilyAndTypeName(element));
+               string objectType = NamingUtil.GetDefaultObjectType(element);
                assemblyInstanceHnd = IFCInstanceExporter.CreateSystem(file, guid, ownerHistory, name, description, objectType);
 
-               // Create classification reference when System has classification filed name assigned to it
-               ClassificationUtil.CreateClassification(exporterIFC, file, element, assemblyInstanceHnd);
-
-               HashSet<IFCAnyHandle> relatedBuildings = new HashSet<IFCAnyHandle>();
-               relatedBuildings.Add(ExporterCacheManager.BuildingHandle);
-
-               IFCAnyHandle relServicesBuildings = IFCInstanceExporter.CreateRelServicesBuildings(file, GUIDUtil.CreateGUID(),
-                   ExporterCacheManager.OwnerHistoryHandle, null, null, assemblyInstanceHnd, relatedBuildings);
+               Exporter.CreateRelServicesBuildings(ExporterCacheManager.BuildingHandle, file,
+                  ExporterCacheManager.OwnerHistoryHandle, assemblyInstanceHnd);
 
                relateToLevel = false; // Already related to the building via IfcRelServicesBuildings.
             }
             else
             {
                // Check for containment override
-               IFCAnyHandle overrideContainerHnd = null;
-               ElementId overrideContainerId = ParameterUtil.OverrideContainmentParameter(exporterIFC, element, out overrideContainerHnd);
+               overrideContainerId = ParameterUtil.OverrideContainmentParameter(element, out IFCAnyHandle overrideContainerHnd);
 
+               if (MathUtil.IsInvalidElementId(overrideContainerId))
+                  overrideContainerId = ExporterCacheManager.LevelInfoCache.GetLevelIdOfObject(element);
                using (placementSetter = PlacementSetter.Create(exporterIFC, element, null, null, overrideContainerId, overrideContainerHnd))
                {
                   IFCAnyHandle representation = null;
@@ -111,53 +99,24 @@ namespace Revit.IFC.Export.Exporter
                   localPlacement = placementSetter.LocalPlacement;
                   levelInfo = placementSetter.LevelInfo;
 
-                  switch (exportAs.ExportInstance)
-                  {
-                     case IFCEntityType.IfcCurtainWall:
-                        //case IFCExportType.IfcCurtainWallType:
-                        //string cwPredefinedType = IFCValidateEntry.GetValidIFCPredefinedType(element, ifcEnumType, "IfcCurtainWallType");
-                        assemblyInstanceHnd = IFCInstanceExporter.CreateCurtainWall(exporterIFC, element, guid,
-                            ownerHistory, localPlacement, representation, ifcEnumType);
-                        break;
-                     case IFCEntityType.IfcRamp:
-                        string rampPredefinedType = RampExporter.GetIFCRampType(ifcEnumType);
-                        //rampPredefinedType = IFCValidateEntry.GetValidIFCPredefinedType(element, rampPredefinedType, "IfcRampType");
-                        assemblyInstanceHnd = IFCInstanceExporter.CreateRamp(exporterIFC, element, guid,
-                            ownerHistory, localPlacement, representation, rampPredefinedType);
-                        break;
-                     case IFCEntityType.IfcRoof:
-                        //string roofPredefinedType = IFCValidateEntry.GetValidIFCPredefinedType(element, ifcEnumType, "IfcRoofType");
-                        assemblyInstanceHnd = IFCInstanceExporter.CreateRoof(exporterIFC, element, guid,
-                            ownerHistory, localPlacement, representation, ifcEnumType);
-                        break;
-                     case IFCEntityType.IfcStair:
-                        string stairPredefinedType = StairsExporter.GetIFCStairType(ifcEnumType);
-                        //stairPredefinedType = IFCValidateEntry.GetValidIFCPredefinedType(element, stairPredefinedType, "IfcStairType");
-                        assemblyInstanceHnd = IFCInstanceExporter.CreateStair(exporterIFC, element, guid,
-                            ownerHistory, localPlacement, representation, stairPredefinedType);
-                        break;
-                     case IFCEntityType.IfcWall:
-                        //string wallPredefinedType = IFCValidateEntry.GetValidIFCPredefinedType(element, ifcEnumType, "IfcWallType");
-                        assemblyInstanceHnd = IFCInstanceExporter.CreateWall(exporterIFC, element, guid,
-                            ownerHistory, localPlacement, representation, ifcEnumType);
-                        break;
-                     default:
-                        string objectType = NamingUtil.GetObjectTypeOverride(element, NamingUtil.GetFamilyAndTypeName(element));
-                        IFCElementAssemblyType assemblyPredefinedType = GetPredefinedTypeFromObjectType(objectType);
-                        assemblyInstanceHnd = IFCInstanceExporter.CreateElementAssembly(exporterIFC, element, guid,
-                            ownerHistory, localPlacement, representation, IFCAssemblyPlace.NotDefined, assemblyPredefinedType);
-                        break;
-                  }
+                  assemblyInstanceHnd = IFCInstanceExporter.CreateGenericIFCEntity(exportAs, file, element, typeHnd, guid,
+                     ownerHistory, localPlacement, representation);
                }
             }
 
-            if (assemblyInstanceHnd == null)
+            if (IFCAnyHandleUtil.IsNullOrHasNoValue(assemblyInstanceHnd))
                return false;
 
-            // relateToLevel depends on how the AssemblyInstance is being mapped to IFC, above.
-            productWrapper.AddElement(element, assemblyInstanceHnd, levelInfo, null, relateToLevel, exportAs);
+            // Create classification reference when the Assembly has classification field name assigned to it
+            ClassificationUtil.CreateClassification(exporterIFC, file, element,
+               assemblyInstanceHnd);
 
-            ExporterCacheManager.AssemblyInstanceCache.RegisterAssemblyInstance(element.Id, assemblyInstanceHnd);
+            // relateToLevel depends on how the AssemblyInstance is being mapped to IFC, above.
+            productWrapper.AddElement(element, assemblyInstanceHnd, levelInfo, null,
+               relateToLevel, exportAs);
+
+            ExporterCacheManager.AssemblyInstanceCache.RegisterAssemblyInstance(element.Id,
+               assemblyInstanceHnd, overrideContainerId);
 
             tr.Commit();
             return true;
@@ -185,11 +144,40 @@ namespace Revit.IFC.Export.Exporter
                continue;
             }
 
-            Transform relTrf = ExporterIFCUtils.GetRelativeLocalPlacementOffsetTransform(assemblyPlacement, elementPlacement);
+            Transform relTrf = ExporterUtil.GetRelativePlacementOffsetTransform(exporterIFC, assemblyPlacement, elementPlacement);
             Transform inverseTrf = relTrf.Inverse;
 
             IFCFile file = exporterIFC.GetFile();
-            IFCAnyHandle relLocalPlacement = ExporterUtil.CreateAxis2Placement3D(file, inverseTrf.Origin, inverseTrf.BasisZ, inverseTrf.BasisX);
+
+            // Doors/windows may carry mirrored transforms in Revit. IFC local placement cannot
+            // represent reflection, so for mirrored doors/windows we keep only translation here.
+            // For non-mirrored cases (including 180-degree rotations), preserve full rotation.
+            bool isDoorOrWindow = IFCAnyHandleUtil.IsSubTypeOf(elementHandle, IFCEntityType.IfcDoor) ||
+                                  IFCAnyHandleUtil.IsSubTypeOf(elementHandle, IFCEntityType.IfcWindow);
+
+            bool useTranslationOnlyForDoorWindow = false;
+            if (isDoorOrWindow)
+            {
+               ElementId elementId = ExporterCacheManager.HandleToElementCache.Find(elementHandle);
+               FamilyInstance familyInstance = ExporterCacheManager.Document?.GetElement(elementId) as FamilyInstance;
+
+               if (familyInstance != null)
+               {
+                  // Family flip/mirror flags are more reliable for door/window orientation
+                  // than transform reflection alone in assembly context.
+                  useTranslationOnlyForDoorWindow =
+                     familyInstance.Mirrored || familyInstance.HandFlipped || familyInstance.FacingFlipped;
+               }
+
+               // Fallback if we couldn't resolve the source element.
+               useTranslationOnlyForDoorWindow |= inverseTrf.HasReflection;
+            }
+
+            IFCAnyHandle relLocalPlacement;
+            if (useTranslationOnlyForDoorWindow)
+               relLocalPlacement = ExporterUtil.CreateAxis2Placement3D(file, inverseTrf.Origin, null, null);
+            else
+               relLocalPlacement = ExporterUtil.CreateAxis2Placement3D(file, inverseTrf.Origin, inverseTrf.BasisZ, inverseTrf.BasisX);
 
             // NOTE: caution that old IFCAXIS2PLACEMENT3D may be unused as the new one replace it. 
             // But we cannot delete it safely yet because we don't know if any handle is referencing it.
@@ -242,20 +230,18 @@ namespace Revit.IFC.Export.Exporter
       static void ExportAssemblyInstanceWithMembers(ExporterIFC exporterIFC, Element assemblyElem,
           ICollection<ElementId> memberIds, IFCElementAssemblyType assemblyType, ProductWrapper productWrapper)
       {
-         HashSet<IFCAnyHandle> memberHnds = new HashSet<IFCAnyHandle>();
+         HashSet<IFCAnyHandle> memberHnds = new();
 
          foreach (ElementId memberId in memberIds)
          {
-            IFCAnyHandle memberHnd = ExporterCacheManager.ElementToHandleCache.Find(memberId);
-            if (!IFCAnyHandleUtil.IsNullOrHasNoValue(memberHnd))
-               memberHnds.Add(memberHnd);
+            memberHnds.AddIfNotNull(ExporterCacheManager.ElementToHandleCache.Find(memberId));
          }
 
          if (memberHnds.Count == 0)
             return;
 
          // Check the intended IFC entity or type name is in the exclude list specified in the UI
-         Common.Enums.IFCEntityType elementClassTypeEnum = Common.Enums.IFCEntityType.IfcElementAssembly;
+         IFCEntityType elementClassTypeEnum = IFCEntityType.IfcElementAssembly;
          if (ExporterCacheManager.ExportOptionsCache.IsElementInExcludeList(elementClassTypeEnum))
             return;
 
@@ -264,7 +250,7 @@ namespace Revit.IFC.Export.Exporter
          {
             // Check for containment override
             IFCAnyHandle overrideContainerHnd = null;
-            ElementId overrideContainerId = ParameterUtil.OverrideContainmentParameter(exporterIFC, assemblyElem, out overrideContainerHnd);
+            ElementId overrideContainerId = ParameterUtil.OverrideContainmentParameter(assemblyElem, out overrideContainerHnd);
 
             using (PlacementSetter placementSetter = PlacementSetter.Create(exporterIFC, assemblyElem, null, null, overrideContainerId, overrideContainerHnd))
             {
@@ -276,8 +262,9 @@ namespace Revit.IFC.Export.Exporter
 
                IFCAnyHandle assemblyInstanceHnd = IFCInstanceExporter.CreateElementAssembly(exporterIFC, assemblyElem, guid,
                    ownerHistory, localPlacement, null, IFCAssemblyPlace.NotDefined, assemblyType);
+               IFCExportInfoPair exportInfo = new IFCExportInfoPair(elementClassTypeEnum, assemblyType.ToString());
 
-               productWrapper.AddElement(assemblyElem, assemblyInstanceHnd, placementSetter.LevelInfo, null, true);
+               productWrapper.AddElement(assemblyElem, assemblyInstanceHnd, placementSetter.LevelInfo, null, true, exportInfo);
 
                string aggregateGuid = GUIDUtil.CreateSubElementGUID(assemblyElem, (int)IFCAssemblyInstanceSubElements.RelAggregates);
                IFCInstanceExporter.CreateRelAggregates(file, aggregateGuid, ownerHistory, null, null, assemblyInstanceHnd, memberHnds);

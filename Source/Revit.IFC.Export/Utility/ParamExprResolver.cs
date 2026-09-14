@@ -17,15 +17,10 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 //
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using Antlr4.Runtime;
 using Antlr4.Runtime.Tree;
 using Autodesk.Revit.DB;
-using Autodesk.Revit.DB.IFC;
+using System;
 
 namespace Revit.IFC.Export.Utility
 {
@@ -43,7 +38,7 @@ namespace Revit.IFC.Export.Utility
       }
 
       string paramExprContent;
-      static Element _element;
+      static Element _element; 
       string _paramName;
 
       /// <summary>
@@ -54,8 +49,8 @@ namespace Revit.IFC.Export.Utility
       /// <param name="paramVal">parameter string value</param>
       public ParamExprResolver(Element elem, string paramName, string paramVal)
       {
-         paramExprContent = paramVal;
          _element = elem;
+         paramExprContent = paramVal;
          _paramName = paramName;
       }
 
@@ -101,6 +96,8 @@ namespace Revit.IFC.Export.Utility
          return val;
       }
 
+      public ForgeTypeId UnitType { get; private set; } = null;
+
       object Process(ExpectedValueEnum expectedValueType)
       {
          object val = null;
@@ -121,7 +118,10 @@ namespace Revit.IFC.Export.Utility
          {
             walker.Walk(eval, tree);
             if (eval.HasValue)
+            {
                val = eval.Value;
+               UnitType = eval.UnitType;
+            }
          }
          catch
          {
@@ -148,7 +148,7 @@ namespace Revit.IFC.Export.Utility
          if (expr.nodePropertyValue is Int32)
          {
             if (unaryOp.Equals("-"))
-               ret.nodePropertyValue = -1 * ((int) expr.nodePropertyValue);
+               ret.nodePropertyValue = -1 * ((int)expr.nodePropertyValue);
             else
                ret.nodePropertyValue = (int)expr.nodePropertyValue;
          }
@@ -205,13 +205,13 @@ namespace Revit.IFC.Export.Utility
             // For ElementId to be in this oper, the Name of the Element will be used and the rest will be converted to strings
             string expr1Str = null;
             if (expr1.nodePropertyValue is ElementId)
-               expr1Str = _element.Document.GetElement((ElementId)expr1.nodePropertyValue).Name;
+               expr1Str = ExporterCacheManager.Document.GetElement((ElementId)expr1.nodePropertyValue).Name;
             else
                expr1Str = expr1.nodePropertyValue.ToString();
 
             string expr2Str = null;
             if (expr2.nodePropertyValue is ElementId)
-               expr2Str = _element.Document.GetElement((ElementId)expr2.nodePropertyValue).Name;
+               expr2Str = ExporterCacheManager.Document.GetElement((ElementId)expr2.nodePropertyValue).Name;
             else
                expr2Str = expr2.nodePropertyValue.ToString();
 
@@ -240,7 +240,7 @@ namespace Revit.IFC.Export.Utility
             if (ops.MULTIPLY() != null)
                ret.nodePropertyValue = (int)expr1.nodePropertyValue * (int)expr2.nodePropertyValue;
             if (ops.DIVIDE() != null)
-               ret.nodePropertyValue = (double) ((int)expr1.nodePropertyValue / (int)expr2.nodePropertyValue);
+               ret.nodePropertyValue = (double)((int)expr1.nodePropertyValue / (int)expr2.nodePropertyValue);
             if (ops.ADDITION() != null)
                ret.nodePropertyValue = (int)expr1.nodePropertyValue + (int)expr2.nodePropertyValue;
             if (ops.SUBTRACT() != null)
@@ -257,12 +257,18 @@ namespace Revit.IFC.Export.Utility
       /// <returns>integer value of the power</returns>
       public static int GetPowerOp(ParamExprGrammarParser.Power_opContext powerOp)
       {
-         int powerOpNumber = int.Parse(powerOp.INT().GetText());
+         int powerOpNumber = 0;
          if (powerOp.ChildCount == 3)
          {
+            powerOpNumber = int.Parse(powerOp.GetChild(2).GetText());
             if (powerOp.GetChild(1).GetText().Equals("-"))
                powerOpNumber = -1 * powerOpNumber;
          }
+         else if (powerOp.ChildCount == 2)
+         {
+            powerOpNumber = int.Parse(powerOp.GetChild(1).GetText());
+         }
+
          return powerOpNumber;
       }
 
@@ -281,6 +287,117 @@ namespace Revit.IFC.Export.Utility
             ret.nodePropertyValue = Math.Pow((double)expr.nodePropertyValue, (double)powerOp);
          }
          return ret;
+      }
+
+      public static double? EvaluateDoubleParameterExpr(Element element, string paramValue, string paramName)
+      {
+         object strValue = CheckForParameterExpr(element, paramValue, paramName, ExpectedValueEnum.DOUBLEVALUE);
+         if (strValue is double result)
+            return result;
+
+         if (!double.TryParse(paramValue, out result))
+            return null;
+
+         return result;
+      }
+
+      public static int? EvaluateIntegerParameterExpr(Element element, string paramValue, string paramName)
+      {
+         object strValue = CheckForParameterExpr(element, paramValue, paramName, ExpectedValueEnum.INTVALUE);
+         if (strValue is int result)
+            return result;
+
+         if (!int.TryParse(paramValue, out result))
+            return null;
+         
+         return result;
+      }
+
+      public static string EvaluateStringParameterExpr(Element element, string paramValue, string paramName)
+      {
+         object strValue = CheckForParameterExpr(element, paramValue, paramName, ExpectedValueEnum.STRINGVALUE);
+         return (strValue as string) ?? paramValue;
+      }
+
+      /// <summary>
+      /// Check for a special parameter value containing the Paramater expression
+      /// </summary>
+      /// <param name="paramValue">the Parameter value</param>
+      /// <param name="element">the Element</param>
+      /// <param name="paramName">the Parameter Name</param>
+      /// <returns>the resolved Parameter Expression value or null if not resolved</returns>
+      private static object CheckForParameterExpr(Element element, string paramValue, string paramName, ExpectedValueEnum expectedDataType)
+      {
+         string paramValuetrim = IsParameterExpr(paramValue);
+         if (paramValuetrim == null)
+            return null;
+
+         ParamExprResolver pResv = new(element, paramName, paramValuetrim);
+         switch (expectedDataType)
+         {
+            case ExpectedValueEnum.STRINGVALUE:
+               return pResv.GetStringValue();
+            case ExpectedValueEnum.DOUBLEVALUE:
+               return pResv.GetDoubleValue();
+            case ExpectedValueEnum.INTVALUE:
+               return pResv.GetIntValue();
+            default:
+               break;
+         }
+
+         return null;
+      }
+
+      /// <summary>
+      /// Check whether parameter value contains Parameter Expression
+      /// </summary>
+      /// <param name="paramValue">parameter value</param>
+      /// <returns>true or false</returns>
+      public static string IsParameterExpr(string paramValue)
+      {
+         // Check if string represents a parameter expression of "{ }" or "u{ }" for unique value, after trimming.
+         int length = paramValue?.Length ?? 0;
+         if (length < 2)
+            return null;
+
+         int startIndex = 0;
+         for (; startIndex < length-1; startIndex++)
+         {
+            char currChar = paramValue[startIndex];
+            if (currChar == '{')
+            {
+               break;
+            }
+            else if (currChar is 'u' or 'U')
+            {
+               if (paramValue[startIndex+1] == '{')
+                  break;
+               return null;
+            }
+
+            if (!char.IsWhiteSpace(currChar))
+               return null;
+         }
+
+         if (startIndex == length-1)
+            return null;
+
+         int endIndex = length-1;
+         for (; endIndex > startIndex; endIndex--)
+         {
+            char currChar = paramValue[endIndex];
+            if (currChar == '}')
+            {
+               break;
+            }
+            if (!char.IsWhiteSpace(currChar))
+               return null;
+         }
+
+         if (endIndex == startIndex)
+            return null;
+
+         return paramValue.Substring(startIndex, endIndex-startIndex+1);
       }
    }
 }

@@ -26,6 +26,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
 using Revit.IFC.Export.Utility;
 using Revit.IFC.Common.Utility;
+using Revit.IFC.Common.Enums;
 
 namespace Revit.IFC.Export.Exporter
 {
@@ -138,8 +139,8 @@ namespace Revit.IFC.Export.Exporter
 
          if (canExportAxis)
          {
-            axisInfo = new StructuralMemberAxisInfo();
-            axisInfo.Axis = curve.CreateTransformed(orientTrf.Inverse);       // transform the curve into its LCS
+            axisInfo = new();
+            axisInfo.Axis = GeometryUtil.CreateTransformedCurve(curve, orientTrf.Inverse);       // transform the curve into its LCS
             axisInfo.AxisDirection = orientTrf.BasisX;                // We define here the Axis Curve to be following the X-axis
             axisInfo.AxisNormal = orientTrf.BasisZ;
             axisInfo.LCSAsTransform = orientTrf;
@@ -190,20 +191,25 @@ namespace Revit.IFC.Export.Exporter
          }
 
          // Calculate the transformation matrix to tranform the original Axis Curve at its ECS into the new ECS assigned in the offset
-         curve = curve.CreateTransformed(offset.Inverse.Multiply(axisInfo.LCSAsTransform));
+         curve = GeometryUtil.CreateTransformedCurve(curve, offset.Inverse.Multiply(axisInfo.LCSAsTransform));
 
          IDictionary<IFCFuzzyXYZ, IFCAnyHandle> cachePoints = new Dictionary<IFCFuzzyXYZ, IFCAnyHandle>();
-         IFCAnyHandle ifcCurveHnd = GeometryUtil.CreateIFCCurveFromRevitCurve(exporterIFC.GetFile(), exporterIFC, curve, true, cachePoints);
-         IList<IFCAnyHandle> axis_items = new List<IFCAnyHandle>();
+         const GeometryUtil.TrimCurvePreference trimCurvePreference = GeometryUtil.TrimCurvePreference.TrimmedCurve;
+         IFCAnyHandle ifcCurveHnd = GeometryUtil.CreateIFCCurveFromRevitCurve(exporterIFC.GetFile(), 
+            exporterIFC, curve, true, cachePoints, trimCurvePreference);
+         List<IFCAnyHandle> axis_items = [];
          if (!(IFCAnyHandleUtil.IsNullOrHasNoValue(ifcCurveHnd)))
             axis_items.Add(ifcCurveHnd);
 
          if (axis_items.Count > 0)
          {
-            string identifierOpt = "Axis";   // This is by IFC2x2+ convention.
+            IFCRepresentationIdentifier identifier = IFCRepresentationIdentifier.Axis;
+            string identifierOpt = identifier.ToString();   // This is by IFC2x2+ convention.
             string representationTypeOpt = "Curve3D";  // This is by IFC2x2+ convention.
-            IFCAnyHandle axisRep = RepresentationUtil.CreateShapeRepresentation(exporterIFC, element, catId, exporterIFC.Get3DContextHandle(identifierOpt),
-               identifierOpt, representationTypeOpt, axis_items);
+            IFCAnyHandle contextOfItems = ExporterCacheManager.Get3DContextHandle(identifier);
+            IFCAnyHandle axisRep = RepresentationUtil.CreateShapeRepresentation(exporterIFC, 
+               element, catId, contextOfItems, identifierOpt, representationTypeOpt, 
+               axis_items.ToHashSet());
             return axisRep;
          }
 

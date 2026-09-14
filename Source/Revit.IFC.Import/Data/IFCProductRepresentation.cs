@@ -135,7 +135,7 @@ namespace Revit.IFC.Import.Data
             }
          }
 
-         if (IFCImportFile.TheFile.SchemaVersion >= IFCSchemaVersion.IFC2x3)
+         if (IFCImportFile.TheFile.SchemaVersionAtLeast(IFCSchemaVersion.IFC2x3))
          {
             if (IFCAnyHandleUtil.IsSubTypeOf(ifcProductRepresentation, IFCEntityType.IfcMaterialDefinitionRepresentation))
             {
@@ -147,29 +147,34 @@ namespace Revit.IFC.Import.Data
       }
 
       /// <summary>
-      /// Returns true if there is anything to create.
+      /// Returns true if ProductRepresentation is Valid.
       /// </summary>
+      /// <remarks>
+      /// In the case of non-Hybrid IFC Import, validity is defined as the Product Representation having at least one RepresentationItem.
+      /// In the case of Hybrid IFC Import, validity is defined as always true.
+      /// </remarks>
       /// <returns>Returns true if there is anything to create, false otherwise.</returns>
       public bool IsValid()
       {
          // TODO: We are not creating a shape if there is no representation for the shape.  We may allow this for specific entity types,
          // such as doors or windows.
-         return (Representations != null && Representations.Count != 0);
+         return (Importer.TheOptions.HybridImportOptions != null || ((Representations?.Count ?? 0) > 0));
       }
 
       /// <summary>
       /// Creates or populates Revit elements based on the information contained in this class.
       /// </summary>
       /// <param name="doc">The document.</param>
-      /// <param name="lcs">Local coordinate system for the geometry, without scale.</param>
       /// <param name="scaledLcs">Local coordinate system for the geometry, including scale, potentially non-uniform.</param>
       /// <param name="guid">The guid of an element for which represntation is being created.</param>
-      public void CreateProductRepresentation(IFCImportShapeEditScope shapeEditScope, Transform lcs, Transform scaledLcs, string guid)
+      public void CreateProductRepresentation(IFCImportShapeEditScope shapeEditScope, 
+         Transform scaledLcs, string guid)
       {
          // Partially sort the representations so that we create: Body, Box, then the rest of the representations in that order.
          // This allows us to skip Box representations if any of the Body representations create 3D geometry.  Until we have UI in place, 
          // this will disable creating extra 3D (bounding box) geometry that clutters the display, is only marginally useful and is hard to turn off.
          List<IFCRepresentation> sortedReps = new List<IFCRepresentation>(); // Double usage as body rep list.
+         IList<IFCRepresentation> fallbackReps = new List<IFCRepresentation>();
          IList<IFCRepresentation> boxReps = new List<IFCRepresentation>();
          IList<IFCRepresentation> otherReps = new List<IFCRepresentation>();
 
@@ -179,6 +184,9 @@ namespace Revit.IFC.Import.Data
             {
                case IFCRepresentationIdentifier.Body:
                   sortedReps.Add(representation);
+                  break;
+               case IFCRepresentationIdentifier.BodyFallback:
+                  fallbackReps.Add(representation);
                   break;
                case IFCRepresentationIdentifier.Box:
                   boxReps.Add(representation);
@@ -190,11 +198,17 @@ namespace Revit.IFC.Import.Data
          }
 
          // Add back the other representations.
+         sortedReps.AddRange(fallbackReps);
          sortedReps.AddRange(boxReps);
          sortedReps.AddRange(otherReps);
 
          foreach (IFCRepresentation representation in sortedReps)
          {
+            // Only process fallback geometry if we didn't process the Body geometry.
+            if ((representation.Identifier == IFCRepresentationIdentifier.BodyFallback) &&
+               shapeEditScope.Creator.Solids.Count > 0)
+               continue;
+
             // Since we process all Body representations first, the misnamed "Solids" field will contain 3D geometry.
             // If this isn't empty, then we'll skip the bounding box, unless we are always importing bounding box geometry.
             // Note that we process Axis representations later since they create model geometry also,
@@ -205,7 +219,7 @@ namespace Revit.IFC.Import.Data
                shapeEditScope.Creator.Solids.Count > 0)
                continue;
 
-            representation.CreateShape(shapeEditScope, lcs, scaledLcs, guid);
+            representation.CreateShape(shapeEditScope, scaledLcs, guid);
          }
       }
 

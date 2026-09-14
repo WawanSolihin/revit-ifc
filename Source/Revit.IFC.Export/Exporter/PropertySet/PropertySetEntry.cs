@@ -21,7 +21,8 @@ using System;
 using System.Collections.Generic;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
-using GeometryGym.Ifc;
+using Revit.IFC.Export.Utility;
+using static Revit.IFC.Export.Utility.ParameterUtil;
 
 namespace Revit.IFC.Export.Exporter.PropertySet
 {
@@ -49,7 +50,11 @@ namespace Revit.IFC.Export.Exporter.PropertySet
       /// <summary>
       /// A Table property (IfcPropertyTableValue)
       /// </summary>
-      TableValue
+      TableValue,
+      /// <summary>
+      /// A Bounded Value property (IfcPropertyBoundedValue)
+      /// </summary>
+      BoundedValue
    }
 
    /// <summary>
@@ -247,7 +252,53 @@ namespace Revit.IFC.Export.Exporter.PropertySet
       HeatFluxDensity,
       ComplexNumber,
       ThermalResistance,
-      Numeric
+      Numeric,
+      ElectricCapacitance,
+      URIReference,
+      Acceleration,
+      SoundPowerLevel,
+      IntegerCountRate,
+      IfcDocumentReference,
+      ElectricCharge,
+      Inductance,
+      AngularVelocity,
+      IfcCostValue,
+      IfcRelaxation,
+      FrictionLoss,
+      LinearMoment,
+      LinearStiffness,
+      CostPerArea,
+      ApparentPowerDensity,
+      CostRateEnergy,
+      CostRatePower,
+      Efficacy,
+      Luminance,
+      ElectricalPowerDensity,
+      PowerPerLength,
+      ElectricalResistivity,
+      HeatCapacityPerArea,
+      ThermalGradientCoefficientForMoistureCapacity,
+      ThermalMass,
+      AirFlowDensity,
+      AirFlowDividedByCoolingLoad,
+      AirFlowDividedByVolume,
+      AreaDividedByCoolingLoad,
+      AreaDividedByHeatingLoad,
+      CoolingLoadDividedByArea,
+      CoolingLoadDividedByVolume,
+      FlowPerPower,
+      HvacFriction,
+      HeatingLoadDividedByArea,
+      HeatingLoadDividedByVolume,
+      PowerPerFlow,
+      PipingFriction,
+      AreaSpringCoefficient,
+      LineSpringCoefficient,
+      MassPerUnitArea,
+      ReinforcementAreaPerUnitLength,
+      RotationalLineSpringCoefficient,
+      RotationalPointSpringCoefficient,
+      UnitWeight
    }
 
    /// <summary>
@@ -258,21 +309,26 @@ namespace Revit.IFC.Export.Exporter.PropertySet
       /// <summary>
       /// The type of the IFC property set entry. Default is label.
       /// </summary>
-      PropertyType m_PropertyType = PropertyType.Label;
+      public PropertyType PropertyType { get; set; } = PropertyType.Label;
+
+      /// <summary>
+      /// The type of the IFC argument of table property set entry. Use if PropertyValueType is TableValue
+      /// </summary>
+      public PropertyType PropertyArgumentType { get; set; } = PropertyType.Label;
 
       /// <summary>
       /// The value type of the IFC property set entry.
       /// </summary>
-      PropertyValueType m_PropertyValueType = PropertyValueType.SingleValue;
+      public PropertyValueType PropertyValueType { get; set; } = PropertyValueType.SingleValue;
 
       /// <summary>
       /// The type of the Enum that will validate the value for an enumeration.
       /// </summary>
-      Type m_PropertyEnumerationType = null;
+      public Type PropertyEnumerationType { get; set; } = null;
 
-      IFCAnyHandle m_DefaultProperty = null;
+      IFCAnyHandle DefaultProperty { get; set; } = null;
 
-      IfcValue m_DefaultValue = null;
+      public IList<TableCellCombinedParameterData> CombinedParameterData { get; set; } = null;
 
       /// <summary>
       /// Constructs a PropertySetEntry object.
@@ -280,124 +336,145 @@ namespace Revit.IFC.Export.Exporter.PropertySet
       /// <param name="revitParameterName">
       /// Revit parameter name.
       /// </param>
-      public PropertySetEntry(string revitParameterName)
-          : base(revitParameterName)
+      public PropertySetEntry(string revitParameterName, string compatibleParamName = null)
+          : base(revitParameterName, compatibleParamName)
       {
       }
+
       public PropertySetEntry(PropertyType propertyType, string revitParameterName)
           : base(revitParameterName)
       {
-         m_PropertyType = propertyType;
+         PropertyType = propertyType;
       }
       public PropertySetEntry(PropertyType propertyType, string propertyName, BuiltInParameter builtInParameter)
              : base(propertyName, new PropertySetEntryMap(propertyName) { RevitBuiltInParameter = builtInParameter })
       {
-         m_PropertyType = propertyType;
+         PropertyType = propertyType;
       }
       public PropertySetEntry(PropertyType propertyType, string propertyName, PropertyCalculator propertyCalculator)
              : base(propertyName, new PropertySetEntryMap(propertyName) { PropertyCalculator = propertyCalculator })
       {
-         m_PropertyType = propertyType;
+         PropertyType = propertyType;
       }
       public PropertySetEntry(PropertyType propertyType, string propertyName, BuiltInParameter builtInParameter, PropertyCalculator propertyCalculator)
              : base(propertyName, new PropertySetEntryMap(propertyName) { RevitBuiltInParameter = builtInParameter, PropertyCalculator = propertyCalculator })
       {
-         m_PropertyType = propertyType;
+         PropertyType = propertyType;
       }
       public PropertySetEntry(PropertyType propertyType, string propertyName, PropertySetEntryMap entry)
            : base(propertyName, entry)
       {
-         m_PropertyType = propertyType;
+         PropertyType = propertyType;
       }
       public PropertySetEntry(PropertyType propertyType, string propertyName, IEnumerable<PropertySetEntryMap> entries)
            : base(propertyName, entries)
       {
-         m_PropertyType = propertyType;
-      }
-      /// <summary>
-      /// The type of the IFC property set entry.
-      /// </summary>
-      public PropertyType PropertyType
-      {
-         get
-         {
-            return m_PropertyType;
-         }
-         set
-         {
-            m_PropertyType = value;
-         }
+         PropertyType = propertyType;
       }
 
-      /// <summary>
-      /// The value type of the IFC property set entry.
-      /// </summary>
-      public PropertyValueType PropertyValueType
+      private static string GetPartialParameterValueOnePass(Element element, ElementId paramId)
       {
-         get
+         if (element == null)
          {
-            return m_PropertyValueType;
+            return null;
          }
-         set
-         {
-            m_PropertyValueType = value;
-         }
-      }
 
-      /// <summary>
-      /// The type of the Enum that will validate the value for an enumeration.
-      /// </summary>
-      public Type PropertyEnumerationType
-      {
-         get
+         Parameter parameter = null;
+         if (ParameterUtils.IsBuiltInParameter(paramId))
          {
-            return m_PropertyEnumerationType;
+            parameter = element.get_Parameter((BuiltInParameter)paramId.Value);
          }
-         set
+         else
          {
-            m_PropertyEnumerationType = value;
-         }
-      }
-
-      public IfcValue DefaultValue
-      {
-         set
-         {
-            m_DefaultValue = value;
-         }
-      }
-
-      private IFCAnyHandle DefaultProperty(IFCFile file)
-      {
-         if (m_DefaultProperty == null)
-         {
-            if (m_DefaultValue != null)
+            if (element.Document.GetElement(paramId) is ParameterElement parameterElem)
             {
-               switch (PropertyType)
-               {
-                  case PropertyType.Label:
-                     return m_DefaultProperty = PropertyUtil.CreateLabelProperty(file, PropertyName, m_DefaultValue.ValueString, PropertyValueType, PropertyEnumerationType);
-                  case PropertyType.Text:
-                     return m_DefaultProperty = PropertyUtil.CreateTextProperty(file, PropertyName, m_DefaultValue.ValueString, PropertyValueType);
-                  case PropertyType.Identifier:
-                     return m_DefaultProperty = PropertyUtil.CreateIdentifierProperty(file, PropertyName, m_DefaultValue.ValueString, PropertyValueType);
-                  //todo make this work for all values
-               }
+               parameter = element.get_Parameter(parameterElem.GetDefinition());
             }
          }
-         return m_DefaultProperty;
+
+         return parameter?.AsValueString();
+      }
+    
+      private static string GetPartialParameterValueById(Element element, ProjectInfo projectInformation, ElementId paramId)
+      {
+         // We need to look in (up to) 3 places: the Element, the ElementType, and ProjectInformation, in that order.
+         string value = GetPartialParameterValueOnePass(element, paramId);
+         if (value == null && element != null && element is not ElementType)
+         {
+            Element elementType = element.Document.GetElement(element.GetTypeId());
+            value = GetPartialParameterValueOnePass(elementType, paramId);
+         }
+
+         if (value == null && projectInformation != null)
+         {
+            value = GetPartialParameterValueOnePass(projectInformation, paramId);
+         }
+
+         return value ?? string.Empty;
       }
 
-      public IFCAnyHandle ProcessEntry(IFCFile file, ExporterIFC exporterIFC, IFCExtrusionCreationData extrusionCreationData, Element element,
-         ElementType elementType, IFCAnyHandle handle)
+      private IFCAnyHandle CreateTextPropertyFromCombinedParameterData(IFCFile file, Element element)
       {
-         foreach (PropertySetEntryMap map in m_Entries)
+         string parameterString = string.Empty;
+         ProjectInfo projectInfo = element?.Document?.ProjectInformation;
+         foreach (var parameterData in CombinedParameterData)
          {
-            IFCAnyHandle propHnd = map.ProcessEntry(file, exporterIFC, extrusionCreationData, element, elementType, handle, PropertyType, PropertyValueType, PropertyEnumerationType, PropertyName);
+            string currentPart = GetPartialParameterValueById(element, projectInfo, parameterData.ParamId);
+            if (string.IsNullOrEmpty(currentPart))
+            {
+               continue;
+            }
+            parameterString += parameterData.Prefix;
+            parameterString += currentPart;
+            parameterString += (parameterData.Suffix + parameterData.Separator);
+         }
+
+         PropertyDescription propertyDescription = new PropertyDescription(PropertyName);
+         return PropertyUtil.CreateTextPropertyFromCache(file, propertyDescription, parameterString, PropertyValueType);
+      }
+
+      /// <summary>
+      /// Process to create element or connector property.
+      /// </summary>
+      /// <param name="file">The IFC file.</param>
+      /// <param name="exporterIFC">The ExporterIFC object.</param>
+      /// <param name="owningPsetName">Name of Property Set this entry belongs to .</param>
+      /// <param name="extrusionCreationData">The IFCExportBodyParams.</param>
+      /// <param name="elementOrConnector">The element or connector of which this property is created for.</param>
+      /// <param name="elementType">The element type of which this property is created for.</param>
+      /// <param name="handle">The handle for which this property is created for.</param>
+      /// <param name="lookInType">True if it's appropriate to look for value in element type.</param>
+      /// <param name="addTypePropertiesToInstance">Indicates whether properties from the element's type should be added to the instance.</param>
+      /// <returns>The created property handle.</returns>
+      public IFCAnyHandle ProcessEntry(IFCFile file, ExporterIFC exporterIFC, string owningPsetName, 
+         IFCExportBodyParams extrusionCreationData, ElementOrConnector elementOrConnector,
+         ElementType elementType, IFCAnyHandle handle, IDictionary<string, string> description, bool lookInType, 
+         bool addTypePropertiesToInstance)
+      {
+         // if CombinedParameterData, then we have to recreate the parameter value, since there is no
+         // API for this.
+         if (CombinedParameterData != null)
+         {
+            if (elementOrConnector.Element == null)
+            {
+               // We don't support connectors for combined parameters.
+               return null;
+            }
+            return CreateTextPropertyFromCombinedParameterData(file, elementOrConnector.Element);
+         }
+
+         // Otherwise, do standard processing.
+         foreach (PropertySetEntryMap map in Entries)
+         {
+            IFCAnyHandle propHnd = map.ProcessEntry(file, exporterIFC, owningPsetName,
+               extrusionCreationData, elementOrConnector, elementType, handle, PropertyType,
+               PropertyArgumentType, PropertyValueType, PropertyEnumerationType, PropertyName,
+               lookInType, addTypePropertiesToInstance, description);
             if (propHnd != null)
                return propHnd;
          }
-         return DefaultProperty(file);
+
+         return null;
       }
 
       /// <summary>
@@ -598,6 +675,15 @@ namespace Revit.IFC.Export.Exporter.PropertySet
       {
          PropertySetEntry pse = new PropertySetEntry(revitParameterName);
          pse.PropertyType = PropertyType.Text;
+         return pse;
+      }
+
+      public static PropertySetEntry CreateParameterEntry(string propertyName, 
+         IList<TableCellCombinedParameterData> combinedParameterData)
+      {
+         PropertySetEntry pse = new PropertySetEntry(propertyName);
+         pse.PropertyType = PropertyType.Text;
+         pse.CombinedParameterData = combinedParameterData;
          return pse;
       }
 
@@ -816,9 +902,9 @@ namespace Revit.IFC.Export.Exporter.PropertySet
             case StorageType.Integer:
                {
                   // YesNo or actual integer?
-                  if (parameterDefinition.ParameterType == ParameterType.YesNo)
+                  if (parameterDefinition.GetDataType() == SpecTypeId.Boolean.YesNo)
                      propertyType = PropertyType.Boolean;
-                  else if (parameterDefinition.ParameterType == ParameterType.Invalid)
+                  else if (parameterDefinition.GetDataType().Empty())
                      propertyType = PropertyType.Identifier;
                   else
                      propertyType = PropertyType.Count;
@@ -827,101 +913,382 @@ namespace Revit.IFC.Export.Exporter.PropertySet
             case StorageType.Double:
                {
                   bool assigned = true;
-                  switch (parameterDefinition.ParameterType)
+                  ForgeTypeId type = parameterDefinition.GetDataType();
+                  if (type == SpecTypeId.Acceleration)
                   {
-                     case ParameterType.Angle:
-                        propertyType = PropertyType.PlaneAngle;
-                        break;
-                     case ParameterType.Area:
-                     case ParameterType.HVACCrossSection:
-                     case ParameterType.ReinforcementArea:
-                     case ParameterType.SectionArea:
-                     case ParameterType.SurfaceArea:
-                        propertyType = PropertyType.Area;
-                        break;
-                     case ParameterType.BarDiameter:
-                     case ParameterType.CrackWidth:
-                     case ParameterType.DisplacementDeflection:
-                     case ParameterType.ElectricalCableTraySize:
-                     case ParameterType.ElectricalConduitSize:
-                     case ParameterType.Length:
-                     case ParameterType.HVACDuctInsulationThickness:
-                     case ParameterType.HVACDuctLiningThickness:
-                     case ParameterType.HVACDuctSize:
-                     case ParameterType.HVACRoughness:
-                     case ParameterType.PipeInsulationThickness:
-                     case ParameterType.PipeSize:
-                     case ParameterType.PipingRoughness:
-                     case ParameterType.ReinforcementCover:
-                     case ParameterType.ReinforcementLength:
-                     case ParameterType.ReinforcementSpacing:
-                     case ParameterType.SectionDimension:
-                     case ParameterType.SectionProperty:
-                     case ParameterType.WireSize:
-                        propertyType = PropertyType.Length;
-                        break;
-                     case ParameterType.ColorTemperature:
-                        propertyType = PropertyType.ColorTemperature;
-                        break;
-                     case ParameterType.Currency:
-                        propertyType = PropertyType.Currency;
-                        break;
-                     case ParameterType.ElectricalEfficacy:
-                        propertyType = PropertyType.ElectricalEfficacy;
-                        break;
-                     case ParameterType.ElectricalLuminousIntensity:
-                        propertyType = PropertyType.LuminousIntensity;
-                        break;
-                     case ParameterType.ElectricalIlluminance:
-                        propertyType = PropertyType.Illuminance;
-                        break;
-                     case ParameterType.ElectricalApparentPower:
-                     case ParameterType.ElectricalPower:
-                     case ParameterType.ElectricalWattage:
-                     case ParameterType.HVACPower:
-                        propertyType = PropertyType.Power;
-                        break;
-                     case ParameterType.ElectricalCurrent:
-                        propertyType = PropertyType.ElectricCurrent;
-                        break;
-                     case ParameterType.ElectricalPotential:
-                        propertyType = PropertyType.ElectricVoltage;
-                        break;
-                     case ParameterType.ElectricalFrequency:
-                        propertyType = PropertyType.Frequency;
-                        break;
-                     case ParameterType.ElectricalLuminousFlux:
-                        propertyType = PropertyType.LuminousFlux;
-                        break;
-                     case ParameterType.ElectricalTemperature:
-                     case ParameterType.HVACTemperature:
-                     case ParameterType.PipingTemperature:
-                        propertyType = PropertyType.ThermodynamicTemperature;
-                        break;
-                     case ParameterType.Force:
-                        propertyType = PropertyType.Force;
-                        break;
-                     case ParameterType.HVACAirflow:
-                     case ParameterType.PipingFlow:
-                        propertyType = PropertyType.VolumetricFlowRate;
-                        break;
-                     case ParameterType.HVACPressure:
-                     case ParameterType.PipingPressure:
-                     case ParameterType.Stress:
-                        propertyType = PropertyType.Pressure;
-                        break;
-                     case ParameterType.MassDensity:
-                        propertyType = PropertyType.MassDensity;
-                        break;
-                     case ParameterType.PipingVolume:
-                     case ParameterType.ReinforcementVolume:
-                     case ParameterType.SectionModulus:
-                     case ParameterType.Volume:
-                        propertyType = PropertyType.Volume;
-                        break;
-                     default:
-                        assigned = false;
-                        break;
+                     propertyType = PropertyType.Acceleration;
+                  }
+                  else if (type == SpecTypeId.Angle ||
+                     type == SpecTypeId.Rotation ||
+                     type == SpecTypeId.RotationAngle)
+                  {
+                     propertyType = PropertyType.PlaneAngle;
+                  }
+                  else if (type == SpecTypeId.Area ||
+                     type == SpecTypeId.CrossSection ||
+                     type == SpecTypeId.ReinforcementArea ||
+                     type == SpecTypeId.SectionArea)
+                  {
+                     propertyType = PropertyType.Area;
+                  }
+                  else if (type == SpecTypeId.BarDiameter ||
+                     type == SpecTypeId.CrackWidth ||
+                     type == SpecTypeId.Displacement ||
+                     type == SpecTypeId.Distance ||
+                     type == SpecTypeId.CableTraySize ||
+                     type == SpecTypeId.ConduitSize ||
+                     type == SpecTypeId.Length ||
+                     type == SpecTypeId.DuctInsulationThickness ||
+                     type == SpecTypeId.DuctLiningThickness ||
+                     type == SpecTypeId.DuctSize ||
+                     type == SpecTypeId.HvacRoughness ||
+                     type == SpecTypeId.PipeDimension ||
+                     type == SpecTypeId.PipeInsulationThickness ||
+                     type == SpecTypeId.PipeSize ||
+                     type == SpecTypeId.PipingRoughness ||
+                     type == SpecTypeId.ReinforcementCover ||
+                     type == SpecTypeId.ReinforcementLength ||
+                     type == SpecTypeId.ReinforcementSpacing ||
+                     type == SpecTypeId.SectionDimension ||
+                     type == SpecTypeId.SectionProperty ||
+                     type == SpecTypeId.WireDiameter ||
+                     type == SpecTypeId.SurfaceAreaPerUnitLength)
+                  {
+                     propertyType = PropertyType.Length;
+                  }
+                  else if (type == SpecTypeId.ColorTemperature)
+                  {
+                     propertyType = PropertyType.ColorTemperature;
+                  }
+                  else if (type == SpecTypeId.Currency)
+                  {
+                     propertyType = PropertyType.Currency;
+                  }
+                  else if (type == SpecTypeId.Energy ||
+                     type == SpecTypeId.HvacEnergy)
+                  {
+                     propertyType = PropertyType.Energy;
+                  }
+                  else if (type == SpecTypeId.LuminousIntensity)
+                  {
+                     propertyType = PropertyType.LuminousIntensity;
+                  }
+                  else if (type == SpecTypeId.Illuminance)
+                  {
+                     propertyType = PropertyType.Illuminance;
+                  }
+                  else if (type == SpecTypeId.ApparentPower ||
+                     type == SpecTypeId.ElectricalPower ||
+                     type == SpecTypeId.Wattage ||
+                     type == SpecTypeId.CoolingLoad ||
+                     type == SpecTypeId.HeatGain ||
+                     type == SpecTypeId.HeatingLoad ||
+                     type == SpecTypeId.HvacPower)
+                  {
+                     propertyType = PropertyType.Power;
+                  }
+                  else if (type == SpecTypeId.Current)
+                  {
+                     propertyType = PropertyType.ElectricCurrent;
+                  }
+                  else if (type == SpecTypeId.ElectricalPotential)
+                  {
+                     propertyType = PropertyType.ElectricVoltage;
+                  }
+                  else if (type == SpecTypeId.ElectricalFrequency ||
+                     type == SpecTypeId.StructuralFrequency)
+                  {
+                     propertyType = PropertyType.Frequency;
+                  }
+                  else if (type == SpecTypeId.LuminousFlux)
+                  {
+                     propertyType = PropertyType.LuminousFlux;
+                  }
+                  else if (type == SpecTypeId.ElectricalTemperature ||
+                     type == SpecTypeId.HvacTemperature ||
+                     type == SpecTypeId.PipingTemperature)
+                  {
+                     propertyType = PropertyType.ThermodynamicTemperature;
+                  }
+                  else if (type == SpecTypeId.HeatTransferCoefficient)
+                  {
+                     propertyType = PropertyType.ThermalTransmittance;
+                  }
+                  else if (type == SpecTypeId.Force ||
+                     type == SpecTypeId.Weight)
+                  {
+                     propertyType = PropertyType.Force;
+                  }
+                  else if (type == SpecTypeId.AirFlow ||
+                     type == SpecTypeId.Flow)
+                  {
+                     propertyType = PropertyType.VolumetricFlowRate;
+                  }
+                  else if (type == SpecTypeId.HvacPressure ||
+                     type == SpecTypeId.PipingPressure ||
+                     type == SpecTypeId.Stress)
+                  {
+                     propertyType = PropertyType.Pressure;
+                  }
+                  else if (type == SpecTypeId.MassDensity ||
+                     type == SpecTypeId.HvacDensity)
+                  {
+                     propertyType = PropertyType.MassDensity;
+                  }
+                  else if (type == SpecTypeId.PipingVolume ||
+                     type == SpecTypeId.ReinforcementVolume ||
+                     type == SpecTypeId.Volume)
+                  {
+                     propertyType = PropertyType.Volume;
+                  }
+                  else if (type == SpecTypeId.SectionModulus)
+                  {
+                     propertyType = PropertyType.SectionModulus;
+                  }
+                  else if (type == SpecTypeId.PipingMassPerTime ||
+                     type == SpecTypeId.HvacMassPerTime)
+                  {
+                     propertyType = PropertyType.MassFlowRate;
+                  }
+                  else if (type == SpecTypeId.AngularSpeed)
+                  {
+                     propertyType = PropertyType.RotationalFrequency;
+                  }
+                  else if (type == SpecTypeId.MassPerUnitArea && !ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4)
+                  {
+                     propertyType = PropertyType.AreaDensity;
+                  }
+                  else if (type == SpecTypeId.HvacViscosity ||
+                     type == SpecTypeId.PipingViscosity)
+                  {
+                     propertyType = PropertyType.DynamicViscosity;
+                  }
+                  else if (type == SpecTypeId.SpecificHeatOfVaporization)
+                  {
+                     propertyType = PropertyType.HeatingValue;
+                  }
+                  else if (type == SpecTypeId.PipingDensity)
+                  {
+                     propertyType = PropertyType.IonConcentration;
+                  }
+                  else if (type == SpecTypeId.IsothermalMoistureCapacity)
+                  {
+                     propertyType = PropertyType.IsothermalMoistureCapacity;
+                  }
+                  else if (type == SpecTypeId.HvacPowerDensity)
+                  {
+                     propertyType = PropertyType.HeatFluxDensity;
+                  }
+                  else if (type == SpecTypeId.HvacVelocity ||
+                     type == SpecTypeId.PipingVelocity ||
+                     type == SpecTypeId.StructuralVelocity ||
+                     type == SpecTypeId.Speed)
+                  {
+                     propertyType = PropertyType.LinearVelocity;
+                  }
+                  else if (type == SpecTypeId.LinearForce ||
+                     type == SpecTypeId.WeightPerUnitLength)
+                  {
+                     propertyType = PropertyType.LinearForce;
+                  }
+                  else if (type == SpecTypeId.LinearMoment)
+                  {
+                     propertyType = PropertyType.LinearMoment;
+                  }
+                  else if (type == SpecTypeId.Mass ||
+                     type == SpecTypeId.PipingMass)
+                  {
+                     propertyType = PropertyType.Mass;
+                  }
+                  else if (type == SpecTypeId.MassPerUnitLength ||
+                     type == SpecTypeId.PipeMassPerUnitLength)
+                  {
+                     propertyType = PropertyType.MassPerLength;
+                  }
+                  else if (type == SpecTypeId.Diffusivity)
+                  {
+                     propertyType = PropertyType.MoistureDiffusivity;
+                  }
+                  else if (type == SpecTypeId.Moment)
+                  {
+                     propertyType = PropertyType.Torque;
+                  }
+                  else if (type == SpecTypeId.MomentOfInertia)
+                  {
+                     propertyType = PropertyType.MomentOfInertia;
+                  }
+                  else if (type == SpecTypeId.AreaForce)
+                  {
+                     propertyType = PropertyType.PlanarForce;
+                  }
+                  else if (type == SpecTypeId.SpecificHeat)
+                  {
+                     propertyType = PropertyType.SpecificHeatCapacity;
+                  }
+                  else if (type == SpecTypeId.ThermalConductivity)
+                  {
+                     propertyType = PropertyType.ThermalConductivity;
+                  }
+                  else if (type == SpecTypeId.ThermalExpansionCoefficient)
+                  {
+                     propertyType = PropertyType.ThermalExpansionCoefficient;
+                  }
+                  else if (type == SpecTypeId.ThermalResistance)
+                  {
+                     propertyType = PropertyType.ThermalResistance;
+                  }
+                  else if (type == SpecTypeId.Time ||
+                     type == SpecTypeId.Period)
+                  {
+                     propertyType = PropertyType.Time;
+                  }
+                  else if (type == SpecTypeId.Permeability)
+                  {
+                     propertyType = PropertyType.VaporPermeability;
+                  }
+                  else if (type == SpecTypeId.PointSpringCoefficient)
+                  {
+                     propertyType = PropertyType.LinearStiffness;
+                  }
+                  else if (type == SpecTypeId.Pulsation)
+                  {
+                     propertyType = PropertyType.AngularVelocity;
+                  }
+                  else if (type == SpecTypeId.WarpingConstant)
+                  {
+                     propertyType = PropertyType.WarpingConstant;
+                  }
+                  else if (type == SpecTypeId.CostPerArea)
+                  {
+                     propertyType = PropertyType.CostPerArea;
+                  }
+                  else if (type == SpecTypeId.ApparentPowerDensity)
+                  {
+                     propertyType = PropertyType.ApparentPowerDensity;
+                  }
+                  else if (type == SpecTypeId.CostRateEnergy)
+                  {
+                     propertyType = PropertyType.CostRateEnergy;
+                  }
+                  else if (type == SpecTypeId.CostRatePower)
+                  {
+                     propertyType = PropertyType.CostRatePower;
+                  }
+                  else if (type == SpecTypeId.Efficacy)
+                  {
+                     propertyType = PropertyType.ElectricalEfficacy;
+                  }
+                  else if (type == SpecTypeId.Luminance)
+                  {
+                     propertyType = PropertyType.Luminance;
+                  }
+                  else if (type == SpecTypeId.ElectricalPowerDensity)
+                  {
+                     propertyType = PropertyType.ElectricalPowerDensity;
+                  }
+                  else if (type == SpecTypeId.PowerPerLength)
+                  {
+                     propertyType = PropertyType.PowerPerLength;
+                  }
+                  else if (type == SpecTypeId.ElectricalResistivity)
+                  {
+                     propertyType = PropertyType.ElectricalResistivity;
+                  }
+                  else if (type == SpecTypeId.HeatCapacityPerArea)
+                  {
+                     propertyType = PropertyType.HeatCapacityPerArea;
+                  }
+                  else if (type == SpecTypeId.ThermalGradientCoefficientForMoistureCapacity)
+                  {
+                     propertyType = PropertyType.ThermalGradientCoefficientForMoistureCapacity;
+                  }
+                  else if (type == SpecTypeId.ThermalMass)
+                  {
+                     propertyType = PropertyType.ThermalMass;
+                  }
+                  else if (type == SpecTypeId.AirFlowDensity)
+                  {
+                     propertyType = PropertyType.AirFlowDensity;
+                  }
+                  else if (type == SpecTypeId.AirFlowDividedByCoolingLoad)
+                  {
+                     propertyType = PropertyType.AirFlowDividedByCoolingLoad;
+                  }
+                  else if (type == SpecTypeId.AirFlowDividedByVolume)
+                  {
+                     propertyType = PropertyType.AirFlowDividedByVolume;
+                  }
+                  else if (type == SpecTypeId.AreaDividedByCoolingLoad)
+                  {
+                     propertyType = PropertyType.AreaDividedByCoolingLoad;
+                  }
+                  else if (type == SpecTypeId.AreaDividedByHeatingLoad)
+                  {
+                     propertyType = PropertyType.AreaDividedByHeatingLoad;
+                  }
+                  else if (type == SpecTypeId.CoolingLoadDividedByArea)
+                  {
+                     propertyType = PropertyType.CoolingLoadDividedByArea;
+                  }
+                  else if (type == SpecTypeId.CoolingLoadDividedByVolume)
+                  {
+                     propertyType = PropertyType.CoolingLoadDividedByVolume;
+                  }
+                  else if (type == SpecTypeId.FlowPerPower)
+                  {
+                     propertyType = PropertyType.FlowPerPower;
+                  }
+                  else if (type == SpecTypeId.HvacFriction)
+                  {
+                     propertyType = PropertyType.FrictionLoss;
+                  }
+                  else if (type == SpecTypeId.HeatingLoadDividedByArea)
+                  {
+                     propertyType = PropertyType.HeatingLoadDividedByArea;
+                  }
+                  else if (type == SpecTypeId.HeatingLoadDividedByVolume)
+                  {
+                     propertyType = PropertyType.HeatingLoadDividedByVolume;
+                  }
+                  else if (type == SpecTypeId.PowerPerFlow)
+                  {
+                     propertyType = PropertyType.PowerPerFlow;
+                  }
+                  else if (type == SpecTypeId.PipingFriction)
+                  {
+                     propertyType = PropertyType.PipingFriction;
+                  }
+                  else if (type == SpecTypeId.AreaSpringCoefficient)
+                  {
+                     propertyType = PropertyType.AreaSpringCoefficient;
+                  }
+                  else if (type == SpecTypeId.LineSpringCoefficient)
+                  {
+                     propertyType = PropertyType.LineSpringCoefficient;
+                  }
+                  else if (type == SpecTypeId.MassPerUnitArea)
+                  {
+                     propertyType = PropertyType.MassPerUnitArea;
+                  }
+                  else if (type == SpecTypeId.ReinforcementAreaPerUnitLength)
+                  {
+                     propertyType = PropertyType.ReinforcementAreaPerUnitLength;
+                  }
+                  else if (type == SpecTypeId.RotationalLineSpringCoefficient)
+                  {
+                     propertyType = PropertyType.RotationalLineSpringCoefficient;
+                  }
+                  else if (type == SpecTypeId.RotationalPointSpringCoefficient)
+                  {
+                     propertyType = PropertyType.RotationalPointSpringCoefficient;
+                  }
+                  else if (type == SpecTypeId.UnitWeight)
+                  {
+                     propertyType = PropertyType.UnitWeight;
+                  }
+                  else
+                  {
+                     assigned = false;
                   }
 
                   if (!assigned)
@@ -939,6 +1306,7 @@ namespace Revit.IFC.Export.Exporter.PropertySet
                   break;
                }
          }
+
          return new PropertySetEntry(propertyType, parameterDefinition.Name, builtInParameter);
       }
    }

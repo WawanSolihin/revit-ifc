@@ -41,7 +41,9 @@ namespace Revit.IFC.Export.Exporter
       public static void ExportPile(ExporterIFC exporterIFC, Element element, GeometryElement geometryElement,
          string ifcEnumType, ProductWrapper productWrapper)
       {
-         // export parts or not
+         // NOTE: We expect to incorporate this code into the generic FamilyInstanceExporter at some point.
+
+         // Export parts or not
          bool exportParts = PartExporter.CanExportParts(element);
          if (exportParts && !PartExporter.CanExportElementInPartExport(element, element.LevelId, false))
             return;
@@ -50,13 +52,9 @@ namespace Revit.IFC.Export.Exporter
 
          using (IFCTransaction tr = new IFCTransaction(file))
          {
-            // Check for containment override
-            IFCAnyHandle overrideContainerHnd = null;
-            ElementId overrideContainerId = ParameterUtil.OverrideContainmentParameter(exporterIFC, element, out overrideContainerHnd);
-
-            using (PlacementSetter setter = PlacementSetter.Create(exporterIFC, element, null, null, overrideContainerId, overrideContainerHnd))
+            using (PlacementSetter setter = PlacementSetter.Create(exporterIFC, element, null))
             {
-               using (IFCExtrusionCreationData ecData = new IFCExtrusionCreationData())
+               using (IFCExportBodyParams ecData = new IFCExportBodyParams())
                {
                   ecData.SetLocalPlacement(setter.LocalPlacement);
 
@@ -67,7 +65,7 @@ namespace Revit.IFC.Export.Exporter
                      ElementId catId = CategoryUtil.GetSafeCategoryId(element);
 
 
-                     matId = BodyExporter.GetBestMaterialIdFromGeometryOrParameter(geometryElement, exporterIFC, element);
+                     matId = BodyExporter.GetBestMaterialIdFromGeometryOrParameter(geometryElement, element);
                      BodyExporterOptions bodyExporterOptions = new BodyExporterOptions(true, ExportOptionsCache.ExportTessellationLevel.ExtraLow);
 
                      StructuralMemberAxisInfo axisInfo = StructuralMemberExporter.GetStructuralMemberAxisTransform(element);
@@ -89,28 +87,25 @@ namespace Revit.IFC.Export.Exporter
                   }
 
                   string instanceGUID = GUIDUtil.CreateGUID(element);
-                  //string pileType = IFCValidateEntry.GetValidIFCPredefinedType(element, ifcEnumType);
-                  IFCExportInfoPair exportInfo = new IFCExportInfoPair();
-                  exportInfo.ValidatedPredefinedType = ifcEnumType;
-                  exportInfo.SetValueWithPair(Common.Enums.IFCEntityType.IfcPile, ifcEnumType);
-
-                  IFCAnyHandle pile = IFCInstanceExporter.CreatePile(exporterIFC, element, instanceGUID, ExporterCacheManager.OwnerHistoryHandle,
-                      ecData.GetLocalPlacement(), prodRep, ifcEnumType, null);
-
+                  IFCExportInfoPair exportInfo = new IFCExportInfoPair(Common.Enums.IFCEntityType.IfcPile, ifcEnumType);
                   // TODO: to allow shared geometry for Piles. For now, Pile export will not use shared geometry
-                  if (exportInfo.ExportType != Common.Enums.IFCEntityType.UnKnown)
-                  {
-                     IFCAnyHandle type = ExporterUtil.CreateGenericTypeFromElement(element, exportInfo, file, ExporterCacheManager.OwnerHistoryHandle, exportInfo.ValidatedPredefinedType, productWrapper);
-                     ExporterCacheManager.TypeRelationsCache.Add(type, pile);
-                  }
+                  IFCAnyHandle type = (exportInfo.ExportType != Common.Enums.IFCEntityType.UnKnown) ?
+                     ExporterUtil.CreateGenericTypeFromElement(element, exportInfo, file, productWrapper) : null;
+                  
+                  IFCAnyHandle pile = IFCInstanceExporter.CreatePile(file, element, type, instanceGUID, 
+                     ExporterCacheManager.OwnerHistoryHandle, ecData.GetLocalPlacement(), prodRep, ifcEnumType, null);
+                  if (IFCAnyHandleUtil.IsNullOrHasNoValue(pile))
+                     return;
+
+                  ExporterCacheManager.TypeRelationsCache.Add(type, pile);
 
                   if (exportParts)
                   {
-                     PartExporter.ExportHostPart(exporterIFC, element, pile, productWrapper, setter, setter.LocalPlacement, null);
+                     PartExporter.ExportHostPart(exporterIFC, element, pile, setter, setter.LocalPlacement, null);
                   }
                   else
                   {
-                     if (matId != ElementId.InvalidElementId)
+                     if (!MathUtil.IsInvalidElementId(matId))
                      {
                         CategoryUtil.CreateMaterialAssociation(exporterIFC, pile, matId);
                      }

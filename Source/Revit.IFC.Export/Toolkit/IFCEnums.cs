@@ -1394,7 +1394,7 @@ namespace Revit.IFC.Export.Toolkit
       VaporPermeabilityUnit,
       VolumetricFlowRateUnit,
       RotationalFrequencyUnit,
-      Toruquenit,
+      Torqueunit,
       MomentOfInertiaUnit,
       LinearMomentUnit,
       LinearForceUnit,
@@ -1875,7 +1875,7 @@ namespace Revit.IFC.Export.Toolkit
       NotDefined
    }
 
-   public enum IfcVibrationIsolatorType
+   public enum IFCVibrationIsolatorType
    {
       COMPRESSION,
       SPRING,

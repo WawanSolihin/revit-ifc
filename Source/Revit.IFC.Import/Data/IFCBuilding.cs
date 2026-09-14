@@ -17,15 +17,13 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 //
 
-using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
 using Revit.IFC.Common.Enums;
 using Revit.IFC.Common.Utility;
 using Revit.IFC.Import.Enums;
+using Revit.IFC.Import.Utility;
 
 namespace Revit.IFC.Import.Data
 {
@@ -37,38 +35,71 @@ namespace Revit.IFC.Import.Data
       /// <summary>
       /// Constructs an IFCBuilding from the IfcBuilding handle.
       /// </summary>
-      /// <param name="ifcIFCBuilding">The IfcBuilding handle.</param>
-      protected IFCBuilding(IFCAnyHandle ifcIFCBuilding)
+      /// <param name="ifcBuilding">The IfcBuilding handle.</param>
+      protected IFCBuilding(IFCAnyHandle ifcBuilding)
       {
-         Process(ifcIFCBuilding);
+         Process(ifcBuilding);
       }
+
+      /// <summary>
+      /// The base elevation of the building.
+      /// </summary>
+      public double ElevationOfRefHeight { get; protected set; } = 0.0;
+
+      /// <summary>
+      /// The elevation above the minimal terrain level.
+      /// </summary>
+      public double ElevationOfTerrain { get; protected set; } = 0.0;
+
+      /// <summary>
+      /// The optional address given to the building for postal purposes.
+      /// </summary>
+      public IFCPostalAddress BuildingAddress { get; protected set; } = null;
 
       /// <summary>
       /// Processes IfcBuilding attributes.
       /// </summary>
-      /// <param name="ifcIFCBuilding">The IfcBuilding handle.</param>
-      protected override void Process(IFCAnyHandle ifcIFCBuilding)
+      /// <param name="ifcBuilding">The IfcBuilding handle.</param>
+      protected override void Process(IFCAnyHandle ifcBuilding)
       {
-         // TODO: process IfcBuilding specific data.
-         base.Process(ifcIFCBuilding);
+         base.Process(ifcBuilding);
+
+         ElevationOfRefHeight = IFCImportHandleUtil.GetOptionalScaledLengthAttribute(ifcBuilding, "ElevationOfRefHeight", 0.0);
+
+         ElevationOfTerrain = IFCImportHandleUtil.GetOptionalScaledLengthAttribute(ifcBuilding, "ElevationOfTerrain", 0.0);
+
+         IFCAnyHandle ifcPostalAddress = IFCImportHandleUtil.GetOptionalInstanceAttribute(ifcBuilding, "BuildingAddress");
+         if (!IFCAnyHandleUtil.IsNullOrHasNoValue(ifcPostalAddress))
+            BuildingAddress = IFCPostalAddress.ProcessIFCPostalAddress(ifcPostalAddress);
       }
+
+      public override void PostProcess()
+      {
+         TryToFixFarawayOrigin();
+         base.PostProcess();
+      }
+
 
       /// <summary>
       /// Allow for override of IfcObjectDefinition shared parameter names.
       /// </summary>
       /// <param name="name">The enum corresponding of the shared parameter.</param>
+      /// <param name="isType">True if the shared parameter is a type parameter.</param>
       /// <returns>The name appropriate for this IfcObjectDefinition.</returns>
-      public override string GetSharedParameterName(IFCSharedParameters name)
+      public override string GetSharedParameterName(IFCSharedParameters name, bool isType)
       {
-         switch (name)
+         if (!isType)
          {
-            case IFCSharedParameters.IfcName:
-               return "IfcBuilding Name";
-            case IFCSharedParameters.IfcDescription:
-               return "IfcBuilding Description";
-            default:
-               return base.GetSharedParameterName(name);
+            switch (name)
+            {
+               case IFCSharedParameters.IfcName:
+                  return "BuildingName";
+               case IFCSharedParameters.IfcDescription:
+                  return "BuildingDescription";
+            }
          }
+
+         return base.GetSharedParameterName(name, isType);
       }
 
       /// <summary>
@@ -93,10 +124,24 @@ namespace Revit.IFC.Import.Data
       {
          base.Create(doc);
 
+         IFCLocation.WarnIfFaraway(this);
+
          // IfcBuilding usually won't create an element, as it contains no geometry.
          // If it doesn't, use the ProjectInfo element in the document to store its parameters.
          if (CreatedElementId == ElementId.InvalidElementId)
             CreatedElementId = Importer.TheCache.ProjectInformationId;
+      }
+
+      /// <summary>
+      /// Creates or populates Revit element params based on the information contained in this class.
+      /// </summary>
+      /// <param name="doc">The document.</param>
+      /// <param name="element">The element.</param>
+      protected override void CreateParametersInternal(Document doc, Element element)
+      {
+         base.CreateParametersInternal(doc, element);
+
+         CreatePostalParameters(doc, element, BuildingAddress);
       }
 
       /// <summary>

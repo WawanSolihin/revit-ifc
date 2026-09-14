@@ -16,27 +16,14 @@
 // License along with this library; if not, write to the Free Software
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
+using Autodesk.Revit.DB;
+using Autodesk.UI.Windows;
+using Revit.IFC.Common.Extensions;
+using Revit.IFC.Export.Utility;
 using System;
-using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Data;
-using System.Windows.Documents;
-using System.Windows.Input;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Shapes;
-using System.Runtime.InteropServices;
-using System.Windows.Interop;
-using Autodesk.Revit.WPFFramework;
-using Autodesk.Revit.DB;
-using Autodesk.Revit.UI;
-using Autodesk.Revit.UI.Events;
-
-using Revit.IFC.Common.Extensions;
-
 
 namespace BIM.IFC.Export.UI
 {
@@ -58,6 +45,7 @@ namespace BIM.IFC.Export.UI
       private IFCAddress m_newAddress = new IFCAddress();
       private IFCAddressItem m_newAddressItem = new IFCAddressItem();
       private IFCAddressItem m_savedAddressItem = new IFCAddressItem();
+      private IFCExportConfiguration m_parentConfiguration = null;
 
       private string getUserDefinedStringFromIFCPurposeList()
       {
@@ -65,70 +53,38 @@ namespace BIM.IFC.Export.UI
       }
 
       /// <summary>
-      /// The file to store the previous window bounds.
-      /// </summary>
-      string m_SettingFile = "IFCAddressInformationUIWindowSettings_v30.txt";    // update the file when resize window bounds.
-
-      /// <summary>
       /// initialization of IFCAssignemt class
       /// </summary>
       /// <param name="document"></param>
-      public IFCAddressInformation()
+      public IFCAddressInformation(IFCExportConfiguration configuration)
       {
          InitializeComponent();
+         m_parentConfiguration = configuration;
 
-         RestorePreviousWindow();
+         if ((configuration.ProjectAddress.HasData() && !m_newAddressItem.HasData()) 
+            || (configuration.ProjectAddress.HasData() && m_newAddressItem.HasData() && !configuration.ProjectAddress.isUnchanged(m_newAddressItem)))
+            m_newAddressItem = configuration.ProjectAddress;
 
-         bool hasSavedItem = m_newAddress.GetSavedAddress(IFCCommandOverrideApplication.TheDocument, out m_newAddressItem);
-         if (hasSavedItem == true)
+         // This is a short list, so we just do an O(n) search.
+         int numItems = ifcPurposeList.Count();
+         for (int ii = 0; ii < numItems; ii++)
          {
-            //keep a copy of the original saved items for checking for any value changed later on
-            m_savedAddressItem = m_newAddressItem.Clone();
-
-            // We won't initialize PurposeComboBox.SelectedIndex, as otherwise that will change the value
-            // of m_newAddressItem.Purpose to the first item in the list, which we don't want.   It is
-            // OK for this to be "uninitialized".
-
-            // This is a short list, so we just do an O(n) search.
-            int numItems = ifcPurposeList.Count();
-            for (int ii = 0; ii < numItems; ii++)
+            if (m_newAddressItem.Purpose == ifcPurposeList[ii])
             {
-               if (m_newAddressItem.Purpose == ifcPurposeList[ii])
-               {
-                  PurposeComboBox.SelectedIndex = ii;
-                  break;
-               }
+               PurposeComboBox.SelectedIndex = ii;
+               break;
             }
          }
 
+         // Initialize options from the configuration
+         Checkbox_AssignToBuilding.IsChecked = configuration.ProjectAddress.AssignAddressToBuilding;
+         Checkbox_AssignToSite.IsChecked = configuration.ProjectAddress.AssignAddressToSite;
+         UpdateProjInfocheckBox.IsChecked = configuration.ProjectAddress.UpdateProjectInformation;
+      }
+
+      private void OnInit(object sender, RoutedEventArgs e)
+      {
          DataContext = m_newAddressItem;
-      }
-
-      /// <summary>
-      /// Saves the window bounds when close the window.
-      /// </summary>
-      /// <param name="sender">The source of the event.</param>
-      /// <param name="e">Event arguments that contains the event data.</param>
-      private void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e)
-      {
-         // Save restore bounds for the next time this window is opened
-         IFCUISettings.SaveWindowBounds(m_SettingFile, this.RestoreBounds);
-      }
-
-      /// <summary>
-      /// Restores the previous window. If no previous window found, place on the left top.
-      /// </summary>
-      private void RestorePreviousWindow()
-      {
-         // Refresh restore bounds from previous window opening
-         Rect restoreBounds = IFCUISettings.LoadWindowBounds(m_SettingFile);
-         if (restoreBounds != new Rect())
-         {
-            this.Left = restoreBounds.Left;
-            this.Top = restoreBounds.Top;
-            this.Width = restoreBounds.Width;
-            this.Height = restoreBounds.Height;
-         }
       }
 
       /// <summary>
@@ -153,7 +109,14 @@ namespace BIM.IFC.Export.UI
       {
          m_newAddressItem.Purpose = ifcPurposeList[PurposeComboBox.SelectedIndex];
          if (String.Compare(m_newAddressItem.Purpose, getUserDefinedStringFromIFCPurposeList()) != 0) // ifcPurposeList == "USERDEFINED"
+         {
             m_newAddressItem.UserDefinedPurpose = "";         // Set User Defined Purpose field to empty if the Purpose is changed to other values
+            UserDefinedPurposeTextBox.IsEnabled = false;
+         }
+         else
+         {
+            UserDefinedPurposeTextBox.IsEnabled = true;
+         }
       }
 
       /// <summary>
@@ -251,7 +214,7 @@ namespace BIM.IFC.Export.UI
 
             transaction.Commit();
          }
-
+         m_parentConfiguration.ProjectAddress = m_newAddressItem;
          Close();
       }
 

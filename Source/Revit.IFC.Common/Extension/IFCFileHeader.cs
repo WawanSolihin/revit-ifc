@@ -1,4 +1,4 @@
-﻿//
+//
 // BIM IFC export alternate UI library: this library works with Autodesk(R) Revit(R) to provide an alternate user interface for the export of IFC files from Revit.
 // Copyright (C) 2012  Autodesk, Inc.
 // 
@@ -19,9 +19,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using Autodesk.Revit.DB;
-using Autodesk.Revit.DB.IFC;
 using Autodesk.Revit.DB.ExtensibleStorage;
 
 
@@ -88,38 +86,28 @@ namespace Revit.IFC.Common.Extensions
          {
             m_schema = Schema.Lookup(s_schemaId);
          }
+
          if (m_schema != null)
          {
+            Transaction transaction = new Transaction(document, "Update saved IFC File Header");
+            transaction.Start();
+
             IList<DataStorage> oldSavedFileHeader = GetFileHeaderInStorage(document, m_schema);
             if (oldSavedFileHeader.Count > 0)
             {
-               Transaction deleteTransaction = new Transaction(document, "Delete old IFC File Header");
-               deleteTransaction.Start();
                List<ElementId> dataStorageToDelete = new List<ElementId>();
                foreach (DataStorage dataStorage in oldSavedFileHeader)
                {
                   dataStorageToDelete.Add(dataStorage.Id);
                }
                document.Delete(dataStorageToDelete);
-               deleteTransaction.Commit();
             }
-         }
-
-         // Update the address using the new information
-         if (m_schema == null)
-         {
-            m_schema = Schema.Lookup(s_schemaId);
-         }
-         if (m_schema != null)
-         {
-            Transaction transaction = new Transaction(document, "Update saved IFC File Header");
-            transaction.Start();
 
             DataStorage fileHeaderStorage = DataStorage.Create(document);
 
             Entity mapEntity = new Entity(m_schema);
             IDictionary<string, string> mapData = new Dictionary<string, string>();
-            if (fileHeaderItem.FileDescription != null) mapData.Add(s_FileDescription, fileHeaderItem.FileDescription.ToString());
+            if (fileHeaderItem.FileDescriptions.Count > 0) mapData.Add(s_FileDescription, string.Join("|", fileHeaderItem.FileDescriptions.ToArray()));
             if (fileHeaderItem.SourceFileName != null) mapData.Add(s_SourceFileName, fileHeaderItem.SourceFileName.ToString());
             if (fileHeaderItem.AuthorName != null) mapData.Add(s_AuthorName, fileHeaderItem.AuthorName.ToString());
             if (fileHeaderItem.AuthorEmail != null) mapData.Add(s_AuthorEmail, fileHeaderItem.AuthorEmail.ToString());
@@ -144,48 +132,53 @@ namespace Revit.IFC.Common.Extensions
       /// <returns>Status whether there is existing saved File Header.</returns>
       public bool GetSavedFileHeader(Document document, out IFCFileHeaderItem fileHeader)
       {
-         IFCFileHeaderItem fileHeaderItemSaved = new IFCFileHeaderItem();
+         fileHeader = new IFCFileHeaderItem();
 
          if (m_schema == null)
          {
             m_schema = Schema.Lookup(s_schemaId);
          }
-         if (m_schema != null)
+
+         if (m_schema == null)
          {
-            IList<DataStorage> fileHeaderStorage = GetFileHeaderInStorage(document, m_schema);
-
-            if (fileHeaderStorage.Count > 0)
-            {
-
-               // expected only one File Header information in the storage
-               Entity savedFileHeader = fileHeaderStorage[0].GetEntity(m_schema);
-               IDictionary<string, string> savedFileHeaderMap = savedFileHeader.Get<IDictionary<string, string>>(s_FileHeaderMapField);
-               if (savedFileHeaderMap.ContainsKey(s_FileDescription))
-                  fileHeaderItemSaved.FileDescription = savedFileHeaderMap[s_FileDescription];
-               if (savedFileHeaderMap.ContainsKey(s_SourceFileName))
-                  fileHeaderItemSaved.SourceFileName = savedFileHeaderMap[s_SourceFileName];
-               if (savedFileHeaderMap.ContainsKey(s_AuthorName))
-                  fileHeaderItemSaved.AuthorName = savedFileHeaderMap[s_AuthorName];
-               if (savedFileHeaderMap.ContainsKey(s_AuthorEmail))
-                  fileHeaderItemSaved.AuthorEmail = savedFileHeaderMap[s_AuthorEmail];
-               if (savedFileHeaderMap.ContainsKey(s_Organization))
-                  fileHeaderItemSaved.Organization = savedFileHeaderMap[s_Organization];
-               if (savedFileHeaderMap.ContainsKey(s_Authorization))
-                  fileHeaderItemSaved.Authorization = savedFileHeaderMap[s_Authorization];
-               if (savedFileHeaderMap.ContainsKey(s_ApplicationName))
-                  fileHeaderItemSaved.ApplicationName = savedFileHeaderMap[s_ApplicationName];
-               if (savedFileHeaderMap.ContainsKey(s_VersionNumber))
-                  fileHeaderItemSaved.VersionNumber = savedFileHeaderMap[s_VersionNumber];
-               if (savedFileHeaderMap.ContainsKey(s_FileSchema))
-                  fileHeaderItemSaved.FileSchema = savedFileHeaderMap[s_FileSchema];
-
-               fileHeader = fileHeaderItemSaved;
-               return true;
-            }
+            return false;
          }
 
-         fileHeader = fileHeaderItemSaved;
-         return false;
+         IList<DataStorage> fileHeaderStorage = GetFileHeaderInStorage(document, m_schema);
+
+         if (fileHeaderStorage.Count == 0)
+            return false;
+
+         try
+         {
+            // expected only one File Header information in the storage
+            Entity savedFileHeader = fileHeaderStorage[0].GetEntity(m_schema);
+            IDictionary<string, string> savedFileHeaderMap = savedFileHeader.Get<IDictionary<string, string>>(s_FileHeaderMapField);
+            if (savedFileHeaderMap.ContainsKey(s_FileDescription))
+               fileHeader.FileDescriptions = savedFileHeaderMap[s_FileDescription].Split('|').ToList();
+            if (savedFileHeaderMap.ContainsKey(s_SourceFileName))
+               fileHeader.SourceFileName = savedFileHeaderMap[s_SourceFileName];
+            if (savedFileHeaderMap.ContainsKey(s_AuthorName))
+               fileHeader.AuthorName = savedFileHeaderMap[s_AuthorName];
+            if (savedFileHeaderMap.ContainsKey(s_AuthorEmail))
+               fileHeader.AuthorEmail = savedFileHeaderMap[s_AuthorEmail];
+            if (savedFileHeaderMap.ContainsKey(s_Organization))
+               fileHeader.Organization = savedFileHeaderMap[s_Organization];
+            if (savedFileHeaderMap.ContainsKey(s_Authorization))
+               fileHeader.Authorization = savedFileHeaderMap[s_Authorization];
+            if (savedFileHeaderMap.ContainsKey(s_ApplicationName))
+               fileHeader.ApplicationName = savedFileHeaderMap[s_ApplicationName];
+            if (savedFileHeaderMap.ContainsKey(s_VersionNumber))
+               fileHeader.VersionNumber = savedFileHeaderMap[s_VersionNumber];
+            if (savedFileHeaderMap.ContainsKey(s_FileSchema))
+               fileHeader.FileSchema = savedFileHeaderMap[s_FileSchema];
+         }
+         catch (Autodesk.Revit.Exceptions.InvalidOperationException)
+         {
+            document.Application.WriteJournalComment("IFC error: Cannot read IFCFileHeader schema", true);
+         }
+
+         return true;
       }
    }
 }

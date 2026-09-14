@@ -35,37 +35,28 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// <summary>
       /// A boolean variable to keep the calculated value.
       /// </summary>
-      private bool m_IsExternal = false;
-
-      /// <summary>
-      /// A static instance of this class.
-      /// </summary>
-      static IsExternalCalculator s_Instance = new IsExternalCalculator();
+      private bool? IsExternal { get; set; } = false;
 
       /// <summary>
       /// The IsExternalCalculator instance.
       /// </summary>
-      public static IsExternalCalculator Instance
-      {
-         get { return s_Instance; }
-      }
+      public static IsExternalCalculator Instance { get; } = new IsExternalCalculator();
 
       /// <summary>
       /// Calculates external value for an element.
       /// </summary>
       /// <param name="exporterIFC">The ExporterIFC object.</param>
-      /// <param name="extrusionCreationData">The IFCExtrusionCreationData.</param>
+      /// <param name="extrusionCreationData">The IFCExportBodyParams.</param>
       /// <param name="element">The element to calculate the value.</param>
       /// <param name="elementType">The element type.</param>
       /// <returns>True if the operation succeed, false otherwise.</returns>
-      public override bool Calculate(ExporterIFC exporterIFC, IFCExtrusionCreationData extrusionCreationData, Element element, ElementType elementType)
+      public override bool Calculate(ExporterIFC exporterIFC, IFCAnyHandle handle, IFCExportBodyParams extrusionCreationData, Element element, ElementType elementType, EntryMap entryMap)
       {
-         int isExternalInt = 0;
-         ParameterUtil.GetIntValueFromElementOrSymbol(element, "IsExternal", out isExternalInt);
-         if (isExternalInt != 0)
-            m_IsExternal = true;
+         IsExternal = CategoryUtil.IsElementExternal(element);
 
-         m_IsExternal = CategoryUtil.IsElementExternal(element);
+         if (IsExternal == null)
+            return false;
+
          return true;
       }
 
@@ -75,7 +66,7 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// <returns>The boolean value.</returns>
       public override bool GetBooleanValue()
       {
-         return m_IsExternal;
+         return IsExternal ?? false;
       }
    }
 }

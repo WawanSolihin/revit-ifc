@@ -17,16 +17,9 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 //
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using Revit.IFC.Common.Enums;
-using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
 using Revit.IFC.Common.Utility;
-using Revit.IFC.Import.Enums;
-using Revit.IFC.Import.Utility;
 
 namespace Revit.IFC.Import.Data
 {
@@ -82,7 +75,7 @@ namespace Revit.IFC.Import.Data
 
          IFCBuildingElementComponent newIFCBuildingElementComponent = null;
          // other subclasses not handled yet.
-         if (IFCAnyHandleUtil.IsSubTypeOf(ifcBuildingElementComponent, IFCEntityType.IfcBuildingElementPart))
+         if (IFCAnyHandleUtil.IsValidSubTypeOf(ifcBuildingElementComponent, IFCEntityType.IfcBuildingElementPart))
             newIFCBuildingElementComponent = IFCBuildingElementPart.ProcessIFCBuildingElementPart(ifcBuildingElementComponent);
          else
             newIFCBuildingElementComponent = new IFCBuildingElementComponent(ifcBuildingElementComponent);

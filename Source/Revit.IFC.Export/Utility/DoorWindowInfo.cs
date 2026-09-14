@@ -19,13 +19,9 @@
 
 using System;
 using System.Collections.Generic;
-using System.Text;
-using Autodesk.Revit;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
 using Revit.IFC.Export.Exporter;
-using Revit.IFC.Export.Toolkit;
-using Revit.IFC.Common.Enums;
 using Revit.IFC.Common.Utility;
 
 namespace Revit.IFC.Export.Utility
@@ -105,7 +101,7 @@ namespace Revit.IFC.Export.Utility
       /// </summary>
       public string PreDefinedType { get; set; }
 
-      private DoorWindowInfo()
+      public DoorWindowInfo()
       {
          HostObject = null;
          InsertInstance = null;
@@ -122,45 +118,60 @@ namespace Revit.IFC.Export.Utility
          UserDefinedPartitioningType = null;
       }
 
-      private KeyValuePair<double, double> GetAdjustedEndParameters(Arc arc, bool flipped, double offset)
+      static readonly Dictionary<NamingUtil.IFCStringKey, string> ReverseDoorStyleOperations = new()
       {
-         double endParam0 = (flipped ? arc.GetEndParameter(1) : arc.GetEndParameter(0)) - offset;
-         double endParam1 = (flipped ? arc.GetEndParameter(0) : arc.GetEndParameter(1)) - offset;
-         double angle = endParam1 - endParam0;
-         endParam0 = MathUtil.PutInRange(endParam0, Math.PI, 2 * Math.PI);
-         endParam1 = endParam0 + angle;
+         { new NamingUtil.IFCStringKey("DOUBLESWINGLEFT"), "DOUBLE_SWING_RIGHT" },
+         { new NamingUtil.IFCStringKey("DOUBLESWINGRIGHT"), "DOUBLE_SWING_LEFT" },
+         { new NamingUtil.IFCStringKey("FOLDINGTOLEFT"), "FOLDING_TO_RIGHT" },
+         { new NamingUtil.IFCStringKey("FOLDINGTORIGHT"), "FOLDING_TO_LEFT"},
+         { new NamingUtil.IFCStringKey("SINGLESWINGLEFT"), "SINGLE_SWING_RIGHT"},
+         { new NamingUtil.IFCStringKey("SINGLESWINGRIGHT"), "SINGLE_SWING_LEFT" },
+         { new NamingUtil.IFCStringKey("SLIDINGTOLEFT"), "SLIDING_TO_RIGHT" },
+         { new NamingUtil.IFCStringKey("SLIDINGTORIGHT"), "SLIDING_TO_LEFT"}
+      };
 
-         return new KeyValuePair<double, double>(endParam0, endParam1);
-      }
+      static readonly Dictionary<NamingUtil.IFCStringKey, string> ReverseDoorStyleOperationsPre4Dot3 = new()
+      {
+         { new NamingUtil.IFCStringKey("DOUBLEDOORSINGLESWINGOPPOSITELEFT"), "DOUBLE_DOOR_SINGLE_SWING_OPPOSITE_RIGHT" },
+         { new NamingUtil.IFCStringKey("DOUBLEDOORSINGLESWINGOPPOSITERIGHT"), "DOUBLE_DOOR_SINGLE_SWING_OPPOSITE_LEFT" },
+         { new NamingUtil.IFCStringKey("DOUBLEPANELSINGLESWINGOPPOSITELEFT"), "DOUBLE_DOOR_SINGLE_SWING_OPPOSITE_RIGHT" },
+         { new NamingUtil.IFCStringKey("DOUBLEPANELSINGLESWINGOPPOSITERIGHT"), "DOUBLE_DOOR_SINGLE_SWING_OPPOSITE_LEFT"}
+      };
+
+      static readonly Dictionary<NamingUtil.IFCStringKey, string> ReverseDoorStyleOperations4Dot3 = new()
+      {
+         { new NamingUtil.IFCStringKey("DOUBLEDOORSINGLESWINGOPPOSITELEFT"), "DOUBLE_PANEL_SINGLE_SWING_OPPOSITE_RIGHT" },
+         { new NamingUtil.IFCStringKey("DOUBLEDOORSINGLESWINGOPPOSITERIGHT"), "DOUBLE_PANEL_SINGLE_SWING_OPPOSITE_LEFT" },
+         { new NamingUtil.IFCStringKey("DOUBLEPANELSINGLESWINGOPPOSITELEFT"), "DOUBLE_PANEL_SINGLE_SWING_OPPOSITE_RIGHT" },
+         { new NamingUtil.IFCStringKey("DOUBLEPANELSINGLESWINGOPPOSITERIGHT"), "DOUBLE_PANEL_SINGLE_SWING_OPPOSITE_LEFT"},
+         { new NamingUtil.IFCStringKey("LIFTINGVERTICALLEFT"), "LIFTING_VERTICAL_RIGHT" },
+         { new NamingUtil.IFCStringKey("LIFTINGVERTICALRIGHT"), "LIFTING_VERTICAL_LEFT"}
+      };
 
       private string ReverseDoorStyleOperation(string orig)
       {
-         if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(orig, "DoubleDoorSingleSwingOppositeLeft"))
-            return "DOUBLE_DOOR_SINGLE_SWING_OPPOSITE_RIGHT";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(orig, "DoubleDoorSingleSwingOppositeRight"))
-            return "DOUBLE_DOOR_SINGLE_SWING_OPPOSITE_LEFT";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(orig, "DoubleSwingLeft"))
-            return "DOUBLE_SWING_RIGHT";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(orig, "DoubleSwingRight"))
-            return "DOUBLE_SWING_LEFT";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(orig, "FoldingToLeft"))
-            return "FOLDING_TO_RIGHT";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(orig, "FoldingToRight"))
-            return "FOLDING_TO_LEFT";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(orig, "SingleSwingLeft"))
-            return "SINGLE_SWING_RIGHT";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(orig, "SingleSwingRight"))
-            return "SINGLE_SWING_LEFT";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(orig, "SlidingToLeft"))
-            return "SLIDING_TO_RIGHT";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(orig, "SlidingToRight"))
-            return "SLIDING_TO_LEFT";
+         NamingUtil.IFCStringKey compName = new(orig);
+         if (ReverseDoorStyleOperations.TryGetValue(compName, out string reverse))
+            return reverse;
+
+         if (ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4x3)
+         {
+            if (ReverseDoorStyleOperationsPre4Dot3.TryGetValue(compName, out reverse))
+               return reverse;
+         }
          else
-            return orig;
+         {
+            if (ReverseDoorStyleOperations4Dot3.TryGetValue(compName, out reverse))
+               return reverse;
+         }
+
+         return orig;
       }
 
       private string CalculateDoorOperationStyle(FamilyInstance currElem, Transform trf)
       {
+         // TODO: See if we can support new IFC4.3 types.
+
          int leftPosYArcCount = 0;
          int leftNegYArcCount = 0;
          int rightPosYArcCount = 0;
@@ -182,11 +193,20 @@ namespace Revit.IFC.Export.Utility
 
          Transform doorWindowTrf = ExporterIFCUtils.GetTransformForDoorOrWindow(currElem, famSymbol, FlippedX, FlippedY);
 
-         IList<Curve> origArcs = GeometryUtil.Get2DArcOrLineFromSymbol(currElem, allCurveType:false, inclArc:true);
-         if (origArcs == null || (origArcs.Count == 0))
+         IList<Curve> origArcs = GeometryUtil.Get2DArcOrLineFromSymbol(currElem, allCurveType: false, inclArc: true);
+         if ((origArcs?.Count ?? 0) == 0)
             return "NOTDEFINED";
 
          BoundingBoxXYZ doorBB = GetBoundingBoxFromSolids(currElem);
+
+         // Translate curtain door origin to have proper 2D arc position
+         Wall wall = HostObject as Wall;
+         if ((wall?.WallType.Kind ?? WallKind.Unknown) == WallKind.Curtain)
+         {
+            Transform offsetOrigTrf = Transform.CreateTranslation(-XYZ.BasisX * doorBB.Min.X);
+            doorWindowTrf = offsetOrigTrf.Multiply(doorWindowTrf);
+         }
+
          XYZ bbMin = doorWindowTrf.OfPoint(doorBB.Min);
          XYZ bbMax = doorWindowTrf.OfPoint(doorBB.Max);
 
@@ -207,15 +227,17 @@ namespace Revit.IFC.Export.Utility
             zmin = bbMax.Z;
             zmax = bbMin.Z;
          }
-         bbMin = new XYZ(xmin - tolForArcCenter, ymin - tolForArcCenter, zmin - tolForArcCenter);
-         bbMax = new XYZ(xmax + tolForArcCenter, ymax + tolForArcCenter, zmax + tolForArcCenter);
+         bbMin = new(xmin - tolForArcCenter, ymin - tolForArcCenter, zmin - tolForArcCenter);
+         bbMax = new(xmax + tolForArcCenter, ymax + tolForArcCenter, zmax + tolForArcCenter);
 
-         IList<XYZ> arcCenterLocations = new List<XYZ>();
-         SortedSet<double> arcRadii = new SortedSet<double>();
+         List<XYZ> arcCenterLocations = new();
+         SortedSet<double> arcRadii = new();
+
+         double angleTolerance = currElem.Document.Application.AngleTolerance * 180.0 / Math.PI;
 
          foreach (Arc arc in origArcs)
          {
-            Arc trfArc = arc.CreateTransformed(doorWindowTrf) as Arc;
+            Arc trfArc = GeometryUtil.CreateTransformedCurve(arc, doorWindowTrf) as Arc;
 
             // Filter only Arcs that is on XY plane and at the Z=0 of the Door/Window transform
             if (!(MathUtil.IsAlmostEqual(Math.Abs(trfArc.Normal.Z), 1.0) /*&& MathUtil.IsAlmostEqual(Math.Abs(trfArc.Center.Z), Math.Abs(doorWindowTrf.Origin.Z))*/))
@@ -226,37 +248,40 @@ namespace Revit.IFC.Export.Utility
                continue;
 
             if (!trfArc.IsBound)
+            {
                fullCircleCount++;
+            }
             else
             {
-               double angleOffOfXY = 0;
                XYZ v1 = CorrectNearlyZeroValueToZero((trfArc.GetEndPoint(0) - trfArc.Center).Normalize());
                XYZ v2 = CorrectNearlyZeroValueToZero((trfArc.GetEndPoint(1) - trfArc.Center).Normalize());
-               angleOffOfXY = Math.Acos(v1.DotProduct(v2));
+               double angleOffOfXYInRadians = MathUtil.SafeAcos(v1.DotProduct(v2));
+               double absAngleOffOfXYInDegress = Math.Abs(angleOffOfXYInRadians * 180.0 / Math.PI);
+               bool alignedToX = MathUtil.IsAlmostEqual(Math.Abs(v1.X), 1.0, allowance) || MathUtil.IsAlmostEqual(Math.Abs(v2.X), 1.0, allowance);
 
-               if ((Math.Abs(angleOffOfXY) > (60.0 / 180.0) * Math.PI && Math.Abs(angleOffOfXY) < (240.0 / 180.0) * Math.PI)
-                        && ((v1.Y > 0.0 && v2.Y < 0.0) || (v1.Y < 0.0 && v2.Y > 0.0)))    // Consider the opening swing between -30 to +30 up to -120 to +120 degree, where Y axes must be at the opposite sides
+               if (absAngleOffOfXYInDegress is >= 60.0 and <= 240.0 && Math.Sign(v1.Y) != Math.Sign(v2.Y) &&
+                  (!alignedToX || absAngleOffOfXYInDegress >= 90.0 + angleTolerance))
                {
+                  // Consider the opening swing between -30 to +30 up to -120 to +120 degree,
+                  // where Y axes must be at the opposite sides.
+                  // If it is alignedToX, we don't consider this a "half circle" unless we are significantly
+                  // above 90 degrees.
                   if (trfArc.Center.X >= -tolForArcCenter && trfArc.Center.X <= tolForArcCenter)
                      leftHalfCircleCount++;
                   else
                      rightHalfCircleCount++;
                }
-               else if ((Math.Abs(angleOffOfXY) > (30.0/180.0) * Math.PI && Math.Abs(angleOffOfXY) < (170.0/180.0)*Math.PI)
-                        &&  (MathUtil.IsAlmostEqual(Math.Abs(v1.X), 1.0, allowance) || MathUtil.IsAlmostEqual(Math.Abs(v2.X),1.0, allowance)))    // Consider the opening swing between 30 to 170 degree, beginning at X axis
+               else if (absAngleOffOfXYInDegress is >= 30.0 and <= 170.0 && alignedToX)
                {
-                  XYZ yDir;
-                  if (MathUtil.IsAlmostEqual(Math.Abs(v1.Y), Math.Abs(Math.Sin(angleOffOfXY)), 0.01))
-                     yDir = v1;
-                  else
-                     yDir = v2;
+                  // Consider the opening swing between 30 to 170 degree, beginning at X axis
+                  XYZ yDir = MathUtil.IsAlmostEqual(Math.Abs(v1.Y), Math.Abs(Math.Sin(angleOffOfXYInRadians)), 0.01) ? v1 : v2;
 
                   // if the Normal is pointing to -Z, it is flipped. Flip the Y if it is
                   if (MathUtil.IsAlmostEqual(trfArc.Normal.Z, -1.0))
                      yDir = yDir.Negate();
 
                   // Check the center location in the X-direction to determine LEFT/RIGHT
-                  if (trfArc.Center.X >= -tolForArcCenter && trfArc.Center.X <= tolForArcCenter)
+                  if (Math.Abs(trfArc.Center.X) <= tolForArcCenter)
                   {
                      // on the LEFT
                      if ((yDir.Y > 0.0 && trfArc.YDirection.Y > 0.0) || (yDir.Y < 0.0 && trfArc.YDirection.Y < 0.0))
@@ -278,7 +303,9 @@ namespace Revit.IFC.Export.Utility
                   }
                }
                else
+               {
                   continue;
+               }
 
                // Collect all distinct Arc Center if it is counted as the door opening, to ensure that for cases that there are more than 2 leafs, it is not worngly labelled
                bool foundExisting = false;
@@ -300,14 +327,14 @@ namespace Revit.IFC.Export.Utility
          }
 
          // When only full circle(s) exists
-         if (fullCircleCount > 0 
+         if (fullCircleCount > 0
                && rightHalfCircleCount == 0 && leftHalfCircleCount == 0 && leftPosYArcCount == 0 && leftNegYArcCount == 0 && rightPosYArcCount == 0 && rightNegYArcCount == 0)
             return "REVOLVING";
 
          // There are more than 2 arc centers, no IFC Door operation type fits this, return NOTDEFINED
          if (arcCenterLocations.Count > 2)
             return "NOTDEFINED";
-         
+
          // When half circle arc(s) exists
          if (leftHalfCircleCount > 0 && fullCircleCount == 0)
          {
@@ -334,13 +361,9 @@ namespace Revit.IFC.Export.Utility
             // if the arc is less than 50%of the boundingbox, treat this to be a door with partially fixed panel
             if (arcRadii.Max < (bbMax.X - bbMin.X) * 0.5)
             {
-               if (ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4)
-                  return "NOTDEFINED";
-               else
-                  return "SWING_FIXED_LEFT";
+               return ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4 ? "NOTDEFINED" : "SWING_FIXED_LEFT";
             }
-            else
-               return "SINGLE_SWING_LEFT";
+            return "SINGLE_SWING_LEFT";
          }
 
          if (rightPosYArcCount > 0
@@ -349,21 +372,17 @@ namespace Revit.IFC.Export.Utility
             // if the arc is less than 50%of the boundingbox, treat this to be a door with partially fixed panel
             if (arcRadii.Max < (bbMax.X - bbMin.X) * 0.5)
             {
-               if (ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4)
-                  return "NOTDEFINED";
-               else
-                  return "SWING_FIXED_RIGHT";
+               return ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4 ? "NOTDEFINED" : "SWING_FIXED_RIGHT";
             }
-            else
-               return "SINGLE_SWING_RIGHT";
+            return "SINGLE_SWING_RIGHT";
          }
 
-         if (leftPosYArcCount > 0 && leftNegYArcCount > 0 
+         if (leftPosYArcCount > 0 && leftNegYArcCount > 0
                && fullCircleCount == 0 && rightHalfCircleCount == 0 && leftHalfCircleCount == 0 && rightPosYArcCount == 0 && rightNegYArcCount == 0)
             return "DOUBLE_SWING_LEFT";
 
-         if (rightPosYArcCount > 0 && rightNegYArcCount > 0 
-               && fullCircleCount == 0 && rightHalfCircleCount == 0 && leftHalfCircleCount == 0 && leftNegYArcCount == 0 && leftPosYArcCount == 0 )
+         if (rightPosYArcCount > 0 && rightNegYArcCount > 0
+               && fullCircleCount == 0 && rightHalfCircleCount == 0 && leftHalfCircleCount == 0 && leftNegYArcCount == 0 && leftPosYArcCount == 0)
             return "DOUBLE_SWING_RIGHT";
 
          if (leftPosYArcCount > 0 && rightPosYArcCount > 0
@@ -371,7 +390,7 @@ namespace Revit.IFC.Export.Utility
             return "DOUBLE_DOOR_SINGLE_SWING";
 
          if (leftPosYArcCount > 0 && rightPosYArcCount > 0 && leftNegYArcCount > 0 && rightNegYArcCount > 0
-               && fullCircleCount == 0 && rightHalfCircleCount == 0 && leftHalfCircleCount == 0 )
+               && fullCircleCount == 0 && rightHalfCircleCount == 0 && leftHalfCircleCount == 0)
             return "DOUBLE_DOOR_DOUBLE_SWING";
 
          if (leftPosYArcCount > 0 && rightNegYArcCount > 0
@@ -393,19 +412,13 @@ namespace Revit.IFC.Export.Utility
          ExportingDoor = isDoor;
          if (isDoor)
          {
-            if (exportType.ValidatedPredefinedType.Equals("NOTDEFINED", StringComparison.InvariantCultureIgnoreCase))
-               PreDefinedType = "DOOR";
-            else
-               PreDefinedType = exportType.ValidatedPredefinedType;
+            PreDefinedType = exportType.GetPredefinedTypeOrDefault("DOOR");
          }
 
          ExportingWindow = isWindow;
          if (isWindow)
          {
-            if (exportType.ValidatedPredefinedType.Equals("NOTDEFINED", StringComparison.InvariantCultureIgnoreCase))
-               PreDefinedType = "WINDOW";
-            else
-               PreDefinedType = exportType.ValidatedPredefinedType;
+            PreDefinedType = exportType.GetPredefinedTypeOrDefault("WINDOW");
          }
 
          FlippedSymbol = false;
@@ -421,6 +434,51 @@ namespace Revit.IFC.Export.Utility
          HasRealWallHost = ((wall != null) && (centerCurve != null) && ((centerCurve is Line) || (centerCurve is Arc)));
       }
 
+      static readonly Dictionary<NamingUtil.IFCStringKey, string> DoorTypes = new()
+      {
+         { new NamingUtil.IFCStringKey("DOUBLEDOORFOLDING"), "DOUBLE_DOOR_FOLDING" },
+         { new NamingUtil.IFCStringKey("DOUBLEDOORSINGLESWING"), "DOUBLE_DOOR_SINGLE_SWING" },
+         { new NamingUtil.IFCStringKey("DOUBLEDOORSINGLESWINGOPPOSITELEFT"), "DOUBLE_DOOR_SINGLE_SWING_OPPOSITE_LEFT" },
+         { new NamingUtil.IFCStringKey("DOUBLEDOORSINGLESWINGOPPOSITERIGHT"), "DOUBLE_DOOR_SINGLE_SWING_OPPOSITE_RIGHT" },
+         { new NamingUtil.IFCStringKey("DOUBLEDOORSLIDING"), "DOUBLE_DOOR_SLIDING" },
+         { new NamingUtil.IFCStringKey("DOUBLESWINGLEFT"), "DOUBLE_SWING_LEFT" },
+         { new NamingUtil.IFCStringKey("DOUBLESWINGRIGHT"), "DOUBLE_SWING_RIGHT" },
+         { new NamingUtil.IFCStringKey("DOUBLEDOORDOUBLESWING"), "DOUBLE_DOOR_DOUBLE_SWING" },
+         { new NamingUtil.IFCStringKey("FOLDINGTOLEFT"), "FOLDING_TO_LEFT" },
+         { new NamingUtil.IFCStringKey("FOLDINGTORIGHT"), "FOLDING_TO_RIGHT" },
+         { new NamingUtil.IFCStringKey("NOTDEFINED"), "NOTDEFINED" },
+         { new NamingUtil.IFCStringKey("REVOLVING"), "REVOLVING" },
+         { new NamingUtil.IFCStringKey("ROLLINGUP"), "ROLLINGUP" },
+         { new NamingUtil.IFCStringKey("SINGLESWINGLEFT"), "SINGLE_SWING_LEFT" },
+         { new NamingUtil.IFCStringKey("SINGLESWINGRIGHT"), "SINGLE_SWING_RIGHT" },
+         { new NamingUtil.IFCStringKey("SLIDINGTOLEFT"), "SLIDING_TO_LEFT" },
+         { new NamingUtil.IFCStringKey("SLIDINGTORIGHT"), "SLIDING_TO_RIGHT" },
+         { new NamingUtil.IFCStringKey("SWINGFIXEDLEFT"), "SWING_FIXED_LEFT" },
+         { new NamingUtil.IFCStringKey("SWINGFIXEDRIGHT"), "SWING_FIXED_RIGHT" },
+         { new NamingUtil.IFCStringKey("USERDEFINED"), "USERDEFINED" }
+      };
+
+      static readonly Dictionary<NamingUtil.IFCStringKey, string> DoorStyles = new()
+      {
+         { new NamingUtil.IFCStringKey("DOUBLEDOORFOLDING"), "DOUBLE_DOOR_FOLDING" },
+         { new NamingUtil.IFCStringKey("DOUBLEDOORSINGLESWING"), "DOUBLE_DOOR_SINGLE_SWING" },
+         { new NamingUtil.IFCStringKey("DOUBLEDOORSINGLESWINGOPPOSITELEFT"), "DOUBLE_DOOR_SINGLE_SWING_OPPOSITE_LEFT" },
+         { new NamingUtil.IFCStringKey("DOUBLEDOORSINGLESWINGOPPOSITERIGHT"), "DOUBLE_DOOR_SINGLE_SWING_OPPOSITE_RIGHT" },
+         { new NamingUtil.IFCStringKey("DOUBLEDOORSLIDING"), "DOUBLE_DOOR_SLIDING" },
+         { new NamingUtil.IFCStringKey("DOUBLESWINGLEFT"), "DOUBLE_SWING_LEFT" },
+         { new NamingUtil.IFCStringKey("DOUBLESWINGRIGHT"), "DOUBLE_SWING_RIGHT" },
+         { new NamingUtil.IFCStringKey("FOLDINGTOLEFT"), "FOLDING_TO_LEFT" },
+         { new NamingUtil.IFCStringKey("FOLDINGTORIGHT"), "FOLDING_TO_RIGHT" },
+         { new NamingUtil.IFCStringKey("NOTDEFINED"), "NOTDEFINED" },
+         { new NamingUtil.IFCStringKey("REVOLVING"), "REVOLVING" },
+         { new NamingUtil.IFCStringKey("ROLLINGUP"), "ROLLINGUP" },
+         { new NamingUtil.IFCStringKey("SINGLESWINGLEFT"), "SINGLE_SWING_LEFT" },
+         { new NamingUtil.IFCStringKey("SINGLESWINGRIGHT"), "SINGLE_SWING_RIGHT" },
+         { new NamingUtil.IFCStringKey("SLIDINGTOLEFT"), "SLIDING_TO_LEFT" },
+         { new NamingUtil.IFCStringKey("SLIDINGTORIGHT"), "SLIDING_TO_RIGHT" },
+         { new NamingUtil.IFCStringKey("USERDEFINED"), "USERDEFINED" }
+      };
+
       private void CalculateDoorWindowInformation(ExporterIFC exporterIFC, FamilyInstance famInst,
           ElementId overrideLevelId, Transform trf)
       {
@@ -434,32 +492,28 @@ namespace Revit.IFC.Export.Utility
             if (doorType != null)
             {
                // Look at the "Operation" override first, then the built-in parameter.
-               ParameterUtil.GetStringValueFromElementOrSymbol(doorType, "Operation", out doorOperationType);
+               (_, doorOperationType) = ParameterUtil.GetStringValueFromElementOrSymbol(doorType, null, false, "Operation");
                if (string.IsNullOrWhiteSpace(doorOperationType))
-                  ParameterUtil.GetStringValueFromElement(doorType, BuiltInParameter.DOOR_OPERATION_TYPE, out doorOperationType);
+                  (_, doorOperationType) = ParameterUtil.GetStringValueFromElement(doorType, BuiltInParameter.DOOR_OPERATION_TYPE);
             }
 
-            DoorOperationTypeString = "NOTDEFINED";
+            DoorOperationTypeString = null;
             if (!string.IsNullOrWhiteSpace(doorOperationType))
             {
-               Type enumType = null;
-               if (ExporterCacheManager.ExportOptionsCache.ExportAs4)
-                  enumType = typeof(Toolkit.IFC4.IFCDoorStyleOperation);
-               else
-                  enumType = typeof(Toolkit.IFCDoorStyleOperation);
-
-               foreach (Enum ifcDoorStyleOperation in Enum.GetValues(enumType))
+               NamingUtil.IFCStringKey compName = new(doorOperationType);
+               if (!ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4)
                {
-                  string enumAsString = ifcDoorStyleOperation.ToString();
-                  if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(enumAsString, doorOperationType))
-                  {
-                     DoorOperationTypeString = enumAsString;
-                     break;
-                  }
+                  if (DoorTypes.TryGetValue(compName, out string doorTypeString))
+                     DoorOperationTypeString = doorTypeString;
+               }
+               else
+               {
+                  if (DoorStyles.TryGetValue(compName, out string doorStyleString))
+                     DoorOperationTypeString = doorStyleString;
                }
             }
 
-            if (DoorOperationTypeString == "NOTDEFINED")
+            if (DoorOperationTypeString == null)
             {
                // We are going to try to guess the hinge placement.
                DoorOperationTypeString = CalculateDoorOperationStyle(famInst, trf);
@@ -470,15 +524,18 @@ namespace Revit.IFC.Export.Utility
                   DoorOperationTypeString = ReverseDoorStyleOperation(DoorOperationTypeString);
             }
 
-            if (String.Compare(DoorOperationTypeString, "USERDEFINED", true) == 0)
+            if (string.Compare(DoorOperationTypeString, "USERDEFINED", true) == 0)
             {
-               string userDefinedOperationType;
-               ParameterUtil.GetStringValueFromElementOrSymbol(doorType, "UserDefinedOperationType", out userDefinedOperationType);
+               (_, string userDefinedOperationType) = ParameterUtil.GetStringValueFromElementOrSymbol(doorType, null, false, 
+                  "UserDefinedOperationType");
                if (!string.IsNullOrEmpty(userDefinedOperationType))
                   UserDefinedOperationType = userDefinedOperationType;
                else
                   DoorOperationTypeString = "NOTDEFINED";         //re-set to NotDefined if operation type is set to UserDefined but the userDefinedOperationType parameter is empty!
             }
+
+            if (RepresentationUtil.DocumentMirrorState.IsExportingMirroredLink())
+               DoorOperationTypeString = ReverseDoorStyleOperation(DoorOperationTypeString);
          }
 
          if (HasRealWallHost)
@@ -499,7 +556,9 @@ namespace Revit.IFC.Export.Utility
 
                Curve curve = WallExporter.GetWallAxis(wall);
 
-               XYZ wallZDir = WallExporter.GetWallHeightDirection(wall);
+               XYZ wallZDir = WallExporter.GetWallExtrusionDirection(wall);
+               if (wallZDir == null)
+                  wallZDir = XYZ.BasisZ; // Right thing here?
 
                // famInst.HostParameter will fail if FamilyPlacementType is WorkPlaneBased, regardless of whether or not the reported host is a Wall.
                // In this case, just use the start parameter of the curve.
@@ -511,7 +570,7 @@ namespace Revit.IFC.Export.Utility
                XYZ wallXDir = wallTrf.BasisX;
                XYZ wallYDir = wallZDir.CrossProduct(wallXDir);
 
-               double eps = MathUtil.Eps();
+               double eps = MathUtil.Eps;
 
                bboxCtr -= wallOrig;
                PosHingeSide = (bboxCtr.DotProduct(wallYDir) > -eps);

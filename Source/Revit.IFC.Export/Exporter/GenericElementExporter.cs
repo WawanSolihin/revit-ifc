@@ -6,6 +6,7 @@ using Revit.IFC.Export.Utility;
 using Revit.IFC.Export.Toolkit;
 using Revit.IFC.Common.Utility;
 using Revit.IFC.Common.Enums;
+using Revit.IFC.Export.Exporter.PropertySet;
 
 namespace Revit.IFC.Export.Exporter
 {
@@ -22,83 +23,374 @@ namespace Revit.IFC.Export.Exporter
       /// <param name="element">The element.</param>
       /// <param name="geometryElement">The geometry element.</param>
       /// <param name="productWrapper">The ProductWrapper.</param>
-      /// <returns>The handle if created, null otherwise.</returns>
-      public static IFCAnyHandle ExportGenericElement(ExporterIFC exporterIFC, Element element,
+      /// <returns>True if the instance handle was created, false otherwise.</returns>
+      public static bool ExportSimpleGenericElement(ExporterIFC exporterIFC, Element element,
           GeometryElement geometryElement, ProductWrapper productWrapper, IFCExportInfoPair exportType)
       {
          if (element == null || geometryElement == null)
-            return null;
+            return false;
 
          // Check the intended IFC entity or type name is in the exclude list specified in the UI
          if (exportType.ExportInstance == IFCEntityType.UnKnown)
-            exportType.SetValueWithPair(IFCEntityType.IfcBuildingElementProxy, exportType.ValidatedPredefinedType);
+            exportType.SetByTypeAndPredefinedType(IFCEntityType.IfcBuildingElementProxy, exportType.PredefinedType);
          if (ExporterCacheManager.ExportOptionsCache.IsElementInExcludeList(exportType.ExportInstance))
-            return null;
-
-         // Check for containment override
-         IFCAnyHandle overrideContainerHnd = null;
-         ElementId overrideContainerId = ParameterUtil.OverrideContainmentParameter(exporterIFC, element, out overrideContainerHnd);
+            return false;
 
          IFCFile file = exporterIFC.GetFile();
-         IFCAnyHandle instanceHandle = null;
          using (IFCTransaction tr = new IFCTransaction(file))
          {
-            using (PlacementSetter placementSetter = PlacementSetter.Create(exporterIFC, element, null, null, overrideContainerId, overrideContainerHnd))
+            using (PlacementSetter placementSetter = PlacementSetter.Create(exporterIFC, element, null))
             {
-               using (IFCExtrusionCreationData ecData = new IFCExtrusionCreationData())
+               using (IFCExportBodyParams ecData = new IFCExportBodyParams())
                {
                   ecData.SetLocalPlacement(placementSetter.LocalPlacement);
 
+                  IFCAnyHandle styleHandle = null;
+                  if (exportType.ExportType != IFCEntityType.UnKnown)
+                  {
+                     FamilySymbol familySymbol = (element as FamilyInstance)?.Symbol;
+                     if (familySymbol != null)
+                     {
+                        HashSet<IFCAnyHandle> propertySetsOpt = new HashSet<IFCAnyHandle>();
+                        IList<IFCAnyHandle> repMapListOpt = new List<IFCAnyHandle>();
+
+                        string typeGuid = FamilyExporterUtil.GetGUIDForFamilySymbol(element as FamilyInstance, familySymbol, exportType);
+                        styleHandle = FamilyExporterUtil.ExportGenericType(file, exportType, propertySetsOpt, repMapListOpt, element, familySymbol, typeGuid);
+                        productWrapper.RegisterHandleWithElementType(familySymbol, exportType, styleHandle, propertySetsOpt);
+                     }
+
+                     if (IFCAnyHandleUtil.IsNullOrHasNoValue(styleHandle))
+                        styleHandle = ExporterUtil.CreateGenericTypeFromElement(element, exportType, file, productWrapper);
+                  }
+                  
                   ElementId categoryId = CategoryUtil.GetSafeCategoryId(element);
 
-                  BodyExporterOptions bodyExporterOptions = new BodyExporterOptions(true, ExportOptionsCache.ExportTessellationLevel.ExtraLow);
+                  bool tryToExportAsTessellation = !ExporterCacheManager.ExportOptionsCache.ExportGeometryOnly;
+
+                  BodyExporterOptions bodyExporterOptions = new BodyExporterOptions(tryToExportAsTessellation, 
+                     ExportOptionsCache.ExportTessellationLevel.ExtraLow);
                   IFCAnyHandle representation = RepresentationUtil.CreateAppropriateProductDefinitionShape(exporterIFC, element,
                       categoryId, geometryElement, bodyExporterOptions, null, ecData, true);
 
                   if (IFCAnyHandleUtil.IsNullOrHasNoValue(representation))
                   {
                      ecData.ClearOpenings();
-                     return null;
+                     return false;
                   }
 
                   string guid = GUIDUtil.CreateGUID(element);
                   IFCAnyHandle ownerHistory = ExporterCacheManager.OwnerHistoryHandle;
                   IFCAnyHandle localPlacement = ecData.GetLocalPlacement();
-                  IFCAnyHandle styleHandle = null;
 
-                  instanceHandle = FamilyExporterUtil.ExportGenericInstance(exportType, exporterIFC, element, productWrapper, placementSetter, ecData, guid, ownerHistory,
-                     representation, exportType.ValidatedPredefinedType, null);
+                  IFCAnyHandle instanceHandle = FamilyExporterUtil.ExportGenericInstance(exportType, exporterIFC, element, productWrapper, 
+                     placementSetter, ecData, styleHandle, guid, ownerHistory, representation, null);
+                  if (IFCAnyHandleUtil.IsNullOrHasNoValue(instanceHandle))
+                     return false;
 
-                  if (exportType.ExportType != IFCEntityType.UnKnown)
-                  {
-                     if (element is FamilyInstance)
-                     {
-                        FamilySymbol familySymbol = (element as FamilyInstance).Symbol;
-                        if (familySymbol != null)
-                        {
-                           HashSet<IFCAnyHandle> propertySetsOpt = new HashSet<IFCAnyHandle>();
-                           IList<IFCAnyHandle> repMapListOpt = new List<IFCAnyHandle>();
-
-                           styleHandle = FamilyExporterUtil.ExportGenericType(exporterIFC, exportType, exportType.ValidatedPredefinedType,
-                              propertySetsOpt, repMapListOpt, element, familySymbol);
-                        }
-                     }
-                     if (IFCAnyHandleUtil.IsNullOrHasNoValue(styleHandle))
-                        styleHandle = ExporterUtil.CreateGenericTypeFromElement(element, exportType, file, ownerHistory, exportType.ValidatedPredefinedType, productWrapper);
-                  }
-
-                  if (!IFCAnyHandleUtil.IsNullOrHasNoValue(instanceHandle))
-                  {
+                  if (exportType.ExportInstance == IFCEntityType.IfcSpace)
+                     productWrapper.AddSpace(element, instanceHandle, placementSetter.LevelInfo, ecData, true, exportType);
+                  else
                      productWrapper.AddElement(element, instanceHandle, placementSetter.LevelInfo, ecData, true, exportType);
-                     if (!IFCAnyHandleUtil.IsNullOrHasNoValue(styleHandle))
-                        ExporterCacheManager.TypeRelationsCache.Add(styleHandle, instanceHandle);
-                  }
+
+                  ExporterCacheManager.TypeRelationsCache.Add(styleHandle, instanceHandle);
                }
                tr.Commit();
             }
          }
 
-         return instanceHandle;
+         return true;
+      }
+
+      private static GeometryInstance GetTheGeometryInstance(GeometryElement geomElem)
+      {
+         GeometryInstance geometryInstance = null;
+
+         foreach (GeometryObject geomObj in geomElem)
+         {
+            if (geomObj is GeometryInstance geomInst)
+            {
+               if (geometryInstance != null)
+                  return null;
+
+               geometryInstance = geomInst;
+               continue;
+            }
+
+            if (geomObj is Solid solid)
+            {
+               double? volume = GeometryUtil.GetSafeVolume(solid);
+               if (volume.HasValue && MathUtil.IsAlmostZero(volume.Value))
+                  continue;
+
+               return null;
+            }
+
+            return null;
+         }
+
+         return geometryInstance;
+      }
+
+      private static bool ExportGenericElementAsMappedItem(ExporterIFC exporterIFC,
+         Element element, GeometryElement geomElem, IFCExportInfoPair exportType,
+         ProductWrapper wrapper)
+      {
+         if (geomElem == null)
+            return false;
+
+         GeometryInstance geometryInstance = GetTheGeometryInstance(geomElem);
+         if (geometryInstance == null)
+            return false;
+
+         GeometryElement exportGeometry = geometryInstance.GetSymbolGeometry();
+         if (exportGeometry == null)
+            return false;
+
+         ElementId symbolId = geometryInstance.GetSymbolGeometryId()?.SymbolId ?? ElementId.InvalidElementId;
+         ElementType elementType = element.Document.GetElement(symbolId) as ElementType;
+         if (elementType == null)
+            return false;
+
+         Transform originalTrf = geometryInstance.Transform;
+
+         Transform placementTrf;
+         Transform mirrorTransform = null;
+         if (originalTrf.HasReflection)
+         {
+            // Mirror through the XZ plane (Y-axis normal), consistent with
+            // FederatedLinkManager.MirrorTransform. Any fixed reflection plane yields
+            // the correct world-space result; this choice matches the convention used
+            // elsewhere in the IFC export pipeline.
+            mirrorTransform = Transform.CreateReflection(
+               Plane.CreateByNormalAndOrigin(XYZ.BasisY, XYZ.Zero));
+            placementTrf = originalTrf.Multiply(mirrorTransform);
+         }
+         else
+         {
+            placementTrf = originalTrf;
+         }
+
+         ElementId categoryId = CategoryUtil.GetSafeCategoryId(element);
+
+         IFCFile file = exporterIFC.GetFile();
+
+         IList<Transform> repMapTrfList = new List<Transform>();
+         BodyData bodyData = null;
+         FamilyTypeInfo typeInfo = new FamilyTypeInfo();
+         IFCExportBodyParams extraParams = typeInfo.extraParams;
+
+         Transform offsetTransform = Transform.Identity;
+         DoorWindowInfo doorWindowInfo = new DoorWindowInfo();
+
+         // We will create a new mapped type if we haven't already created the type.
+         // GUID_TODO: This assumes that there are no types relating to objects split by level,
+         // or to doors/windows that are flipped.
+         // flipped = false: the type geometry is always the unmirrored symbol geometry.
+         // Mirroring is applied per-instance via mirrorTransform in CreateShapeRepresentations,
+         // so mirrored and non-mirrored instances can safely share the same type cache entry.
+         bool containedInAssembly = ExporterUtil.IsContainedInAssembly(element);
+         var typeKey = new TypeObjectKey(symbolId, ElementId.InvalidElementId,
+            false, exportType, ElementId.InvalidElementId, containedInAssembly);
+
+         using (RepresentationUtil.DocumentMirrorState.AllowMirrorManager suppressMirror = new(false))
+         {
+            FamilyTypeInfo currentTypeInfo =
+            ExporterCacheManager.FamilySymbolToTypeInfoCache.Find(typeKey);
+            bool found = currentTypeInfo.IsValid();
+            if (!found)
+            {
+               IList<IFCAnyHandle> representations3D = new List<IFCAnyHandle>();
+
+               IFCAnyHandle dummyPlacement = ExporterUtil.CreateLocalPlacement(file, null, null);
+               extraParams.SetLocalPlacement(dummyPlacement);
+
+               using (TransformSetter trfSetter = TransformSetter.Create())
+               {
+                  BodyExporterOptions bodyExporterOptions = new BodyExporterOptions(false, ExportOptionsCache.ExportTessellationLevel.ExtraLow);
+
+                  bodyData = BodyExporter.ExportBody(exporterIFC, element, categoryId,
+                     ExporterUtil.GetSingleMaterial(element), exportGeometry,
+                     bodyExporterOptions, extraParams);
+                  typeInfo.MaterialIdList = bodyData.MaterialIds;
+                  offsetTransform = bodyData.OffsetTransform;
+
+                  // This code does not handle openings yet.
+                  // The intention for this is FabricationParts and DirectShapes which do not
+                  // currently have opening.
+                  // If they can have openings in the future, we can add this.
+                  IFCAnyHandle bodyRepHnd = bodyData.RepresentationHnd;
+                  if (IFCAnyHandleUtil.IsNullOrHasNoValue(bodyRepHnd) || extraParams.GetOpenings().Count > 0)
+                     return false;
+
+                  representations3D.Add(bodyRepHnd);
+                  repMapTrfList.Add(null);
+               }
+
+               typeInfo.StyleTransform = ExporterIFCUtils.GetUnscaledTransform(exporterIFC,
+                  extraParams.GetLocalPlacement());
+
+               IFCAnyHandle typeStyle = FamilyInstanceExporter.CreateTypeEntityHandle(exporterIFC,
+                  typeKey, ref typeInfo, doorWindowInfo, representations3D, repMapTrfList, null, null,
+                  element, elementType, elementType, ElementId.InvalidElementId, false, false,
+                  exportType, out HashSet<IFCAnyHandle> propertySets);
+
+               if (!IFCAnyHandleUtil.IsNullOrHasNoValue(typeStyle))
+               {
+                  wrapper.RegisterHandleWithElementType(elementType, exportType, typeStyle,
+                     propertySets);
+
+                  typeInfo.Style = typeStyle;
+
+                  CategoryUtil.TryToCreateMaterialAssocation(exporterIFC, bodyData, elementType,
+                     element, exportGeometry, typeStyle, typeInfo);
+
+                  // Create other generic classification from ClassificationCode(s)
+                  ClassificationUtil.CreateClassification(exporterIFC, file, elementType, typeStyle);
+                  ClassificationUtil.CreateUniformatClassification(file, elementType, typeStyle);
+               }
+            }
+
+            if (found && !typeInfo.IsValid())
+               typeInfo = currentTypeInfo;
+
+            // we'll pretend we succeeded, but we'll do nothing.
+            if (!typeInfo.IsValid())
+               return false;
+
+            extraParams = typeInfo.extraParams;
+
+            // We expect no openings, so always add to map.
+            ExporterCacheManager.FamilySymbolToTypeInfoCache.Register(typeKey, typeInfo, false);
+
+            using (RepresentationUtil.DocumentMirrorState.AllowMirrorManager allowMirror = new(true))
+            {
+               XYZ scaledMapOrigin = XYZ.Zero;
+               Transform scaledTrf = placementTrf.Multiply(typeInfo.StyleTransform);
+
+               // create instance.  
+               IList<IFCAnyHandle> shapeReps = FamilyInstanceExporter.CreateShapeRepresentations(exporterIFC,
+                  file, element, categoryId, typeInfo, scaledMapOrigin, mirrorTransform);
+               if (shapeReps == null)
+                  return false;
+
+               Transform boundingBoxTrf = (offsetTransform != null) ? offsetTransform.Inverse : Transform.Identity;
+               boundingBoxTrf = boundingBoxTrf.Multiply(scaledTrf.Inverse);
+               IFCAnyHandle boundingBoxRep = BoundingBoxExporter.ExportBoundingBox(exporterIFC, geomElem, boundingBoxTrf);
+
+               if (boundingBoxRep != null)
+                  shapeReps.Add(boundingBoxRep);
+
+               IFCAnyHandle repHnd = (shapeReps.Count > 0) ? IFCInstanceExporter.CreateProductDefinitionShape(file, null, null, shapeReps) : null;
+
+               using (PlacementSetter setter = PlacementSetter.Create(exporterIFC, element, scaledTrf, null))
+               {
+                  IFCAnyHandle instanceHandle = null;
+                  IFCAnyHandle localPlacement = setter.LocalPlacement;
+                  bool materialAlreadyAssociated = false;
+
+                  // We won't create the instance if: 
+                  // (1) we are exporting to CV2.0/RV, (2) we have no 2D, 3D, or bounding box geometry, and (3) we aren't exporting parts.
+                  if (!(repHnd == null
+                        && (ExporterCacheManager.ExportOptionsCache.ExportAsCoordinationView2
+                        || ExporterCacheManager.ExportOptionsCache.ExportAsReferenceView)))
+                  {
+                     string instanceGUID = GUIDUtil.CreateGUID(element);
+
+                     bool isChildInContainer = ExporterUtil.IsContainedInAssembly(element);
+
+                     if (IFCAnyHandleUtil.IsNullOrHasNoValue(instanceHandle))
+                     {
+                        bool isBuildingElementProxy =
+                              ((exportType.ExportInstance == IFCEntityType.IfcBuildingElementProxy) ||
+                              (exportType.ExportType == IFCEntityType.IfcBuildingElementProxyType));
+
+                        ElementId roomId = setter.UpdateRoomRelativeCoordinates(element,
+                           out IFCAnyHandle localPlacementToUse);
+                        bool containedInSpace = !MathUtil.IsInvalidElementId(roomId) && exportType.ExportInstance != IFCEntityType.IfcSystemFurnitureElement;
+                        IFCAnyHandle ownerHistory = ExporterCacheManager.OwnerHistoryHandle;
+
+                        if (!isBuildingElementProxy)
+                        {
+                           instanceHandle = IFCInstanceExporter.CreateGenericIFCEntity(exportType, file, element, typeInfo.Style,
+                              instanceGUID, ownerHistory, localPlacementToUse, repHnd);
+                        }
+                        else
+                        {
+                           instanceHandle = IFCInstanceExporter.CreateBuildingElementProxy(exporterIFC, element, instanceGUID,
+                              ownerHistory, localPlacementToUse, repHnd, exportType.GetPredefinedTypeOrDefault());
+                        }
+
+                        bool associateToLevel = !containedInSpace && !isChildInContainer;
+                        wrapper.AddElement(element, instanceHandle, setter, extraParams, associateToLevel, exportType);
+                        if (containedInSpace)
+                           ExporterCacheManager.SpaceInfoCache.RelateToSpace(roomId, instanceHandle);
+                     }
+
+                     if (!IFCAnyHandleUtil.IsNullOrHasNoValue(instanceHandle))
+                     {
+                        if (ElementFilteringUtil.IsMEPType(exportType) || ElementFilteringUtil.ProxyForMEPType(element, exportType))
+                        {
+                           ExporterCacheManager.MEPCache.Register(element, instanceHandle);
+                        }
+
+                        ExporterCacheManager.HandleToElementCache.Register(instanceHandle, element.Id);
+
+                        if (!materialAlreadyAssociated)
+                        {
+                           // Create material association for the instance only if the the istance geometry is different from the type
+                           // or the type does not have any material association
+                           IFCAnyHandle constituentSetHnd = ExporterCacheManager.MaterialConstituentSetCache.Find(symbolId);
+                           if (IFCAnyHandleUtil.IsNullOrHasNoValue(constituentSetHnd)
+                              && bodyData != null && bodyData.RepresentationItemInfo != null && bodyData.RepresentationItemInfo.Count > 0)
+                           {
+                              CategoryUtil.CreateMaterialAssociationWithShapeAspect(exporterIFC, element, instanceHandle, bodyData.RepresentationItemInfo);
+                           }
+                           else
+                           {
+                              // Create material association in case if bodyData is null
+                              CategoryUtil.CreateMaterialAssociation(exporterIFC, element, instanceHandle, typeInfo.MaterialIdList);
+                           }
+                        }
+
+                        if (!IFCAnyHandleUtil.IsNullOrHasNoValue(typeInfo.Style))
+                           ExporterCacheManager.TypeRelationsCache.Add(typeInfo.Style, instanceHandle);
+                     }
+                  }
+               }
+            }
+         }
+         return true;
+      }
+
+
+      /// <summary>
+      /// Exports a fabrication part to corresponding IFC object.
+      /// </summary>
+      /// <param name="exporterIFC">The ExporterIFC object.</param>
+      /// <param name="element">The element to be exported.</param>
+      /// <param name="geometryElement">The geometry element.</param>
+      /// <param name="productWrapper">The ProductWrapper.</param>
+      public static bool ExportElement(ExporterIFC exporterIFC,
+         Element element, GeometryElement geometryElement, ProductWrapper productWrapper)
+      {
+         IFCExportInfoPair exportType = ExporterUtil.GetProductExportType(element, out _);
+
+         // Check the intended IFC entity or type name is in the exclude list specified in the UI
+         IFCEntityType elementClassTypeEnum;
+         if (Enum.TryParse(exportType.ExportInstance.ToString(), out elementClassTypeEnum)
+               || Enum.TryParse(exportType.ExportType.ToString(), out elementClassTypeEnum))
+            if (ExporterCacheManager.ExportOptionsCache.IsElementInExcludeList(elementClassTypeEnum))
+               return false;
+
+         if (ExportGenericElementAsMappedItem(exporterIFC, element, geometryElement,
+            exportType, productWrapper))
+            return true;
+
+         if (FamilyInstanceExporter.ExportGenericToSpecificElement(exporterIFC,
+            element, ref geometryElement, exportType, productWrapper))
+            return true;
+
+         return ExportSimpleGenericElement(exporterIFC, element, geometryElement, productWrapper, exportType);
       }
    }
 }

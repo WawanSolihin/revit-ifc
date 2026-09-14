@@ -1,10 +1,10 @@
-﻿using System;
-using System.IO;
+﻿using Newtonsoft.Json;
+
+using Revit.IFC.Common.Enums;
+using Revit.IFC.Common.Utility;
+
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using Newtonsoft.Json;
+using System.IO;
 
 namespace Revit.IFC.Export.Utility
 {
@@ -21,14 +21,12 @@ namespace Revit.IFC.Export.Utility
       /// <summary>
       /// Pset list for MVD
       /// </summary>
-      [JsonProperty("PropertySet List")]
-      public HashSet<string> PsetList { get; set; } = new HashSet<string>();
+      public HashSet<string> PropertySetList { get; set; } = [];
 
       /// <summary>
       /// Entity list for MVD
       /// </summary>
-      [JsonProperty("Entity List")]
-      public HashSet<string> EntityList { get; set; } = new HashSet<string>();
+      public HashSet<IFCEntityType> EntityList { get; set; } = [];
 
       /// <summary>
       /// Check whether a Pset name is found in the list
@@ -38,10 +36,10 @@ namespace Revit.IFC.Export.Utility
       public bool PsetIsInTheList(string psetName)
       {
          // return true if there is no entry
-         if (PsetList.Count == 0)
+         if (PropertySetList.Count == 0)
             return true;
 
-         if (PsetList.Contains(psetName))
+         if (PropertySetList.Contains(psetName))
             return true;
          else
             return false;
@@ -52,16 +50,9 @@ namespace Revit.IFC.Export.Utility
       /// </summary>
       /// <param name="entityName">the entity name</param>
       /// <returns>true/false</returns>
-      public bool EntityIsInTheList(string entityName)
+      public bool EntityIsInTheList(IFCEntityType entityType)
       {
-         // return true if there is no entry
-         if (EntityList.Count == 0)
-            return true;
-
-         if (EntityList.Contains(entityName))
-            return true;
-         else
-            return false;
+         return EntityList.Count == 0 || EntityList.Contains(entityType);
       }
    }
 
@@ -70,19 +61,49 @@ namespace Revit.IFC.Export.Utility
    /// </summary>
    public class IFCCertifiedEntitiesAndPSets
    {
-      IDictionary<string, IFCEntityAndPsetList> CertifiedEntityAndPsetDict { get; set; } = new Dictionary<string, IFCEntityAndPsetList>();
+      /// <summary>
+      /// Valid Entity and Pset list according to MVD definitions
+      /// </summary>
+      class IFCEntityAndPsetListRawFromJson
+      {
+         /// <summary>
+         /// The MVD version
+         /// </summary>
+         public string Version { get; set; }
 
+         /// <summary>
+         /// Pset list for MVD
+         /// </summary>
+         public List<string> PropertySetList { get; set; } = [];
+
+         /// <summary>
+         /// Entity list for MVD
+         /// </summary>
+         public List<IFCEntityType> EntityList { get; set; } = [];
+      }
+
+      Dictionary<string, IFCEntityAndPsetList> CertifiedEntityAndPsetDict { get; set; } = [];
+      
       /// <summary>
       /// IFCCertifiedEntitiesAndPSets Constructor
       /// </summary>
       public IFCCertifiedEntitiesAndPSets()
       {
-         string fileLoc = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetCallingAssembly().Location);
+         string fileLoc = Path.GetDirectoryName(System.Reflection.Assembly.GetCallingAssembly().Location);
          string filePath = Path.Combine(fileLoc, "IFCCertifiedEntitiesAndPSets.json");
 
          if (File.Exists(filePath))
          {
-            CertifiedEntityAndPsetDict = JsonConvert.DeserializeObject<IDictionary<string, IFCEntityAndPsetList>>(File.ReadAllText(filePath));
+            IDictionary<string, IFCEntityAndPsetListRawFromJson> CertifiedEntityAndPsetList = JsonConvert.DeserializeObject<IDictionary<string, IFCEntityAndPsetListRawFromJson>>(File.ReadAllText(filePath));
+            // Copy the data to the desired format using Hashset in IFCEntityAndPsetList
+            foreach (KeyValuePair<string, IFCEntityAndPsetListRawFromJson> entPsetData in CertifiedEntityAndPsetList)
+            {
+               IFCEntityAndPsetList entPset = new();
+               entPset.Version = entPsetData.Value.Version;
+               entPset.PropertySetList = [ .. entPsetData.Value.PropertySetList ];
+               entPset.EntityList = [ .. entPsetData.Value.EntityList ];
+               CertifiedEntityAndPsetDict.Add(entPsetData.Key, entPset);
+            }
          }
       }
 
@@ -91,7 +112,7 @@ namespace Revit.IFC.Export.Utility
       /// </summary>
       /// <param name="psetName">the propertyset name</param>
       /// <returns>true/false</returns>
-      public bool AllowPsetToBeCreatedInCurrentMVD (string psetName)
+      public bool AllowPsetToBeCreatedInCurrentMVD(string psetName)
       {
          string mvdName = ExporterCacheManager.ExportOptionsCache.FileVersion.ToString();
          return AllowPsetToBeCreated(mvdName, psetName);
@@ -106,18 +127,25 @@ namespace Revit.IFC.Export.Utility
       public bool AllowPsetToBeCreated(string mvdName, string psetName)
       {
          // OK to create if the list is empty (not defined)
-         if (CertifiedEntityAndPsetDict.Count == 0)
+         if (CertifiedEntityAndPsetDict.Count == 0 || !CertifiedEntityAndPsetDict.TryGetValue(mvdName, out IFCEntityAndPsetList theList))
             return true;
-         IFCEntityAndPsetList theList;
-         if (CertifiedEntityAndPsetDict.TryGetValue(mvdName, out theList))
-         {
-            if (theList.PsetIsInTheList(psetName))
-               return true;
-            else
-               return false;
-         }
-         else
+
+         return theList.PsetIsInTheList(psetName);
+      }
+
+      /// <summary>
+      /// Check whether the predefined property name is valid
+      /// </summary>
+      /// <param name="mvdName">the MVD name</param>
+      /// <param name="psetName">the predefined property name</param>
+      /// <returns>true/false</returns>
+      public bool AllowPredefPsetToBeCreated(string mvdName, string psetName)
+      {
+         // OK to create if the list is empty (not defined)
+         if (CertifiedEntityAndPsetDict.Count == 0 || !CertifiedEntityAndPsetDict.TryGetValue(mvdName, out IFCEntityAndPsetList theList))
             return true;
+
+         return theList.EntityIsInTheList(IFCAnyHandleUtil.GetIFCEntityTypeFromName(psetName));
       }
 
       /// <summary>
@@ -125,33 +153,25 @@ namespace Revit.IFC.Export.Utility
       /// </summary>
       /// <param name="entityName">the entity name</param>
       /// <returns>true/false</returns>
-      public bool IsValidEntityInCurrentMVD (string entityName)
+      public bool IsValidEntityInCurrentMVD(IFCEntityType entityType)
       {
          string mvdName = ExporterCacheManager.ExportOptionsCache.FileVersion.ToString();
-         return IsValidEntityInMVD(mvdName, entityName);
+         return IsValidEntityInMVD(mvdName, entityType);
       }
 
       /// <summary>
-      /// Check whether an entity name is valid
+      /// Check whether an entity name is valid.
       /// </summary>
-      /// <param name="mvdName">the MVD name</param>
-      /// <param name="entityName">the entity name</param>
+      /// <param name="mvdName">The MVD name.</param>
+      /// <param name="entityType">The entity type.</param>
       /// <returns>true/false</returns>
-      public bool IsValidEntityInMVD(string mvdName, string entityName)
+      public bool IsValidEntityInMVD(string mvdName, IFCEntityType entityType)
       {
          // OK to create if the list is empty (not defined)
-         if (CertifiedEntityAndPsetDict.Count == 0)
+         if (CertifiedEntityAndPsetDict.Count == 0 || !CertifiedEntityAndPsetDict.TryGetValue(mvdName, out IFCEntityAndPsetList theList))
             return true;
-         IFCEntityAndPsetList theList;
-         if (CertifiedEntityAndPsetDict.TryGetValue(mvdName, out theList))
-         {
-            if (theList.EntityIsInTheList(entityName))
-               return true;
-            else
-               return false;
-         }
-         else
-            return true;
+
+         return theList.EntityIsInTheList(entityType);
       }
    }
 }

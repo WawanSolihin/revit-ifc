@@ -1,0 +1,317 @@
+﻿<auiw:ChildWindow x:Class="BIM.IFC.Export.UI.IFCUserDefinedPropertyMapping"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"        
+        xmlns:auiw="clr-namespace:Autodesk.UI.Windows;assembly=Autodesk.UI.Windows"
+        xmlns:system="clr-namespace:System;assembly=mscorlib"
+        xmlns:p="clr-namespace:BIM.IFC.Export.UI.Properties"
+        xmlns:local="clr-namespace:BIM.IFC.Export.UI"
+        xmlns:weaveRoot="clr-namespace:Autodesk.Weave.Wpf;assembly=Autodesk.Weave.Wpf"
+        xmlns:weave="clr-namespace:Autodesk.Weave.Wpf.ElementProperties;assembly=Autodesk.Weave.Wpf"
+        xmlns:ctrl="clr-namespace:Autodesk.Weave.Wpf.Controls;assembly=Autodesk.Weave.Wpf"
+        xmlns:weave_d="clr-namespace:Autodesk.Weave.Wpf.ElementProperties.DesignTime;assembly=Autodesk.Weave.Wpf"
+        weave:FrameworkElementProperties.ApplyWeaveStyles="True"
+        weave_d:FrameworkElementProperties.DesignTimeWeaveTheme="WeaveLightGray"
+        mc:Ignorable="d"
+        Title="{x:Static p:Resources.IFCManageUserDefinedPropertySeets}"
+        SaveWindowSettings="True"
+        weave:WindowProperties.ContentPadding="None"
+        Closing="ChildWindow_Closing" PreviewKeyDown="ChildWindow_PreviewKeyDown"
+        Height="559" Width="947" MinHeight="283" MinWidth="730">
+   <Grid weave:PanelProperties.Spacing="None">
+      <Grid.Resources>
+
+         <Style x:Key="ListBoxItemStyle" TargetType="ListBoxItem" BasedOn="{x:Static weaveRoot:Styles.ListBoxItemStyle}">
+            <Setter Property="ToolTip" Value="{Binding}"/>
+         </Style>
+         <Style x:Key="ListBoxItemEntitiesStyle" TargetType="ListBoxItem" BasedOn="{x:Static weaveRoot:Styles.ListBoxItemStyle}">
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="ToolTip" Value="{Binding}"/>
+         </Style>
+
+         <local:IsPropertySetSelectedConverter x:Key="IsPropertySetSelectedConverter"/>
+         <local:RevitParameterConverter x:Key="RevitParameterConverter"/>
+         <local:RowIndexConverter x:Key="RowIndexConverter"/>
+         <local:RowIndexSelectedConverter x:Key="RowIndexSelectedConverter"/>
+         <local:QuantityLabelVisibilityConverter x:Key="QuantityLabelVisibilityConverter"/>
+         <local:IFCAttributesLabelVisibilityConverter x:Key="IFCAttributesLabelVisibilityConverter"/>
+         <local:IFCAttributesColumnReadOnlyConverter x:Key="IFCAttributesColumnReadOnlyConverter"/>
+         <local:TablePropertyTypeVisibilityConverter x:Key="TablePropertyTypeVisibilityConverter"/>
+         <local:TablePropertyTypeEnabledConverter x:Key="TablePropertyTypeEnabledConverter"/>
+
+         <Style x:Key="CheckBoxStyle" TargetType="{x:Type CheckBox}" BasedOn="{x:Static weaveRoot:Styles.CheckBoxStyle}">
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="HorizontalAlignment" Value="Left"/>
+         </Style>
+      </Grid.Resources>
+
+      <Grid.RowDefinitions>
+         <RowDefinition Height="271*"/>
+         <RowDefinition Height="Auto"/>
+      </Grid.RowDefinitions>
+      <Grid.ColumnDefinitions>
+         <ColumnDefinition Width="1*"/>
+         <ColumnDefinition Width="1*"/>
+         <ColumnDefinition Width="2*"/>
+         
+      </Grid.ColumnDefinitions>
+
+      <Border Grid.Column="0" weave:BorderProperties.SurfaceLevel="Level250">
+         <DockPanel Margin="8">
+            <StackPanel Orientation="Horizontal" DockPanel.Dock="Top">
+               <TextBlock Text="{x:Static p:Resources.PropertySets}" weave:TextBlockProperties.Variant="BodyRegular"/>
+            </StackPanel>
+            <StackPanel Name="stackPanel_buttons" Orientation="Horizontal" DockPanel.Dock="Top" Margin="0,8,0,4">
+               <ctrl:IconButton Name="button_Add" IconName="AddS" Click="button_Add_Click">
+                  <Button.ToolTip>
+                     <ToolTip Content="{x:Static p:Resources.CreateNewPropertySetTooltip}" Placement="Top"/>
+                  </Button.ToolTip>
+               </ctrl:IconButton>
+               <ctrl:IconButton Name="button_Import" IconName="ImportS" Click="button_Import_Click">
+                  <Button.ToolTip>
+                     <ToolTip Content="{x:Static p:Resources.ImportPropertySetsTooltip}" Placement="Top"/>
+                  </Button.ToolTip>
+               </ctrl:IconButton>
+               <ctrl:IconButton Name="button_Copy" IconName="CopyS" Click="button_Copy_Click">
+                  <Button.ToolTip>
+                     <ToolTip Content="{x:Static p:Resources.CopyPropertySetTooltip}" Placement="Top"/>
+                  </Button.ToolTip>
+               </ctrl:IconButton>
+               <ctrl:IconButton Name="button_Save" IconName="SaveS" Click="button_Save_Click">
+                  <Button.ToolTip>
+                     <ToolTip Content="{x:Static p:Resources.SavePropertySetTooltip}" Placement="Top"/>
+                  </Button.ToolTip>
+               </ctrl:IconButton>
+               <ctrl:IconButton Name="button_Export" IconName="ExportMoveS" Click="button_Export_Click">
+                  <Button.ToolTip>
+                     <ToolTip Content="{x:Static p:Resources.ExportPropertySetsTooltip}" Placement="Top"/>
+                  </Button.ToolTip>
+               </ctrl:IconButton>
+               <ctrl:IconButton Name="button_Rename" IconName="RenameS" Click="button_Rename_Click"
+                                IsEnabled="{Binding Path=SelectedPropertySet, Converter={StaticResource IsPropertySetSelectedConverter}}">
+                  <Button.ToolTip>
+                     <ToolTip Content="{x:Static p:Resources.RenamePropertySetTooltip}" Placement="Top"/>
+                  </Button.ToolTip>
+               </ctrl:IconButton>
+               <ctrl:IconButton Name="button_Delete" IconName="TrashS" Click="button_Delete_Click"
+                                IsEnabled="{Binding Path=SelectedPropertySet, Converter={StaticResource IsPropertySetSelectedConverter}}">
+                  <Button.ToolTip>
+                     <ToolTip Content="{x:Static p:Resources.DeletePropertySetTooltip}" Placement="Top"/>
+                  </Button.ToolTip>
+               </ctrl:IconButton>
+            </StackPanel>
+            <ListBox Name="listBox_PropertySets" ItemContainerStyle="{StaticResource ListBoxItemStyle}" 
+                     ItemsSource="{Binding ObservablePropertySets}" SelectedItem="{Binding SelectedPropertySet}"
+                     Width="{Binding ActualWidth, ElementName=stackPanel_buttons}" ScrollViewer.VerticalScrollBarVisibility="Auto"
+                     SelectionChanged="listBox_PropertySets_SelectionChanged" Margin="0,4,0,4">
+               <ListBox.Resources>
+                  <Style TargetType="ToolTip" BasedOn="{x:Static weaveRoot:Styles.ToolTipStyle}">
+                     <Setter Property="Placement" Value="Bottom"/>
+                  </Style>
+               </ListBox.Resources>
+            </ListBox>
+         </DockPanel>
+      </Border>
+
+      <Border Grid.Column="1" weave:BorderProperties.SurfaceLevel="Level200">
+         <DockPanel Margin="8">
+            <StackPanel Orientation="Horizontal" DockPanel.Dock="Top">
+               <TextBlock Text="{x:Static p:Resources.ApplicableEntities}" weave:TextBlockProperties.Variant="BodyBold"/>
+               <ctrl:IconButton Name="button_EditEntities" IconName="EditS" Click="button_SelectEnitites_Click"
+                          IsEnabled="{Binding Path=SelectedPropertySet, Converter={StaticResource IsPropertySetSelectedConverter}}">
+                  <Button.ToolTip>
+                     <ToolTip Content="{x:Static p:Resources.SelectApplicableEntities}" Placement="Top"/>
+                  </Button.ToolTip>
+               </ctrl:IconButton>
+               <ctrl:IconButton Name="button_ResetEntities" IconName="DataRefreshS" Click="button_ResetEnitites_Click"
+                          IsEnabled="{Binding Path=SelectedPropertySet, Converter={StaticResource IsPropertySetSelectedConverter}}">
+                  <Button.ToolTip>
+                     <ToolTip Content="{x:Static p:Resources.ResetApplicableEntities}" Placement="Top"/>
+                  </Button.ToolTip>
+               </ctrl:IconButton>
+            </StackPanel>
+
+            <ListBox Name="listBox_SelectedIFCEntities"
+               ItemsSource="{Binding ObservableApplicableEntities}"
+               ItemContainerStyle="{StaticResource ListBoxItemEntitiesStyle}" 
+               ScrollViewer.VerticalScrollBarVisibility="Auto">
+               <ListBox.Resources>
+                  <Style TargetType="ToolTip" BasedOn="{x:Static weaveRoot:Styles.ToolTipStyle}">
+                     <Setter Property="Placement" Value="Bottom"/>
+                  </Style>
+               </ListBox.Resources>
+
+               <ListBox.ItemTemplate>
+                  <DataTemplate>
+                      <Button Content="{Binding}" weave:ButtonProperties.Variant="Flat" Margin="0"
+                              Click="button_RemoveEntity_Click" HorizontalAlignment="Left" HorizontalContentAlignment="Left"
+                              weave:ButtonProperties.ContentType="IconLeft" weave:ButtonProperties.IconName="OperatorMinusXSUI"/>
+                  </DataTemplate>
+               </ListBox.ItemTemplate>
+
+            </ListBox>
+         </DockPanel>
+      </Border>
+      
+      <Border Grid.Column="2" weave:BorderProperties.SurfaceLevel="Level100">
+         <DockPanel Margin="8">
+            <!-- Dummy element to access DataContext for converter binding -->
+            <FrameworkElement x:Name="dummyElement" Visibility="Collapsed"/>
+
+            <TextBlock Text="{x:Static p:Resources.PropertySetDetails}" weave:TextBlockProperties.Variant="BodyRegular" DockPanel.Dock="Top"/>
+            <Grid DockPanel.Dock="Top">
+               <TextBlock Text="{x:Static p:Resources.QuantitySet}" weave:TextBlockProperties.Variant="BodyMedium"
+                          VerticalAlignment="Center" 
+                          Visibility="{Binding Path=SelectedPropertySet, Converter={StaticResource QuantityLabelVisibilityConverter}}"/>
+               <TextBlock Text="{x:Static p:Resources.IFCAttributes}" weave:TextBlockProperties.Variant="BodyMedium"
+                          VerticalAlignment="Center" 
+                          Visibility="{Binding Path=SelectedPropertySet, Converter={StaticResource IFCAttributesLabelVisibilityConverter}}"/>
+
+               <Button Name="button_RemoveRow" Content="{x:Static p:Resources.RemoveRow}" weave:ButtonProperties.Variant="Flat"
+                       Click="button_RemoveRow_Click" HorizontalAlignment="Right" weave:ButtonProperties.ContentType="IconLeft"
+                       weave:ButtonProperties.IconName="TrashS"
+                       IsEnabled="{Binding Path=SelectedProperty, Converter={StaticResource RowIndexSelectedConverter}, ConverterParameter=true}"/>
+            </Grid>
+
+            <Grid DockPanel.Dock="Top" VerticalAlignment="Top">
+               <Grid.RowDefinitions>
+                  <RowDefinition Height="1*"/>
+                  <RowDefinition Height="Auto"/>
+               </Grid.RowDefinitions>
+
+               <DataGrid Name="dataGrid_UserDefinedProperties" Grid.Row="0"
+                      ItemsSource="{Binding ObservableProperties, Mode=TwoWay}"
+                      SelectedItem="{Binding SelectedProperty}"
+                      weave:FrameworkElementProperties.ApplyWeaveStyles="True"
+                      AutoGenerateColumns="False"                      
+                      HorizontalAlignment="Center"
+                      CanUserAddRows="False"
+                      CanUserDeleteRows="False"
+                      CanUserResizeRows="False"
+                      CanUserReorderColumns="False"
+                      CanUserResizeColumns="True"
+                      CanUserSortColumns="True"
+                      weave:DataGridProperties.Stripped="False"
+                      weave:DataGridProperties.SelectAllVisibility="True"
+                      weave:DataGridProperties.ShowColumnContextMenu="True"
+                      SelectionMode="Single"
+                      HeadersVisibility="Column"                      
+                      RowHeight="27" Margin="0,4,0,4"
+                      >
+                  <DataGrid.Columns>
+                     <DataGridTemplateColumn Header="{x:Static p:Resources.IFCProperty}" Width="*">
+                        <DataGridTemplateColumn.CellTemplate>
+                           <DataTemplate>
+                              <TextBox Name="textBox_IFCPropertyName" 
+                                       Text="{Binding Path=IFCPropertyName, UpdateSourceTrigger=PropertyChanged}"
+                                       IsReadOnly="{Binding ElementName=listBox_PropertySets, Path=SelectedItem, Converter={StaticResource IFCAttributesColumnReadOnlyConverter}}"
+                                       AutomationProperties.AutomationId="{Binding RelativeSource={RelativeSource AncestorType=DataGridRow}, 
+                                                                           StringFormat=textBox_IFCPropertyName_{0}, 
+                                                                           Converter={StaticResource RowIndexConverter}}"/>
+                           </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                     </DataGridTemplateColumn>
+
+                     <DataGridTemplateColumn Header="{x:Static p:Resources.PropertyType}" Width="*">
+                        <DataGridTemplateColumn.CellTemplate>
+                           <DataTemplate>
+                              <ComboBox x:Name="comboBox_PropertyType"
+                                        ItemsSource="{Binding RelativeSource={RelativeSource AncestorType=auiw:ChildWindow}, Path=AvailablePropertyTypes}"
+                                        SelectedValue="{Binding PropertyType, UpdateSourceTrigger=PropertyChanged}"
+                                        IsEnabled="{Binding ElementName=listBox_PropertySets, Path=SelectedItem, Converter={StaticResource IFCAttributesColumnReadOnlyConverter}, ConverterParameter=invert}"
+                                        AutomationProperties.AutomationId="{Binding RelativeSource={RelativeSource AncestorType=DataGridRow}, 
+                                 StringFormat=comboBox_PropertyType_{0}, 
+                                 Converter={StaticResource RowIndexConverter}}"/>
+                           </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                     </DataGridTemplateColumn>
+
+                     <DataGridTemplateColumn Header="{x:Static p:Resources.DataType}" Width="*">
+                        <DataGridTemplateColumn.CellTemplate>
+                           <DataTemplate>
+                              <ComboBox x:Name="comboBox_DataType"
+                                        IsEnabled="{Binding ElementName=listBox_PropertySets, Path=SelectedItem, Converter={StaticResource IFCAttributesColumnReadOnlyConverter}, ConverterParameter=invert}"
+                                        IsEditable="True"
+                                        IsTextSearchEnabled="False"
+                                        StaysOpenOnEdit="True"
+                                        Loaded="ComboBox_DataType_Loaded"
+                                        SelectionChanged="ComboBox_DataType_SelectionChanged"
+                                        DropDownOpened="ComboBox_DataType_DropDownOpened"
+                                        AutomationProperties.AutomationId="{Binding RelativeSource={RelativeSource AncestorType=DataGridRow}, 
+                                 StringFormat=comboBox_DataType_{0}, 
+                                 Converter={StaticResource RowIndexConverter}}"/>
+                           </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                     </DataGridTemplateColumn>
+
+                     <DataGridTemplateColumn Header="{x:Static p:Resources.RevitProperty}" Width="*">
+                        <DataGridTemplateColumn.CellTemplate>
+                           <DataTemplate>
+                              <Grid>
+                                 <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="auto"/>
+                                 </Grid.ColumnDefinitions>
+                                 <TextBox Name="textBox_RevitProperty" Grid.ColumnSpan="2" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" 
+                                          IsReadOnly="True"
+                                          Text="{Binding Path=RevitParameterInfo, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, Converter={StaticResource RevitParameterConverter}}"/>
+                                 <ctrl:IconButton Name="button_RevitPropertyEdit" Grid.Column="1" Click="button_RevitPropertyEdit_Click" IconName="EditS" 
+                                                  HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,2,0"
+                                                  Background="Transparent" BorderThickness="0">
+                                    <Button.ToolTip>
+                                       <ToolTip Content="{x:Static p:Resources.Edit}" Placement="Bottom"/>
+                                    </Button.ToolTip>
+                                 </ctrl:IconButton>
+                              </Grid>
+                           </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                     </DataGridTemplateColumn>
+
+                     <DataGridTemplateColumn Header="{x:Static p:Resources.DefinedDataType}" Width="*"
+                                              Visibility="{Binding DataContext.HasTableProperties, Source={x:Reference dummyElement}, Converter={StaticResource TablePropertyTypeVisibilityConverter}}">
+                        <DataGridTemplateColumn.CellTemplate>
+                           <DataTemplate>
+                              <ComboBox x:Name="comboBox_DataTypeDefined"
+                                        IsEnabled="{Binding PropertyType, Converter={StaticResource TablePropertyTypeEnabledConverter}}"
+                                        IsEditable="True"
+                                        IsTextSearchEnabled="False"
+                                        StaysOpenOnEdit="True"
+                                        Loaded="ComboBox_DataType_Loaded"
+                                        SelectionChanged="ComboBox_DataType_SelectionChanged"
+                                        DropDownOpened="ComboBox_DataType_DropDownOpened"
+                                        AutomationProperties.AutomationId="{Binding RelativeSource={RelativeSource AncestorType=DataGridRow}, 
+                                 StringFormat=comboBox_DataTypeDefined_{0}, 
+                                 Converter={StaticResource RowIndexConverter}}"/>
+                           </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                     </DataGridTemplateColumn>
+
+                  </DataGrid.Columns>
+               </DataGrid>
+
+               <Button Name="button_AddRow" Content="{x:Static p:Resources.AddRow}" weave:ButtonProperties.Variant="Flat" Grid.Row="1"
+                     Click="button_AddRow_Click" HorizontalAlignment="Left" weave:ButtonProperties.ContentType="IconLeft"
+                     weave:ButtonProperties.IconName="AddS"
+                     IsEnabled="{Binding Path=SelectedPropertySet, Converter={StaticResource IsPropertySetSelectedConverter}, ConverterParameter=true}">
+               </Button>
+            </Grid>
+         </DockPanel>
+      </Border>
+
+      <StackPanel Orientation="Horizontal" Grid.Row="1" Grid.ColumnSpan="2" VerticalAlignment="Center">
+         <ctrl:WeaveIcon IconName="InfoS" VerticalAlignment="Top" Margin="8,0,5,0"/>
+         <TextBlock Name="textBlock_Help" HorizontalAlignment="Left" >
+         <Hyperlink Click="OnHelpClick">
+            <Run Name="run_Help" Text="{x:Static p:Resources.UserDefinedHelp}" x:Uid="LearnMoreHyperlink"/>
+         </Hyperlink>
+         </TextBlock>
+      </StackPanel>
+
+      <StackPanel Orientation="Horizontal" Grid.Column="2" Grid.Row="1" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,8,0,8">
+         <Button x:Name="button_Ok" Content="{x:Static p:Resources.OK}" HorizontalAlignment="Left" weave:ButtonProperties.Variant="Solid" Click="button_Ok_Click"/>
+         <Button x:Name="button_Cancel" Content="{x:Static p:Resources.Cancel}" HorizontalAlignment="Left" weave:ButtonProperties.Variant="Outline" Click="button_Cancel_Click" Margin="0,0,7,0"/>
+      </StackPanel>
+
+   </Grid>
+</auiw:ChildWindow>

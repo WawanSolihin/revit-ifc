@@ -16,6 +16,9 @@
 // License along with this library; if not, write to the Free Software
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 //
+using Autodesk.Revit.DB;
+using Autodesk.Revit.UI;
+using Autodesk.UI.Windows;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -23,10 +26,10 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
-
-using Autodesk.Revit.DB;
-using Autodesk.Revit.UI;
-using Autodesk.Revit.WPFFramework;
+using Revit.IFC.Common.Extensions;
+using Revit.IFC.Common.Enums;
+using Revit.IFC.Common.Utility;
+using Revit.IFC.Export.Utility;
 
 using SaveFileDialog = Microsoft.Win32.SaveFileDialog;
 
@@ -40,15 +43,18 @@ namespace BIM.IFC.Export.UI
       // The list of available configurations
       IFCExportConfigurationsMap m_configMap;
 
+      // The list of the initial config Map (either from built-in config, or from the Extensible Storage)
+      public IFCExportConfigurationsMap InitialConfigMap { get; private set; } 
+
+      /// <summary>
+      /// Keep the cache for the last selected configuration regardless whether it is built-in or not
+      /// </summary>
+      public static IDictionary<string, IFCExportConfiguration> LastSelectedConfig { get; } = new Dictionary<string, IFCExportConfiguration>();
+
       /// <summary>
       /// The dialog result.
       /// </summary>
       IFCExportResult m_Result = IFCExportResult.Invalid;
-
-      /// <summary>
-      /// The file to store the previous window bounds.
-      /// </summary>
-      string m_SettingFile = "IFCExportSettings_v36.txt";  // update the file when resize window bounds.
 
       /// <summary>
       /// The list of documents to export as chosen by the user.
@@ -88,6 +94,11 @@ namespace BIM.IFC.Export.UI
       /// The last successful export location
       /// </summary>
       private String m_ExportPath = null;
+
+      /// <summary>
+      /// Identification whether the IFCExporterUIWindow (Modify setup) is visited
+      /// </summary>
+      private bool m_EditConfigVisited { get; set; } = false;
 
       /// <summary>
       /// The default Extension of the file
@@ -149,23 +160,6 @@ namespace BIM.IFC.Export.UI
          get { return textBoxSetupFileName.Text; }
       }
 
-
-      /// <summary>
-      /// Restores the previous window. If no previous window found, place on the left top.
-      /// </summary>
-      private void RestorePreviousWindow()
-      {
-         // Refresh restore bounds from previous window opening
-         Rect restoreBounds = IFCUISettings.LoadWindowBounds(m_SettingFile);
-         if (restoreBounds != new Rect())
-         {
-            this.Left = restoreBounds.Left;
-            this.Top = restoreBounds.Top;
-            this.Width = restoreBounds.Width;
-            this.Height = restoreBounds.Height;
-         }
-      }
-
       /// <summary>
       /// Update the current selected configuration in the combobox. 
       /// </summary>
@@ -182,6 +176,29 @@ namespace BIM.IFC.Export.UI
             currentSelectedSetup.SelectedIndex = 0;
          else
             currentSelectedSetup.SelectedItem = selected;
+
+         // The following lines fix the IFC Version label that doesn't update when changing the <In-Session setup>
+         IFCExportConfiguration selectedConfig = GetSelectedConfiguration();
+
+         UpdateTextBoxesContent(selectedConfig);
+      }
+
+      private void UpdateTextBoxesContent(IFCExportConfiguration config)
+      {
+         if (config != null)
+         {
+            textBoxSetupDescription.Text = config.FileVersionDescription;
+            if (LastSelectedConfig.ContainsKey(config.Name))
+            {
+               textBoxSetupCoordinateBase.Text = (new IFCSitePlacementAttributes(LastSelectedConfig[config.Name].SitePlacement)).ToString();
+               textBoxSetupProjectLocation.Text = LastSelectedConfig[config.Name].SelectedSite;
+            }
+            else
+            {
+               textBoxSetupCoordinateBase.Text = (new IFCSitePlacementAttributes(config.SitePlacement)).ToString();
+               textBoxSetupProjectLocation.Text = config.SelectedSite;
+            }
+         }
       }
 
       /// <summary>
@@ -222,20 +239,21 @@ namespace BIM.IFC.Export.UI
       public IFCExport(Autodesk.Revit.UI.UIApplication app, IFCExportConfigurationsMap configurationsMap, String selectedConfigName)
       {
          m_configMap = configurationsMap;
+         InitialConfigMap = new IFCExportConfigurationsMap(configurationsMap);
 
          SetParent(app.MainWindowHandle);
 
          InitializeComponent();
-
-         RestorePreviousWindow();
 
          currentSelectedSetup.SelectionChanged -= currentSelectedSetup_SelectionChanged;
 
          UpdateCurrentSelectedSetupCombo(selectedConfigName);
          UpdateOpenedProjectsListView(app);
 
-         Title = Properties.Resources.ExportIFC + " (" + IFCUISettings.GetAssemblyVersionForUI() + ")";
-         
+         Title = Properties.Resources.ExportIFC;
+#if IFC_OPENSOURCE
+         versionLabel.Content = IFCUISettings.GetAssemblyVersionForUI();
+#endif
          TheDocument = UpdateOpenedProject(app);
 
          int docToExport = GetDocumentExportCount();
@@ -334,7 +352,7 @@ namespace BIM.IFC.Export.UI
       /// <param name="configuration">The configuration to add.</param>
       private void AddToConfigList(IFCExportConfiguration configuration)
       {
-         m_configMap.Add(configuration);
+         m_configMap.AddOrReplace(configuration);
       }
 
       /// <summary>
@@ -418,17 +436,19 @@ namespace BIM.IFC.Export.UI
          currentSelectedSetup.SelectionChanged -= currentSelectedSetup_SelectionChanged;
 
          editorWindow.Owner = this;
-         editorWindow.ShowDialog();
+         bool? ret = editorWindow.ShowDialog();
+         if (ret.HasValue)
+            m_EditConfigVisited = ret.Value;
+
          if (editorWindow.DialogResult.HasValue && editorWindow.DialogResult.Value)
          {
-            IFCCommandOverrideApplication.PotentiallyUpdatedConfigurations = true;
+            // Check here for changes in configurations. If changed, the changes will be saved into the storage
+            configurationsMap.UpdateSavedConfigurations(m_configMap);
             currentSelectedSetup.Items.Clear();
             m_configMap = configurationsMap;
-            String selectedConfigName = editorWindow.GetSelectedConfigurationName();
+            string selectedConfigName = editorWindow.GetSelectedConfigurationName();
 
             UpdateCurrentSelectedSetupCombo(selectedConfigName);
-
-            updateFileName();
          }
 
          // The SelectionChanged event will be activated again after the Modify Config Window is closed
@@ -440,7 +460,7 @@ namespace BIM.IFC.Export.UI
       /// </summary>
       /// <param name="sender">The source of the event.</param>
       /// <param name="args">Event arguments that contains the event data.</param>
-      private void buttonNext_Click(object sender, RoutedEventArgs args)
+      private void buttonExport_Click(object sender, RoutedEventArgs args)
       {
          string fileNameWithoutExtension = Path.GetFileNameWithoutExtension(textBoxSetupFileName.Text);
          string filePath = Path.GetDirectoryName(textBoxSetupFileName.Text);
@@ -448,7 +468,10 @@ namespace BIM.IFC.Export.UI
          // Show Path is invalid message if the path is blank or invalid.
          if (!string.IsNullOrWhiteSpace(filePath) && !Directory.Exists(filePath))
          {
-            TaskDialog.Show("Error", Properties.Resources.ValidPathExists);
+            TaskDialog taskDialog = new TaskDialog(Properties.Resources.IFCExportProcessGenericError);
+            taskDialog.MainInstruction = Properties.Resources.ValidPathExists;
+            taskDialog.TitleAutoPrefix = false;
+            taskDialog.Show();
          }
          else
          {
@@ -465,15 +488,127 @@ namespace BIM.IFC.Export.UI
             // Prompt for overwriting the file if it is already present in the directory.
             if (File.Exists(textBoxSetupFileName.Text))
             {
-               TaskDialogResult msgBoxResult = TaskDialog.Show(Properties.Resources.IFCExport, String.Format(Properties.Resources.FileExists, textBoxSetupFileName.Text), TaskDialogCommonButtons.Yes | TaskDialogCommonButtons.No);
-               if (msgBoxResult == TaskDialogResult.No)
+               TaskDialog taskDialog = new TaskDialog(Properties.Resources.IFCExport);
+               taskDialog.MainInstruction = String.Format(Properties.Resources.FileExists, textBoxSetupFileName.Text);
+               taskDialog.CommonButtons = TaskDialogCommonButtons.Yes | TaskDialogCommonButtons.No;
+               taskDialog.TitleAutoPrefix = false;
+
+               TaskDialogResult taskDialogResult = taskDialog.Show();
+               if (taskDialogResult == TaskDialogResult.No)
                {
                   return;
                }
             }
+            if(Win32API.RtlIsDosDeviceName_U(textBoxSetupFileName.Text) != 0)
+            {
+               TaskDialog taskDialog = new TaskDialog(Properties.Resources.IFCExport);
+               taskDialog.MainInstruction = String.Format(Properties.Resources.ReservedDeviceName, textBoxSetupFileName.Text);
+               taskDialog.TitleAutoPrefix = false;
+               taskDialog.Show();
+               return;
+            }
+
+            TheDocument.Application.WriteJournalComment(@"Jrn.Data ""File Name"", ""IDOK"", " + @"""" + textBoxSetupFileName.Text + @"""", true);
+
+            IFCExportConfiguration selectedConfig = GetSelectedConfiguration();
+            if (OptionsUtil.ExportAs4DesignTransferView(selectedConfig.IFCVersion) || OptionsUtil.ExportAs4x3DesignTransferView(selectedConfig.IFCVersion))
+            {
+               TaskDialog taskDialog = new TaskDialog(Properties.Resources.IFCExportGenericWarning);
+               taskDialog.MainInstruction = String.Format(Properties.Resources.IFC4DTVWarning, selectedConfig.FileVersionDescription);
+               taskDialog.CommonButtons = TaskDialogCommonButtons.Ok | TaskDialogCommonButtons.Cancel;
+               taskDialog.DefaultButton = TaskDialogResult.Ok;
+               taskDialog.TitleAutoPrefix = false;
+
+               TaskDialogResult taskDialogResult = taskDialog.Show();
+               if (taskDialogResult == TaskDialogResult.Cancel)
+               {
+                  return;
+               }
+            }
+
+            if (m_EditConfigVisited && LastSelectedConfig.ContainsKey(selectedConfig.Name))
+               selectedConfig = LastSelectedConfig[selectedConfig.Name];
+
+            // This check will be done only for IFC4 and above as this only affects IfcMapConversion use that starts in IFC4 onward
+            if (!OptionsUtil.ExportAsOlderThanIFC4(selectedConfig.IFCVersion) &&
+               !string.IsNullOrWhiteSpace(selectedConfig.GeoRefEPSGCode))
+            {
+               // Check whether the resulting offset (to wcs) will be too large due to geo-reference information, raise warning
+               BasePoint surveyPoint = BasePoint.GetSurveyPoint(TheDocument);
+               BasePoint projectBasePoint = BasePoint.GetProjectBasePoint(TheDocument);
+               {
+                  XYZ deltaOffset = XYZ.Zero;
+                  switch (selectedConfig.SitePlacement)
+                  {
+                     case SiteTransformBasis.Internal:
+                        deltaOffset = projectBasePoint.Position;
+                        break;
+                     case SiteTransformBasis.Project:
+                        // Offset from Project point is Zero, unchanged from the initial value
+                        break;
+                     case SiteTransformBasis.ProjectInTN:
+                        // Offset from Project point is Zero, unchanged from the initial value
+                        break;
+                     case SiteTransformBasis.Site:
+                        deltaOffset = projectBasePoint.Position - surveyPoint.Position;
+                        break;
+                     case SiteTransformBasis.Shared:
+                        deltaOffset = projectBasePoint.SharedPosition;
+                        break;
+                     default:
+                        break;
+                  }
+
+                  if (!XYZ.IsWithinLengthLimits(deltaOffset))
+                  {
+                     TaskDialog taskDialog = new TaskDialog(Properties.Resources.IFCExport);
+                     taskDialog.MainInstruction = Properties.Resources.OffsetDistanceTooLarge;
+                     taskDialog.CommonButtons = TaskDialogCommonButtons.Ok | TaskDialogCommonButtons.Cancel;
+                     taskDialog.TitleAutoPrefix = false;
+
+                     TaskDialogResult taskDialogResult = taskDialog.Show();
+                     if (taskDialogResult == TaskDialogResult.Cancel)
+                     {
+                        return;
+                     }
+                  }
+               } 
+            }
+
             Result = IFCExportResult.ExportAndSaveSettings;
             Close();
 
+            IFCFileHeaderItem fileHeaderItem;
+
+            // For backward compatibility in case the document contains saved FileHeaderItem from the previous version
+            IFCFileHeader ifcFileHeader = new IFCFileHeader();
+            if (!ifcFileHeader.GetSavedFileHeader(IFCCommandOverrideApplication.TheDocument, out fileHeaderItem))
+            {
+               // Do minimum initialization if the header item is not initialized
+               fileHeaderItem = new IFCFileHeaderItem(IFCCommandOverrideApplication.TheDocument);
+            }
+
+            // Set the selected Coordinate Base into IFC File Header Description
+            string coordBase = "CoordinateBase: " + new IFCSitePlacementAttributes(selectedConfig.SitePlacement);
+
+            // Set the selected Project Site into IFC File Header Description
+            if (!string.IsNullOrEmpty(selectedConfig.SelectedSite))
+            {
+               coordBase = string.Join(", ", coordBase, "ProjectSite: " + selectedConfig.SelectedSite);
+            }
+
+            fileHeaderItem.FileDescriptions.Add("CoordinateReference [" + coordBase + "]");
+
+            // Set IFC File header with the selected exchange requirement
+            if (selectedConfig.ExchangeRequirement != KnownERNames.NotDefined)
+            {
+               string newExchangeRequirement = "ExchangeRequirement [" + selectedConfig.ExchangeRequirement.ToString() + "]";
+               fileHeaderItem.AddOrReplaceDescriptionItem(newExchangeRequirement);
+            }
+
+            OptionsUtil.FileHeaderIFC = fileHeaderItem;
+
+            LastSelectedConfig[selectedConfig.Name] = selectedConfig;
             TheDocument.Application.WriteJournalComment("Dialog Closed", true);
          }
       }
@@ -486,6 +621,8 @@ namespace BIM.IFC.Export.UI
       private void buttonCancel_Click(object sender, RoutedEventArgs args)
       {
          Result = IFCExportResult.Cancel;
+         IFCExportConfiguration selectedConfig = GetSelectedConfiguration();
+         LastSelectedConfig[selectedConfig.Name] = selectedConfig;
          Close();
       }
 
@@ -542,6 +679,11 @@ namespace BIM.IFC.Export.UI
             {
                defaultDirectory = Path.GetDirectoryName(revitFilePath);
             }
+         }
+
+         if (string.IsNullOrEmpty(defaultDirectory) && TheDocument.IsDetached)
+         {
+            defaultDirectory = Directory.GetCurrentDirectory();
          }
 
          if ((defaultDirectory == null) || (!System.IO.Directory.Exists(defaultDirectory)))
@@ -624,34 +766,16 @@ namespace BIM.IFC.Export.UI
 
          if (selectedConfig != null)
          {
-            if (!IFCPhaseAttributes.Validate(selectedConfig.ActivePhaseId))
-               selectedConfig.ActivePhaseId = ElementId.InvalidElementId;
+            if (!IFCPhaseAttributes.Validate(selectedConfig.ActivePhaseId, IFCCommandOverrideApplication.TheDocument))
+               selectedConfig.ActivePhaseId = ElementId.InvalidElementId.Value;
 
-            // Display the IFC Version 
-            textBoxSetupDescription.Text = selectedConfig.FileVersionDescription;
+            UpdateTextBoxesContent(selectedConfig);
 
             IFCExportConfiguration prevConfig = null;
             if (args.RemovedItems.Count > 0)
                prevConfig = m_configMap[args.RemovedItems[0].ToString()];
-            //if (GetSelectedConfiguration().IFCVersion == IFCVersion.IFC2x3FM && (prevConfig == null || prevConfig.IFCVersion != IFCVersion.IFC2x3FM))
-            //{
-               //// For COBie, we will always pop up the configuration window to make sure all items are initialized and user update them if necessary
-               //buttonEditSetup_Click(sender, args);
-            //}
          }
       }
-
-      /// <summary>
-      /// Saves the window bounds when close the window.
-      /// </summary>
-      /// <param name="sender">The source of the event.</param>
-      /// <param name="e">Event arguments that contains the event data.</param>
-      private void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e)
-      {
-         // Save restore bounds for the next time this window is opened
-         IFCUISettings.SaveWindowBounds(m_SettingFile, this.RestoreBounds);
-      }
-
 
       /// <summary>
       /// Changes the name of the IFC files to be exported on clicking the checkboxes.
@@ -726,17 +850,6 @@ namespace BIM.IFC.Export.UI
          return true;
       }
 
-      /// <summary>
-      /// Handles the Help button click
-      /// </summary>
-      /// <param name="sender"></param>
-      /// <param name="e"></param>
-      private void OnHelpClick(object sender, RoutedEventArgs e)
-      {
-         // handle using the context help command handler
-         e.Handled = OnContextHelp();
-      }
-
       private void ChildWindow_ContentRendered(object sender, EventArgs e)
       {
          // For COBie, we will always pop up the configuration window to make sure all items are initialized and user update them if necessary,
@@ -749,5 +862,6 @@ namespace BIM.IFC.Export.UI
          // The SelectionChanged event will be activated after the Modify Config Window is closed
          currentSelectedSetup.SelectionChanged += currentSelectedSetup_SelectionChanged;
       }
+
    }
 }

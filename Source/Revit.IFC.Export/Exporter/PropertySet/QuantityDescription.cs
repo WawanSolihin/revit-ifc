@@ -19,11 +19,11 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
+using Revit.IFC.Common.Enums;
 using Revit.IFC.Common.Utility;
+using Revit.IFC.Export.Utility;
 
 namespace Revit.IFC.Export.Exporter.PropertySet
 {
@@ -37,37 +37,68 @@ namespace Revit.IFC.Export.Exporter.PropertySet
    public class QuantityDescription : Description
    {
       /// <summary>
-      /// Defines the building code used to calculate the element quantity.
-      /// </summary>
-      string m_MethodOfMeasurement = String.Empty;
-
-      /// <summary>
       /// The quantities stored in this quantity description.
       /// </summary>
-      IList<QuantityEntry> m_Entries = new List<QuantityEntry>();
+      public IList<QuantityEntry> Entries { get; set; } = new List<QuantityEntry>();
 
       /// <summary>
       /// Defines the building code used to calculate the element quantity.
       /// </summary>
-      public string MethodOfMeasurement
+      public string MethodOfMeasurement { get; set; } = String.Empty;
+
+      /// <summary>
+      /// Determines whether this quantity set description is user-defined.
+      /// </summary>
+      public bool IsUserDefined { get; set; } = false;
+
+      public QuantityDescription() { }
+
+      public QuantityDescription(string baseName, IFCEntityType entityType)
       {
-         get
-         {
-            return m_MethodOfMeasurement;
-         }
-         set
-         {
-            m_MethodOfMeasurement = value;
-         }
+         string quantitySetName = (ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4) ?
+             "BaseQuantities" : "Qto_" + baseName + "BaseQuantities";
+         Name = quantitySetName;
+         EntityTypes.Add(entityType);
       }
 
       /// <summary>
-      /// The entries stored in this property set description.
+      /// Add an entry to the quantity map.
       /// </summary>
+      /// <param name="entry">The entry to add.</param>
       public void AddEntry(QuantityEntry entry)
       {
+         PropertySetupType propertyMappingSetup = IsUserDefined ?
+            PropertySetupType.UserDefinedPropertySets : PropertySetupType.IfcBaseQuantities;
+
+         IFCPropertyMappingInfo mappedRevitParameter = GetMappedRevitParameterForDescription(propertyMappingSetup, entry.PropertyName);
+
+         if (mappedRevitParameter != null)
+         {
+            entry.IsExcluded = !mappedRevitParameter.ExportFlag;
+
+            ElementId parameterId = mappedRevitParameter.RevitPropertyId;
+            string parameterName = mappedRevitParameter.RevitPropertyName;
+            if (ParameterUtils.IsBuiltInParameter(parameterId))
+            {
+               entry.SetRevitBuiltInParameter((BuiltInParameter)parameterId.Value);
+            }
+            else if (!string.IsNullOrEmpty(parameterName))
+            {
+               entry.SetRevitParameterName(parameterName);
+            }
+         }
+
          entry.UpdateEntry();
-         m_Entries.Add(entry);
+         Entries.Add(entry);
+      }
+
+      /// <summary>
+      /// Remove an entry from the quantity map.
+      /// </summary>
+      /// <param name="entry">The entry to remove.</param>
+      public bool RemoveEntry(QuantityEntry entry)
+      {
+         return Entries.Remove(entry);
       }
 
       /// <summary>
@@ -79,10 +110,10 @@ namespace Revit.IFC.Export.Exporter.PropertySet
       /// <param name="elementToUse">The base element.</param>
       /// <param name="elemTypeToUse">The base element type.</param>
       /// <returns>A set of quantities handles.</returns>
-      public HashSet<IFCAnyHandle> ProcessEntries(IFCFile file, ExporterIFC exporterIFC, IFCExtrusionCreationData ifcParams, Element elementToUse, ElementType elemTypeToUse)
+      public HashSet<IFCAnyHandle> ProcessEntries(IFCFile file, ExporterIFC exporterIFC, IFCExportBodyParams ifcParams, Element elementToUse, ElementType elemTypeToUse)
       {
          HashSet<IFCAnyHandle> props = new HashSet<IFCAnyHandle>();
-         foreach (QuantityEntry entry in m_Entries)
+         foreach (QuantityEntry entry in Entries)
          {
             IFCAnyHandle propHnd = entry.ProcessEntry(file, exporterIFC, ifcParams, elementToUse, elemTypeToUse);
             if (!IFCAnyHandleUtil.IsNullOrHasNoValue(propHnd))

@@ -59,7 +59,7 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// The ExporterIFC object.
       /// </param>
       /// <param name="extrusionCreationData">
-      /// The IFCExtrusionCreationData.
+      /// The IFCExportBodyParams.
       /// </param>
       /// <param name="element">
       /// The element to calculate the value.
@@ -70,9 +70,16 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// <returns>
       /// True if the operation succeed, false otherwise.
       /// </returns>
-      public override bool Calculate(ExporterIFC exporterIFC, IFCExtrusionCreationData extrusionCreationData, Element element, ElementType elementType)
+      public override bool Calculate(ExporterIFC exporterIFC, IFCAnyHandle handle, IFCExportBodyParams extrusionCreationData, Element element, ElementType elementType, EntryMap entryMap)
       {
-         bool valid = true;
+         // Get override from parameter
+         if (ParameterUtil.TryGetDoubleValueFromElementOrSymbol(element, entryMap.RevitParameterName,
+            entryMap.CompatibleRevitParameterName) is double riserHeightOverride)
+         {
+            m_RiserHeight = UnitUtil.ScaleArea(riserHeightOverride);
+            return true;
+         }
+
          if (StairsExporter.IsLegacyStairs(element))
          {
             double treadLength, treadLengthAtInnerSide, nosingLength, waistThickness = 0;
@@ -95,17 +102,10 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
          }
          else
          {
-            valid = false;
+            return false;
          }
 
-         // Get override from parameter
-         double riserHeightOverride = 0.0;
-         if (ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "RiserHeight", out riserHeightOverride) != null)
-         {
-            m_RiserHeight = UnitUtil.ScaleArea(riserHeightOverride);
-         }
-
-         return valid;
+         return true;
       }
 
       /// <summary>

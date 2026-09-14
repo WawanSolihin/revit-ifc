@@ -1,4 +1,4 @@
-﻿//
+//
 // Revit IFC Import library: this library works with Autodesk(R) Revit(R) to import IFC files.
 // Copyright (C) 2013  Autodesk, Inc.
 // 
@@ -19,14 +19,11 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using Autodesk.Revit.ApplicationServices;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
 using Revit.IFC.Common.Enums;
 using Revit.IFC.Common.Utility;
-using Revit.IFC.Import.Enums;
 using Revit.IFC.Import.Utility;
 
 namespace Revit.IFC.Import.Data
@@ -36,49 +33,45 @@ namespace Revit.IFC.Import.Data
    /// </summary>
    public class IFCBuildingStorey : IFCSpatialStructureElement
    {
-      double m_Elevation;
-
-      ElementId m_CreatedViewId = ElementId.InvalidElementId;
-
-      static ElementId m_ViewPlanTypeId = ElementId.InvalidElementId;
-
-      static ElementId m_ExistingLevelIdToReuse = ElementId.InvalidElementId;
-
-      /// <summary>
-      /// Returns true if we have tried to set m_ViewPlanTypeId.  m_ViewPlanTypeId may or may not have a valid value.
-      /// </summary>
-      static bool m_ViewPlanTypeIdInitialized = false;
-
       /// <summary>
       /// Returns the associated Plan View for the level.
       /// </summary>
-      public ElementId CreatedViewId
-      {
-         get { return m_CreatedViewId; }
-         protected set { m_CreatedViewId = value; }
-      }
+      public ElementId CreatedViewId { get; protected set; } = ElementId.InvalidElementId;
 
       /// <summary>
-      /// If the ActiveView is level-based, we can't delete it.  Instead, use it for the first level "created".
+      /// If the ActiveView is level-based, we can't delete it.
+      /// If this is set and an IFCBuildingStorey exists in the IFC file, then re-use this Level rather when "creating" a new Level.
       /// </summary>
-      public static ElementId ExistingLevelIdToReuse
-      {
-         get { return m_ExistingLevelIdToReuse; }
-         set { m_ExistingLevelIdToReuse = value; }
-      }
+      public static ElementId ExistingUnConstrainedLevelToReuse { get; set; } = ElementId.InvalidElementId;
+
+      /// <summary>
+      /// If the ActiveView is level-based, we can't delete it.
+      /// If an IFCBuildingStorey exists in the IFC file, then create a new Level rather than reusing this Level.
+      /// </summary>
+      public static ElementId ExistingConstrainedLevel { get; set; } = ElementId.InvalidElementId;
 
       /// <summary>
       /// Get the default family type for creating ViewPlans.
       /// </summary>
       /// <param name="doc"></param>
-      /// <returns></returns>
+      /// <returns>The default family type.</returns>
       public static ElementId GetViewPlanTypeId(Document doc)
       {
-         if (m_ViewPlanTypeIdInitialized == false)
+         // There are theoretical cases where this could fail, but no such cases have been
+         // seen in practice.
+         if (Importer.TheCache.ViewPlanTypeIdInitialized == false)
          {
-            ViewFamily viewFamilyToUse = (doc.Application.Product == ProductType.Structure) ? ViewFamily.StructuralPlan : ViewFamily.FloorPlan;
+            // Basically, we only want to use the StructuralPlan if Structure is our only valid
+            // option.
+            ViewFamily viewFamilyToUse;
+            if (doc.Application.IsArchitectureEnabled || doc.Application.IsSystemsEnabled)
+               viewFamilyToUse = ViewFamily.FloorPlan;
+            else if (doc.Application.IsStructureEnabled)
+               viewFamilyToUse = ViewFamily.StructuralPlan;
+            else
+               viewFamilyToUse = ViewFamily.FloorPlan;
 
-            m_ViewPlanTypeIdInitialized = true;
+            Importer.TheCache.ViewPlanTypeIdInitialized = true;
             FilteredElementCollector collector = new FilteredElementCollector(doc);
             ICollection<Element> viewFamilyTypes = collector.OfClass(typeof(ViewFamilyType)).ToElements();
             foreach (Element element in viewFamilyTypes)
@@ -86,12 +79,26 @@ namespace Revit.IFC.Import.Data
                ViewFamilyType viewFamilyType = element as ViewFamilyType;
                if (viewFamilyType.ViewFamily == viewFamilyToUse)
                {
-                  m_ViewPlanTypeId = viewFamilyType.Id;
+                  Importer.TheCache.ViewPlanTypeId = viewFamilyType.Id;
                   break;
                }
             }
          }
-         return m_ViewPlanTypeId;
+         return Importer.TheCache.ViewPlanTypeId;
+      }
+
+      /// <summary>
+      /// Determines if Level if constrained to a Scope Box or not.
+      /// </summary>
+      /// <param name="level">Level to check.</param>
+      /// <returns>True if constrained, False otherwise.</returns>
+      public static bool IsConstrainedToScopeBox(Element level)
+      {
+         Parameter datumVolumeParameter = level?.get_Parameter(BuiltInParameter.DATUM_VOLUME_OF_INTEREST);
+         if (datumVolumeParameter == null)
+            return false;
+
+         return (datumVolumeParameter.AsElementId() != ElementId.InvalidElementId);
       }
 
       /// <summary>
@@ -115,7 +122,8 @@ namespace Revit.IFC.Import.Data
          if (element != null)
          {
             // Set "IfcElevation" parameter.
-            IFCPropertySet.AddParameterDouble(doc, element, "IfcElevation", UnitType.UT_Length, m_Elevation, Id);
+            Category category = IFCPropertySet.GetCategoryForParameterIfValid(element, Id);
+            ParametersToSet.AddParameterDouble(doc, element, category, this, "IfcElevation", SpecTypeId.Length, UnitTypeId.Feet, Elevation, Id);
          }
       }
 
@@ -125,6 +133,15 @@ namespace Revit.IFC.Import.Data
       /// <param name="doc">The document.</param>
       protected override void Create(Document doc)
       {
+         if (Importer.TheHybridInfo?.HybridMap?.TryGetValue(Id.ToString(), out ElementId hybridElementId) ?? false)
+         {
+            CreatedElementId = hybridElementId;
+            TraverseSubElements(doc);
+            return;
+         }
+
+         IFCLocation.WarnIfFaraway(this);
+
          // We may re-use the ActiveView Level and View, since we can't delete them.
          // We will consider that we "created" this level and view for creation metrics.
          Level level = Importer.TheCache.UseElementByGUID<Level>(doc, GlobalId);
@@ -132,26 +149,61 @@ namespace Revit.IFC.Import.Data
          bool reusedLevel = false;
          bool foundLevel = false;
 
+         // If any Level is constrained, never reuse it and never move it.
          if (level == null)
          {
-            if (ExistingLevelIdToReuse != ElementId.InvalidElementId)
+            // Re-using existing unconstrained Level.
+            if (ExistingUnConstrainedLevelToReuse != ElementId.InvalidElementId)
             {
-               level = doc.GetElement(ExistingLevelIdToReuse) as Level;
+               level = doc.GetElement(ExistingUnConstrainedLevelToReuse) as Level;
                Importer.TheCache.UseElement(level);
-               ExistingLevelIdToReuse = ElementId.InvalidElementId;
+               ExistingUnConstrainedLevelToReuse = ElementId.InvalidElementId;
                reusedLevel = true;
             }
          }
          else
+         {
             foundLevel = true;
+         }
+
+         double referenceElevation = GetReferenceElevation();
+         double totalElevation = (ObjectLocation?.TotalTransformAfterOffset?.Origin.Z ?? 0.0) + referenceElevation;
+
+         // Keep legacy elevation behavior for compatibility: level elevation comes from placement + building reference.
+         // If Elevation is also provided and conflicts with placement, log for diagnostics only.
+         if (ObjectLocation != null && !MathUtil.IsAlmostZero(Elevation) && !MathUtil.IsAlmostEqual(ObjectLocation?.TotalTransformAfterOffset?.Origin.Z ?? 0.0, Elevation))
+         {
+            Importer.TheLog.LogWarning(Id, "IfcBuildingStorey has inconsistent ObjectPlacement and Elevation values. Using ObjectPlacement.", false);
+         }
 
          if (level == null)
-            level = Level.Create(doc, m_Elevation);
+         {
+            level = Level.Create(doc, totalElevation);
+         }
          else
-            level.Elevation = m_Elevation;
+         {
+            if (Importer.TheCache.ConstrainedLevels.Contains(level.Id))
+            {
+               if (level.Elevation == totalElevation)
+               {
+                  Importer.TheCache.UseElement(level);
+                  Importer.TheCache.ConstrainedLevels.Remove(level.Id);
+               }
+               else
+               {
+                  level = Level.Create(doc, totalElevation);
+               }
+            }
+            else
+            {
+               level.Elevation = totalElevation;
+            }
+         }
 
          if (level != null)
+         {
             CreatedElementId = level.Id;
+         }
 
          if (CreatedElementId != ElementId.InvalidElementId)
          {
@@ -206,14 +258,16 @@ namespace Revit.IFC.Import.Data
          Elevation = IFCImportHandleUtil.GetOptionalScaledLengthAttribute(ifcIFCBuildingStorey, "Elevation", 0.0);
       }
 
+      public override void PostProcess()
+      {
+         TryToFixFarawayOrigin();
+         base.PostProcess();
+      }
+
       /// <summary>
       /// The elevation.
       /// </summary>
-      public double Elevation
-      {
-         get { return m_Elevation; }
-         protected set { m_Elevation = value; }
-      }
+      public double Elevation { get; protected set; } = 0.0;
 
       /// <summary>
       /// Processes an IfcBuildingStorey object.

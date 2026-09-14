@@ -38,44 +38,17 @@ namespace Revit.IFC.Import.Data
       /// <summary>
       /// The base unit type, if not defined in the IFC file, based on the type of quantity.
       /// </summary>
-      UnitType m_BaseUnitType = UnitType.UT_Undefined;
-
-      /// <summary>
-      /// The optional unit for the quantity.
-      /// </summary>
-      IFCUnit m_Unit = null;
-
-      /// <summary>
-      /// The value.
-      /// </summary>
-      IFCData m_Value;
-
-      /// <summary>
-      /// The base unit type, if not defined in the IFC file, based on the type of quantity.
-      /// </summary>
-      protected UnitType BaseUnitType
-      {
-         get { return m_BaseUnitType; }
-         set { m_BaseUnitType = value; }
-      }
+      protected ForgeTypeId BaseUnitType { get; set; }
 
       /// <summary>
       /// The associated unit.
       /// </summary>
-      protected IFCUnit IFCUnit
-      {
-         get { return m_Unit; }
-         set { m_Unit = value; }
-      }
+      protected IFCUnit IFCUnit { get; set; }
 
       /// <summary>
       /// The value, in IFCUnit unit.
       /// </summary>
-      protected IFCData Value
-      {
-         get { return m_Value; }
-         set { m_Value = value; }
-      }
+      protected IFCData Value { get; set; }
 
       protected IFCPhysicalSimpleQuantity()
       {
@@ -89,7 +62,7 @@ namespace Revit.IFC.Import.Data
       /// <summary>
       /// Processes an IFC physical simple quantity.
       /// </summary>
-      /// <param name="ifcPhysicalQuantity">The IfcPhysicalSimpleQuantity object.</param>
+      /// <param name="ifcPhysicalSimpleQuantity">The IfcPhysicalSimpleQuantity object.</param>
       /// <returns>The IFCPhysicalSimpleQuantity object.</returns>
       override protected void Process(IFCAnyHandle ifcPhysicalSimpleQuantity)
       {
@@ -102,27 +75,27 @@ namespace Revit.IFC.Import.Data
          // Process subtypes of IfcPhysicalSimpleQuantity here.
          string attributeName = ifcPhysicalSimpleQuantity.TypeName.Substring(11) + "Value";
          Value = ifcPhysicalSimpleQuantity.GetAttribute(attributeName);
-         BaseUnitType = IFCDataUtil.GetUnitTypeFromData(Value, UnitType.UT_Undefined);
+         BaseUnitType = IFCDataUtil.GetUnitTypeFromData(Value, new ForgeTypeId());
 
-         if (BaseUnitType == UnitType.UT_Undefined)
+         if (BaseUnitType.Empty())
          {
             // Determine it from the attributeName.
             if (string.Compare(attributeName, "LengthValue", true) == 0)
-               BaseUnitType = UnitType.UT_Length;
+               BaseUnitType = SpecTypeId.Length;
             else if (string.Compare(attributeName, "AreaValue", true) == 0)
-               BaseUnitType = UnitType.UT_Area;
+               BaseUnitType = SpecTypeId.Area;
             else if (string.Compare(attributeName, "VolumeValue", true) == 0)
-               BaseUnitType = UnitType.UT_Volume;
+               BaseUnitType = SpecTypeId.Volume;
             else if (string.Compare(attributeName, "CountValue", true) == 0)
-               BaseUnitType = UnitType.UT_Number;
+               BaseUnitType = SpecTypeId.Number;
             else if (string.Compare(attributeName, "WeightValue", true) == 0)
-               BaseUnitType = UnitType.UT_Mass;
+               BaseUnitType = SpecTypeId.Mass;
             else if (string.Compare(attributeName, "TimeValue", true) == 0)
-               BaseUnitType = UnitType.UT_Number;  // No time unit type in Revit.
+               BaseUnitType = SpecTypeId.Number;  // No time unit type in Revit.
             else
             {
                Importer.TheLog.LogWarning(Id, "Can't determine unit type for IfcPhysicalSimpleQuantity of type: " + attributeName, true);
-               BaseUnitType = UnitType.UT_Number;
+               BaseUnitType = SpecTypeId.Number;
             }
          }
 
@@ -164,37 +137,66 @@ namespace Revit.IFC.Import.Data
       /// </summary>
       /// <param name="doc">The document.</param>
       /// <param name="element">The element being created.</param>
-      /// <param name="parameterMap">The parameters of the element.  Cached for performance.</param>
-      /// <param name="propertySetName">The name of the containing property set.</param>
+      /// <param name="category">The element's category.</param>
+      /// <param name="parameterGroupMap">The parameters of the element.  Cached for performance.</param>
+      /// <param name="quantityFullName">The name of the containing quantity set with quantity name.</param>
       /// <param name="createdParameters">The names of the created parameters.</param>
-      public override void Create(Document doc, Element element, IFCParameterSetByGroup parameterGroupMap, string propertySetName, ISet<string> createdParameters)
+      public override void Create(Document doc, Element element, Category category, IFCObjectDefinition objDef, 
+         IFCParameterSetByGroup parameterGroupMap, string quantityFullName, ISet<string> createdParameters,
+         ParametersToSet parametersToSet)
       {
-         double doubleValueToUse = IFCUnit != null ? IFCUnit.Convert(Value.AsDouble()) : Value.AsDouble();
+         double baseValue = 0.0;
+         IFCDataPrimitiveType type = Value.PrimitiveType;
+         switch (type)
+         {
+            case IFCDataPrimitiveType.Double:
+            case IFCDataPrimitiveType.Number:
+               baseValue = Value.AsDouble();
+               break;
+            case IFCDataPrimitiveType.Integer:
+               // This case isn't valid, but could happen when repairing a file
+               Importer.TheLog.LogWarning(Id, "Unexpected integer parameter type, repairing.", false);
+               baseValue = Value.AsInteger();
+               break;
+            default:
+               Importer.TheLog.LogError(Id, "Invalid parameter type: " + type.ToString() + " for IfcPhysicalSimpleQuantity", false);
+               return;
+         }
+
+         double doubleValueToUse = Importer.TheProcessor.ScaleValues ?
+            IFCUnit?.Convert(baseValue) ?? baseValue :
+            baseValue;
 
          Parameter existingParameter = null;
-         string originalParameterName = Name + "(" + propertySetName + ")";
-         string parameterName = originalParameterName;
+         string parameterName = quantityFullName;
 
          if (!parameterGroupMap.TryFindParameter(parameterName, out existingParameter))
          {
             int parameterNameCount = 2;
             while (createdParameters.Contains(parameterName))
             {
-               parameterName = originalParameterName + " " + parameterNameCount;
+               parameterName = quantityFullName + " " + parameterNameCount;
                parameterNameCount++;
             }
             if (parameterNameCount > 2)
-               Importer.TheLog.LogWarning(Id, "Renamed parameter: " + originalParameterName + " to: " + parameterName, false);
+               Importer.TheLog.LogWarning(Id, "Renamed parameter: " + quantityFullName + " to: " + parameterName, false);
 
             if (existingParameter == null)
             {
-               UnitType unitType = UnitType.UT_Undefined;
-               if (IFCUnit != null)
-                  unitType = IFCUnit.UnitType;
-               else
-                  unitType = IFCDataUtil.GetUnitTypeFromData(Value, UnitType.UT_Number);
+               ForgeTypeId specTypeId;
+               ForgeTypeId unitsTypeId = null;
 
-               bool created = IFCPropertySet.AddParameterDouble(doc, element, parameterName, unitType, doubleValueToUse, Id);
+               if (IFCUnit != null)
+               {
+                  specTypeId = IFCUnit.Spec;
+                  unitsTypeId = IFCUnit.Unit;
+               }
+               else
+               {
+                  specTypeId = IFCDataUtil.GetUnitTypeFromData(Value, SpecTypeId.Number);
+               }
+
+               bool created = parametersToSet.AddParameterDouble(doc, element, category, objDef, parameterName, specTypeId, unitsTypeId, doubleValueToUse, Id);
                if (created)
                   createdParameters.Add(parameterName);
 
@@ -206,10 +208,10 @@ namespace Revit.IFC.Import.Data
          switch (existingParameter.StorageType)
          {
             case StorageType.String:
-               existingParameter.Set(doubleValueToUse.ToString());
+               parametersToSet.AddStringParameter(existingParameter, doubleValueToUse.ToString());
                break;
             case StorageType.Double:
-               existingParameter.Set(doubleValueToUse);
+               parametersToSet.AddDoubleParameter(existingParameter, doubleValueToUse);
                break;
             default:
                setValue = false;

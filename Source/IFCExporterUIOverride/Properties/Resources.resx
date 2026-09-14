@@ -135,10 +135,6 @@
   <data name="IFCMVD2x3CV2" xml:space="preserve">
     <value>IFC 2x3 Coordination View 2.0</value>
   </data>
-  <data name="IFCMVDBCA" xml:space="preserve">
-    <value>IFC 2x2 Singapore BCA e-Plan Check</value>
-    <comment>Used in Singapore for model checking by the Building Code Authority</comment>
-  </data>
   <data name="IFCMVDGSA" xml:space="preserve">
     <value>IFC 2x3 GSA Concept Design BIM 2010</value>
     <comment>Used by the United States General Services Administration</comment>
@@ -195,7 +191,7 @@
     <value>Export schedules as property sets</value>
   </data>
   <data name="IncludeIfcSiteElevation" xml:space="preserve">
-    <value>Include IFCSITE elevation in the site local placement origin</value>
+    <value>Include IFCSite elevation in the site local placement origin</value>
   </data>
   <data name="UseCoarseTessellation" xml:space="preserve">
     <value>Use coarse tessellation for some BReps</value>
@@ -279,9 +275,6 @@
     <value>Custom parameter sets</value>
     <comment>User Defined Parameter Sets</comment>
   </data>
-  <data name="IFCExportProcessError" xml:space="preserve">
-    <value>The IFC export process encountered an error for: {0}.</value>
-  </data>
   <data name="LinkInstanceExportCantCreateDoc" xml:space="preserve">
     <value>Could not create a temporary document for exporting the linked instance(s) for ids: {0}</value>
   </data>
@@ -305,6 +298,15 @@
   </data>
   <data name="IFCExport" xml:space="preserve">
     <value>IFC export</value>
+  </data>
+  <data name="IFCExportProcessError" xml:space="preserve">
+    <value>The IFC export process encountered an error for: {0}.</value>
+  </data>
+  <data name="IFCExportProcessGenericError" xml:space="preserve">
+    <value>The IFC export process encountered an error.</value>
+  </data>
+  <data name="IFCExportGenericWarning" xml:space="preserve">
+    <value>IFC Export Warning</value>
   </data>
   <data name="Address" xml:space="preserve">
     <value>Project Address...</value>
@@ -355,7 +357,7 @@
     <value>Country</value>
   </data>
   <data name="CurrentSelectedSetup" xml:space="preserve">
-    <value>Current selected setup:</value>
+    <value>Export setup:</value>
   </data>
   <data name="DeleteOldSetups" xml:space="preserve">
     <value>Delete old IFC export setups</value>
@@ -580,10 +582,13 @@
     <value>General</value>
   </data>
   <data name="ExportRoomsInView" xml:space="preserve">
-    <value>Export rooms in 3D views</value>
+    <value>Export rooms, areas and spaces in 3D views</value>
   </data>
   <data name="UseActiveViewForGeometry" xml:space="preserve">
     <value>Use active view when creating geometry</value>
+  </data>
+  <data name="UseActiveViewForGeometryTooltip" xml:space="preserve">
+    <value>Uses the geometry in the active view to export elements such as cable trays with more detailed geometry</value>
   </data>
   <data name="ExportSpecificSchedules" xml:space="preserve">
     <value>Export only schedules containing IFC, Pset, or Common in the title</value>
@@ -618,9 +623,6 @@
   <data name="SelectOneOrMoreProjects" xml:space="preserve">
     <value>Please select at least one project to export.</value>
   </data>
-  <data name="IFCExportProcessGenericError" xml:space="preserve">
-    <value>The IFC export process encountered an error.</value>
-  </data>
   <data name="Use2DRoomBoundariesForRoomVolume" xml:space="preserve">
     <value>Use 2D room boundaries for room volume</value>
   </data>
@@ -643,7 +645,10 @@
     <value>IFC2x3 COBie 2.4 Design Deliverable View</value>
   </data>
   <data name="IFC4DTV" xml:space="preserve">
-    <value>IFC4 Design Transfer View</value>
+    <value>IFC4 Design Transfer View [Unofficial]</value>
+  </data>
+  <data name="IFC4DTVWarning" xml:space="preserve">
+    <value>The selected export setup is not supported by buildingSMART International. Files created using this setup may not be usable by other software.</value>
   </data>
   <data name="IFC4RV" xml:space="preserve">
     <value>IFC4 Reference View</value>
@@ -709,19 +714,19 @@
     <value>Save selected setup ...</value>
   </data>
   <data name="InternalCoordinates" xml:space="preserve">
-    <value>Internal coordinates</value>
+    <value>Internal Origin</value>
   </data>
   <data name="LoadSetup" xml:space="preserve">
     <value>Import setup ...</value>
   </data>
   <data name="ProjectBasePoint" xml:space="preserve">
-    <value>Project base point</value>
+    <value>Project Base Point</value>
   </data>
   <data name="ProjectOrigin" xml:space="preserve">
-    <value>Project Origin</value>
+    <value>Coordinate Base</value>
   </data>
   <data name="SiteSurveyPoint" xml:space="preserve">
-    <value>Site survey point</value>
+    <value>Survey Point</value>
   </data>
   <data name="BuildingDescription" xml:space="preserve">
     <value>Building description</value>
@@ -766,7 +771,7 @@
     <value>Project phase</value>
   </data>
   <data name="SharedCoordinates" xml:space="preserve">
-    <value>Current shared coordinates</value>
+    <value>Shared Coordinates</value>
   </data>
   <data name="SiteDescription" xml:space="preserve">
     <value>Site description</value>
@@ -791,5 +796,746 @@
   </data>
   <data name="IFC4" xml:space="preserve">
     <value>IFC4 for General Use</value>
+  </data>
+  <data name="UseTypeNameOnlyForIfcType" xml:space="preserve">
+    <value>Use Type name only for IFCType name</value>
+  </data>
+  <data name="UseVisibleRevitNameAsEntityName" xml:space="preserve">
+    <value>Use visible Revit name as the IFCEntity name</value>
+  </data>
+  <data name="ClassificationAltLocation" xml:space="preserve">
+    <value>Location of the documentation (usually URL)</value>
+  </data>
+  <data name="ReservedDeviceName" xml:space="preserve">
+    <value>{0} is a reserved Windows device name. Choose another name and try again.</value>
+  </data>
+  <data name="OffsetDistanceTooLarge" xml:space="preserve">
+    <value>The elements in this model are very far from the origin in this exported file, which may cause display issues in the receiving software. Please consider using the project base point or site survey point as your coodinate basis.</value>
+  </data>
+  <data name="Eastings" xml:space="preserve">
+    <value>Eastings</value>
+  </data>
+  <data name="EPSGCode" xml:space="preserve">
+    <value>EPSG Code</value>
+  </data>
+  <data name="GeodeticDatum" xml:space="preserve">
+    <value>Geodetic Datum</value>
+  </data>
+  <data name="Northings" xml:space="preserve">
+    <value>Northings</value>
+  </data>
+  <data name="ProjectedCRS" xml:space="preserve">
+    <value>Projected Coordinate System Reference</value>
+  </data>
+  <data name="ProjectedCRSDesc" xml:space="preserve">
+    <value>Description</value>
+  </data>
+  <data name="ProjectedCRSName" xml:space="preserve">
+    <value>Name</value>
+  </data>
+  <data name="Reset" xml:space="preserve">
+    <value>Reset</value>
+  </data>
+  <data name="ResetToOriginals" xml:space="preserve">
+    <value>Reset</value>
+  </data>
+  <data name="AngleTrueNorth" xml:space="preserve">
+    <value>Angle from True North</value>
+  </data>
+  <data name="Elevation" xml:space="preserve">
+    <value>Elevation</value>
+  </data>
+  <data name="GeoReference" xml:space="preserve">
+    <value>Geographic Reference</value>
+  </data>
+  <data name="Override" xml:space="preserve">
+    <value>Override</value>
+  </data>
+  <data name="ProjectSite" xml:space="preserve">
+    <value>Project Site</value>
+  </data>
+  <data name="ResetConfigToolTip" xml:space="preserve">
+    <value>Reset configurations back to the original settings</value>
+  </data>
+  <data name="ResetOverrideToolTip" xml:space="preserve">
+    <value>Reset override values</value>
+  </data>
+  <data name="SaveChanges" xml:space="preserve">
+    <value>Save Changes</value>
+  </data>
+  <data name="SaveChangesTooltip" xml:space="preserve">
+    <value>Save changes to the configurations into the document</value>
+  </data>
+  <data name="ProjectInTN" xml:space="preserve">
+    <value>Project Base Point oriented in True North</value>
+  </data>
+  <data name="InternalCoordinatesInTN" xml:space="preserve">
+    <value>Internal Origin oriented in True North</value>
+  </data>
+  <data name="ER_ArchitectureShort" xml:space="preserve">
+    <value>Architecture</value>
+  </data>
+  <data name="ER_BuildingServiceShort" xml:space="preserve">
+    <value>BuildingService</value>
+  </data>
+  <data name="ER_StructuralShort" xml:space="preserve">
+    <value>Structural</value>
+  </data>
+  <data name="IFCEntitySelection" xml:space="preserve">
+    <value>IFC Entity Selection</value>
+  </data>
+  <data name="ExcludeEntitySelection" xml:space="preserve">
+    <value>Entities to Export ...</value>
+  </data>
+  <data name="IFCSchemaVersion" xml:space="preserve">
+    <value>IFC Schema version</value>
+  </data>
+  <data name="PredefinedTypeSelection" xml:space="preserve">
+    <value>PredefinedType selection</value>
+  </data>
+  <data name="SelectSingleElement" xml:space="preserve">
+    <value>Select Export As IFC Entity</value>
+  </data>
+  <data name="DeleteOldConfiguration" xml:space="preserve">
+    <value>Delete old configuration</value>
+  </data>
+  <data name="SaveConfigurationChanges" xml:space="preserve">
+    <value>Save changes to IFC export configuration</value>
+  </data>
+  <data name="Error" xml:space="preserve">
+    <value>Error</value>
+  </data>
+  <data name="MultipleAssignments" xml:space="preserve">
+    <value>Multiple assignments found in the selected objects.</value>
+  </data>
+  <data name="Search" xml:space="preserve">
+    <value>Search</value>
+  </data>
+  <data name="CollapseAll" xml:space="preserve">
+    <value>Collapse All</value>
+  </data>
+  <data name="ExpandAll" xml:space="preserve">
+    <value>Expand All</value>
+  </data>
+  <data name="HelpAssignIfcEntity" xml:space="preserve">
+    <value>How do I assign IFC Entity and Predefined Type?</value>
+  </data>
+  <data name="HelpSelectEntityForExport" xml:space="preserve">
+    <value>How do IFC Entity selections affect export?</value>
+  </data>
+  <data name="NoPredefinedType" xml:space="preserve">
+    <value>Entity does not have predefined type</value>
+  </data>
+  <data name="ShowAll" xml:space="preserve">
+    <value>All</value>
+  </data>
+  <data name="ShowChecked" xml:space="preserve">
+    <value>Checked entities</value>
+  </data>
+  <data name="ShowUnchecked" xml:space="preserve">
+    <value>Un-checked entities</value>
+  </data>
+  <data name="Show" xml:space="preserve">
+    <value>Show</value>
+  </data>
+  <data name="LinkedFiles" xml:space="preserve">
+    <value>Linked files</value>
+  </data>
+  <data name="LinkedFilesDontExport" xml:space="preserve">
+    <value>Do not export</value>
+  </data>
+  <data name="LinkedFilesSameProject" xml:space="preserve">
+    <value>Export in same IFCProject</value>
+  </data>
+  <data name="LinkedFilesSameSite" xml:space="preserve">
+    <value>Export in same IFCSite</value>
+  </data>
+  <data name="LinkedFilesSeparate" xml:space="preserve">
+    <value>Export as separate IFCs</value>
+  </data>
+  <data name="IFCVersion4x3" xml:space="preserve">
+    <value>IFC4x3</value>
+  </data>
+  <data name="ExportMaterialPropertySets" xml:space="preserve">
+    <value>Export material property sets</value>
+  </data>
+  <data name="IFCSG" xml:space="preserve">
+    <value>IFC+SG Regulatory Requirements View</value>
+  </data>
+  <data name="ExportHostsAsSingleEntity" xml:space="preserve">
+    <value>Always export faceted floors and roofs as a single IFC entity</value>
+  </data>
+  <data name="AddressInformationTooltip" xml:space="preserve">
+    <value>Entering a value here will reset the Purpose field to "USERDEFINED".</value>
+  </data>
+  <data name="ExportHostAsSingleEntityTooltip" xml:space="preserve">
+    <value>If this option is checked, don't create a container for floors and roofs unless exporting parts.</value>
+  </data>
+  <data name="TriangulationOnlyTooltip" xml:space="preserve">
+    <value>Use this option if any tessellated geometry should remain as triangulated faces, or if the export performance is affected.</value>
+  </data>
+  <data name="UseTypeNameOnlyTooltip" xml:space="preserve">
+    <value>Use this option to export the IFC type name as the Revit type name without the family name.</value>
+  </data>
+  <data name="UseVisibleRevitNameTooltip" xml:space="preserve">
+    <value>Use this option to export IFC entity name as the visible Revit name.</value>
+  </data>
+  <data name="ExportMappingTemplates" xml:space="preserve">
+    <value>Export Mapping Templates</value>
+  </data>
+  <data name="IFCClass" xml:space="preserve">
+    <value>IFC Class</value>
+  </data>
+  <data name="ManageIFCExportMappingSettings" xml:space="preserve">
+    <value>Manage IFC Export Mapping Settings</value>
+  </data>
+  <data name="PredefinedType" xml:space="preserve">
+    <value>Predefined Type</value>
+  </data>
+  <data name="RevitCategory" xml:space="preserve">
+    <value>Revit Category</value>
+  </data>
+  <data name="TemplateSettings" xml:space="preserve">
+    <value>Template Settings</value>
+  </data>
+  <data name="UserDefinedType" xml:space="preserve">
+    <value>User-defined Type</value>
+  </data>
+  <data name="FacilityBridge" xml:space="preserve">
+    <value>Bridge (IfcBridge)</value>
+  </data>
+  <data name="FacilityBuilding" xml:space="preserve">
+    <value>Building (IfcBuilding)</value>
+  </data>
+  <data name="FacilityMarineFacility" xml:space="preserve">
+    <value>Marine Facility (IfcMarineFacility)</value>
+  </data>
+  <data name="FacilityRailway" xml:space="preserve">
+    <value>Railway (IfcRailway)</value>
+  </data>
+  <data name="FacilityRoad" xml:space="preserve">
+    <value>Road (IfcRoad)</value>
+  </data>
+  <data name="FacilityType" xml:space="preserve">
+    <value>Facility Type</value>
+  </data>
+  <data name="BridgeArched" xml:space="preserve">
+    <value>Arched (ARCHED)</value>
+  </data>
+  <data name="BridgeCableStayed" xml:space="preserve">
+    <value>Cable Stayed (CABLESTAYED)</value>
+  </data>
+  <data name="BridgeCantilever" xml:space="preserve">
+    <value>Cantilever (CANTILEVER)</value>
+  </data>
+  <data name="BridgeCulvert" xml:space="preserve">
+    <value>Culvert (CULVERT)</value>
+  </data>
+  <data name="BridgeFramework" xml:space="preserve">
+    <value>Framework (FRAMEWORK)</value>
+  </data>
+  <data name="BridgeGirder" xml:space="preserve">
+    <value>Girder (GIRDER)</value>
+  </data>
+  <data name="BridgeSuspension" xml:space="preserve">
+    <value>Suspension (SUSPENSION)</value>
+  </data>
+  <data name="BridgeTruss" xml:space="preserve">
+    <value>Truss (TRUSS)</value>
+  </data>
+  <data name="FacilityPredefinedType" xml:space="preserve">
+    <value>Facility Predefined Type</value>
+  </data>
+  <data name="MarineFacilityBarrierBeach" xml:space="preserve">
+    <value>Barrier Beach (BARRIERBEACH)</value>
+  </data>
+  <data name="MarineFacilityBreakwater" xml:space="preserve">
+    <value>Breakwater (BREAKWATER)</value>
+  </data>
+  <data name="MarineFacilityCanal" xml:space="preserve">
+    <value>Canal (CANAL)</value>
+  </data>
+  <data name="MarineFacilityDryDock" xml:space="preserve">
+    <value>Dry Dock (DRYDOCK)</value>
+  </data>
+  <data name="MarineFacilityFloatingDock" xml:space="preserve">
+    <value>Floating Dock (FLOATINGDOCK)</value>
+  </data>
+  <data name="MarineFacilityHydrolift" xml:space="preserve">
+    <value>Hydrolift (HYDROLIFT)</value>
+  </data>
+  <data name="MarineFacilityJetty" xml:space="preserve">
+    <value>Jetty (JETTY)</value>
+  </data>
+  <data name="MarineFacilityLaunchRecovery" xml:space="preserve">
+    <value>Launch Recovery Facility (LAUNCHRECOVERYFACILITY)</value>
+  </data>
+  <data name="MarineFacilityMarineDefense" xml:space="preserve">
+    <value>Marine Defense (MARINEDEFENCE)</value>
+  </data>
+  <data name="MarineFacilityNavigationalChannel" xml:space="preserve">
+    <value>Navigational Channel (NAVIGATIONALCHANNEL)</value>
+  </data>
+  <data name="MarineFacilityPort" xml:space="preserve">
+    <value>Port (PORT)</value>
+  </data>
+  <data name="MarineFacilityQuay" xml:space="preserve">
+    <value>Quay (QUAY)</value>
+  </data>
+  <data name="MarineFacilityRevetment" xml:space="preserve">
+    <value>Revetment (REVETMENT)</value>
+  </data>
+  <data name="MarineFacilityShipLift" xml:space="preserve">
+    <value>Shiplift (SHIPLIFT)</value>
+  </data>
+  <data name="MarineFacilityShipLock" xml:space="preserve">
+    <value>Ship Lock (SHIPLOCK)</value>
+  </data>
+  <data name="MarineFacilityShipyard" xml:space="preserve">
+    <value>Shipyard (SHIPYARD)</value>
+  </data>
+  <data name="MarineFacilitySlipway" xml:space="preserve">
+    <value>Slipway (SLIPWAY)</value>
+  </data>
+  <data name="MarineFacilityWaterway" xml:space="preserve">
+    <value>Waterway (WATERWAY)</value>
+  </data>
+  <data name="MarineFacilityWaterwayShiplift" xml:space="preserve">
+    <value>Waterway Shiplift (WATERWAYSHIPLIFT)</value>
+  </data>
+  <data name="NotDefined" xml:space="preserve">
+    <value>Not Defined</value>
+  </data>
+  <data name="ModifyIFCCategoryMapping" xml:space="preserve">
+    <value>Modify IFC category mapping template</value>
+  </data>
+  <data name="OwnerHistoryLastModified" xml:space="preserve">
+    <value>Set "Last Modified" user to the Author in Project Information</value>
+  </data>
+  <data name="OwnerHistoryLastModifiedTooltip" xml:space="preserve">
+    <value>Populate the IfcOwnerHistory "LastModified" attribute with the Author information set in Project Information</value>
+  </data>
+  <data name="CategoryMapping" xml:space="preserve">
+    <value>Category Mapping</value>
+  </data>
+  <data name="Ellipses" xml:space="preserve">
+    <value>...</value>
+  </data>
+  <data name="ByCategory" xml:space="preserve">
+    <value>&lt;By Category&gt;</value>
+  </data>
+  <data name="ByCategoryNoBrackets" xml:space="preserve">
+    <value>By Category</value>
+  </data>
+  <data name="ExportCategoryMappingDialogName" xml:space="preserve">
+    <value>Export IFC Category Mapping</value>
+  </data>
+  <data name="ExportCategoryMappingFilter" xml:space="preserve">
+    <value>IFC Category Mapping Files (*.txt)|*.txt</value>
+  </data>
+  <data name="CategoryMappingHelp" xml:space="preserve">
+    <value>How do I modify IFC export mapping settings?</value>
+  </data>
+  <data name="ImportCategoryMappingDialogName" xml:space="preserve">
+    <value>Import IFC Category Mapping</value>
+  </data>
+  <data name="IFCNewTemplate" xml:space="preserve">
+    <value>New Settings Template</value>
+  </data>
+  <data name="Save" xml:space="preserve">
+    <value>Save</value>
+  </data>
+  <data name="TemplateName" xml:space="preserve">
+    <value>Template name</value>
+  </data>
+  <data name="IFCRenameTemplate" xml:space="preserve">
+    <value>Rename</value>
+  </data>
+  <data name="RenamePreviousName" xml:space="preserve">
+    <value>Previous</value>
+  </data>
+  <data name="RenameNewName" xml:space="preserve">
+    <value>New</value>
+  </data>
+  <data name="IFCCopyTemplate" xml:space="preserve">
+    <value>Copy</value>
+  </data>
+  <data name="IFCDeleteTemplate" xml:space="preserve">
+    <value>Delete</value>
+  </data>
+  <data name="ResetAll" xml:space="preserve">
+    <value>Reset all</value>
+  </data>
+  <data name="ResetToDefault" xml:space="preserve">
+    <value>Reset table to Revit default settings</value>
+  </data>
+  <data name="IFCDeleteTemplateMessage" xml:space="preserve">
+    <value>Delete {0} ?</value>
+  </data>
+  <data name="ResetRowToDefault" xml:space="preserve">
+    <value>Reset row to Revit default settings</value>
+  </data>
+  <data name="TemplateNameTooltip" xml:space="preserve">
+    <value>Enter unique template name.</value>
+  </data>
+  <data name="CopyTemplateTooltip" xml:space="preserve">
+    <value>Duplicate template</value>
+  </data>
+  <data name="CreateNewTemplateTooltip" xml:space="preserve">
+    <value>Create new template</value>
+  </data>
+  <data name="DeleteTemplateTooltip" xml:space="preserve">
+    <value>Delete template</value>
+  </data>
+  <data name="ExportTemplateTooltip" xml:space="preserve">
+    <value>Export template</value>
+  </data>
+  <data name="ImportTemplateTooltip" xml:space="preserve">
+    <value>Import template</value>
+  </data>
+  <data name="MoreTooltip" xml:space="preserve">
+    <value>More</value>
+  </data>
+  <data name="RenameTemplateTooltip" xml:space="preserve">
+    <value>Rename template</value>
+  </data>
+  <data name="SaveTemplateTooltip" xml:space="preserve">
+    <value>Save changes to template</value>
+  </data>
+  <data name="SelectedCheckboxTooltip" xml:space="preserve">
+    <value>Selected categories will be exported</value>
+  </data>
+  <data name="IFCInvalidCategoryMappingFile" xml:space="preserve">
+    <value>This is not a valid category mapping file.</value>
+  </data>
+  <data name="IFCExportProcessNoWriteAccess" xml:space="preserve">
+    <value>Unable to write to {0} because it is read-only or owned by someone else.</value>
+  </data>
+  <data name="ExportCeilingGrids" xml:space="preserve">
+    <value>Export Ceiling Grids</value>
+  </data>
+  <data name="ExportBarsInUniformRebarSetsAsSeparateIFCEntities" xml:space="preserve">
+    <value>Export bars in uniform rebar sets as separate IFC entities</value>
+  </data>
+  <data name="ExportBarsInUniformRebarSetsAsSeparateIFCEntitiesToopTip" xml:space="preserve">
+    <value>Use this option to export bars in uniform rebar sets as separate IFC entities.</value>
+  </data>
+  <data name="ParameterMapping" xml:space="preserve">
+    <value>Parameter Mapping</value>
+  </data>
+  <data name="PropertySetups" xml:space="preserve">
+    <value>Property Setups</value>
+  </data>
+  <data name="BaseQuantities" xml:space="preserve">
+    <value>Base Quantities</value>
+  </data>
+  <data name="IFCCommonPropertySets" xml:space="preserve">
+    <value>IFC Common Property Sets</value>
+  </data>
+  <data name="MaterialPropertySets" xml:space="preserve">
+    <value>Material Property Sets</value>
+  </data>
+  <data name="ParameterMappingHelp" xml:space="preserve">
+    <value>How do I modify IFC export parameter mapping settings?</value>
+  </data>
+  <data name="RevitPropertySets" xml:space="preserve">
+    <value>Revit Property Sets</value>
+  </data>
+  <data name="Schedules" xml:space="preserve">
+    <value>Schedules</value>
+  </data>
+  <data name="ManageDefaultPropertySets" xml:space="preserve">
+    <value>Manage Default Property Sets</value>
+  </data>
+  <data name="UserDefinedPropertyMapping" xml:space="preserve">
+    <value>User-defined Property Mapping</value>
+  </data>
+  <data name="Filter" xml:space="preserve">
+    <value>Filter</value>
+  </data>
+  <data name="IFCSchema" xml:space="preserve">
+    <value>IFC Schema</value>
+  </data>
+  <data name="CopyPropertySetTooltip" xml:space="preserve">
+    <value>Duplicate property set</value>
+  </data>
+  <data name="CreateNewPropertySetTooltip" xml:space="preserve">
+    <value>Create new property set</value>
+  </data>
+  <data name="DeletePropertySetTooltip" xml:space="preserve">
+    <value>Delete property set</value>
+  </data>
+  <data name="ExportIFCPropertyMappingDialogName" xml:space="preserve">
+    <value>Export IFC Property Mapping Setup</value>
+  </data>
+  <data name="ExportPropertySetsTooltip" xml:space="preserve">
+    <value>Export property sets</value>
+  </data>
+  <data name="ApplicableEntities" xml:space="preserve">
+    <value>Applicable Entities</value>
+  </data>
+  <data name="IFCManageUserDefinedPropertySeets" xml:space="preserve">
+    <value>Manage User-defined Property Sets</value>
+  </data>
+  <data name="IFCProperty" xml:space="preserve">
+    <value>IFC Property</value>
+  </data>
+  <data name="IFCPropertyMappingSetupsFilter" xml:space="preserve">
+    <value>IFC Property Mapping Setups (*.txt)|*.txt</value>
+  </data>
+  <data name="ImportIFCPropertyMappingDialogName" xml:space="preserve">
+    <value>Import IFC Property Mapping Setup</value>
+  </data>
+  <data name="ImportPropertySetsTooltip" xml:space="preserve">
+    <value>Import property sets</value>
+  </data>
+  <data name="InstanceOrType" xml:space="preserve">
+    <value>Instance/Type</value>
+  </data>
+  <data name="PropertySetDetails" xml:space="preserve">
+    <value>Property Set Details</value>
+  </data>
+  <data name="RevitProperty" xml:space="preserve">
+    <value>Revit Property</value>
+  </data>
+  <data name="UserDefinedHelp" xml:space="preserve">
+    <value>How do I Manage User-Defined Property Sets?</value>
+  </data>
+  <data name="Edit" xml:space="preserve">
+    <value>Edit</value>
+  </data>
+  <data name="IFCSelectEntities" xml:space="preserve">
+    <value>Select Entities</value>
+  </data>
+  <data name="SelectedPropertiesCheckboxTooltip" xml:space="preserve">
+    <value>Selected properties will be exported</value>
+  </data>
+  <data name="PropertySet" xml:space="preserve">
+    <value>Property Set</value>
+  </data>
+  <data name="Parameter" xml:space="preserve">
+    <value>Parameter</value>
+  </data>
+  <data name="Apply" xml:space="preserve">
+    <value>Apply</value>
+  </data>
+  <data name="Remove" xml:space="preserve">
+    <value>Remove</value>
+  </data>
+  <data name="Value" xml:space="preserve">
+    <value>Value</value>
+  </data>
+  <data name="UseTypePropertiesInInstacePSets" xml:space="preserve">
+    <value>Allow use of type properties in instance property sets</value>
+  </data>
+  <data name="IdentityMaterialParams" xml:space="preserve">
+    <value>Identity</value>
+  </data>
+  <data name="PhysicalMaterialParams" xml:space="preserve">
+    <value>Physical</value>
+  </data>
+  <data name="ThermalMaterialParams" xml:space="preserve">
+    <value>Thermal</value>
+  </data>
+  <data name="TypeToFilter" xml:space="preserve">
+    <value>Type to filter</value>
+  </data>
+  <data name="Category" xml:space="preserve">
+    <value>Category</value>
+  </data>
+  <data name="Properties" xml:space="preserve">
+    <value>Properties</value>
+  </data>
+  <data name="SelectCategory" xml:space="preserve">
+    <value>Select a category to filter the properties list.</value>
+  </data>
+  <data name="ParameterMappingSettings" xml:space="preserve">
+    <value>Parameter Mapping Settings</value>
+  </data>
+  <data name="ModifyIFCPropertyMapping" xml:space="preserve">
+    <value>Modify IFC property mapping template</value>
+  </data>
+  <data name="IFCCopyPropertyTemplate" xml:space="preserve">
+    <value>Copy Property Template</value>
+  </data>
+  <data name="IFC4x3DTV" xml:space="preserve">
+    <value>IFC4.3 Design Transfer View [Unofficial]</value>
+  </data>
+  <data name="IFC4x3RV" xml:space="preserve">
+    <value>IFC4.3 Reference View</value>
+  </data>
+  <data name="IFCExportWarningCannotAddPropertyToReservedPropertySet" xml:space="preserve">
+    <value>Cannot add new Property {0} to Reserved Property Set {1}.</value>
+  </data>
+  <data name="IFCExportWarningCannotAddUserDefinedPropertySet" xml:space="preserve">
+    <value>User-defined Property Set {0} contains reserved string {1}.  Extending property set name to {2}.</value>
+  </data>
+  <data name="IFCExportWarningCannotModifyPropertySetProperty" xml:space="preserve">
+    <value>Cannot modify Property {0} in Reserved Property Set {1}.</value>
+  </data>
+  <data name="ExportPropertyMappingFilter" xml:space="preserve">
+    <value>IFC Property Mapping Files (*.txt)|*.txt</value>
+  </data>
+  <data name="ImportPropertyMappingDialogName" xml:space="preserve">
+    <value>Import IFC Property Mapping</value>
+  </data>
+  <data name="IFCInvalidPropertyMappingFile" xml:space="preserve">
+    <value>Attempting to load an invalid template.</value>
+  </data>
+  <data name="ExportPropertyMappingDialogName" xml:space="preserve">
+    <value>Export IFC Property Mapping</value>
+  </data>
+  <data name="TemplateSelections" xml:space="preserve">
+    <value>selections</value>
+  </data>
+  <data name="SelectedPropertySetCheckboxTooltip" xml:space="preserve">
+    <value>Selected property set will be exported</value>
+  </data>
+  <data name="String_Revit_CurrentLicenseStatus_MainContent" xml:space="preserve">
+    <value>Viewer mode allows all functionality of Revit, except the following: save or save as in all cases; exporting or publishing modified projects; exporting or publishing any projects to a format containing model data that can be modified; or printing projects after changes are made.</value>
+  </data>
+  <data name="String_Revit_CurrentLicenseStatusTitle" xml:space="preserve">
+    <value>Revit Current License Status</value>
+  </data>
+  <data name="String_Revit_CurrentLicenseStatus_MainInstruction" xml:space="preserve">
+    <value>{0}
+Build: {1}
+
+{0} is in viewer mode.</value>
+  </data>
+  <data name="DefaultMapping" xml:space="preserve">
+    <value>&lt;default&gt;</value>
+  </data>
+  <data name="RenamePropertySetTooltip" xml:space="preserve">
+    <value>Rename property set</value>
+  </data>
+  <data name="DataType" xml:space="preserve">
+    <value>Data Type</value>
+  </data>
+  <data name="SelectApplicableEntities" xml:space="preserve">
+    <value>Select applicable entities</value>
+  </data>
+  <data name="ResetApplicableEntities" xml:space="preserve">
+    <value>Reset applicable entities</value>
+  </data>
+  <data name="UserDefinedPropertySets" xml:space="preserve">
+    <value>User Defined Property Sets</value>
+  </data>
+  <data name="IFCNewPropertySet" xml:space="preserve">
+    <value>New Property Set</value>
+  </data>
+  <data name="AddRow" xml:space="preserve">
+    <value>Add Row</value>
+  </data>
+  <data name="SavePropertySetTooltip" xml:space="preserve">
+    <value>Save changes to property set.</value>
+  </data>
+  <data name="PropertySetNameTooltip" xml:space="preserve">
+    <value>Enter unique property set name.</value>
+  </data>
+  <data name="PropertySetName" xml:space="preserve">
+    <value>Property Set name</value>
+  </data>
+  <data name="FilterAllProperties" xml:space="preserve">
+    <value>All properties</value>
+  </data>
+  <data name="FilterInstanceProperties" xml:space="preserve">
+    <value>Instance properties</value>
+  </data>
+  <data name="FilterTypeProperties" xml:space="preserve">
+    <value>Type properties</value>
+  </data>
+  <data name="IFCCreateNewTemplate" xml:space="preserve">
+    <value>Create New Template</value>
+  </data>
+  <data name="IFCCreateNewPropertySet" xml:space="preserve">
+    <value>Create New Property Set</value>
+  </data>
+  <data name="IFCCreateDuplicate" xml:space="preserve">
+    <value>Create duplicate</value>
+  </data>
+  <data name="NewTemplateDefaultName" xml:space="preserve">
+    <value>New Template</value>
+  </data>
+  <data name="RemoveRow" xml:space="preserve">
+    <value>Remove Row</value>
+  </data>
+  <data name="PropertyMapping" xml:space="preserve">
+    <value>Property Mapping</value>
+  </data>
+  <data name="AddPropertySet" xml:space="preserve">
+    <value>Add property set</value>
+  </data>
+  <data name="ImportIFCUserDefinedMappingDialogName" xml:space="preserve">
+    <value>Import IFC User-defined Property Sets</value>
+  </data>
+  <data name="ExportIFCUserDefinedMappingDialogName" xml:space="preserve">
+    <value>Export IFC User - defined Property Sets</value>
+  </data>
+  <data name="IFCUserDefinedPropertySetsFilter" xml:space="preserve">
+    <value>IFC User-defined property sets files (*.txt)|*.txt</value>
+  </data>
+  <data name="QuantitySet" xml:space="preserve">
+    <value>Quantity Set</value>
+  </data>
+  <data name="IFCAttributes" xml:space="preserve">
+    <value>IFC Attributes</value>
+  </data>
+  <data name="DeprecatedMark" xml:space="preserve">
+    <value>Deprecated</value>
+  </data>
+  <data name="PropertyType" xml:space="preserve">
+    <value>Property Type</value>
+  </data>
+  <data name="DefinedDataType" xml:space="preserve">
+    <value>Defined Data Type</value>
+  </data>
+  <data name="ReservedPropertySetTooltip" xml:space="preserve">
+    <value>Property set names cannot start with any uppercase or lowercase variation of 'pset'.</value>
+  </data>
+  <data name="IFCNotificationMessageBox" xml:space="preserve">
+    <value>Notification</value>
+  </data>
+  <data name="IFCDefaultSetup" xml:space="preserve">
+    <value>&lt;Default&gt;</value>
+  </data>
+  <data name="IFCInvalidUserDefinedMappingFile" xml:space="preserve">
+    <value>This is not a valid property mapping file.</value>
+  </data>
+  <data name="PropertySetInvalidNameTooltip" xml:space="preserve">
+    <value>Enter valid property set name.</value>
+  </data>
+  <data name="TemplateNameInvalidTooltip" xml:space="preserve">
+    <value>Enter valid template name.</value>
+  </data>
+  <data name="EmptyStatePropertySet" xml:space="preserve">
+    <value>Select a property set from one of the setups to choose mapping settings.</value>
+  </data>
+  <data name="EmptyStateSchedulePsets" xml:space="preserve">
+    <value>Add one or more schedules to use this option.</value>
+  </data>
+  <data name="EmptyStateScheduleInfo" xml:space="preserve">
+    <value>There are no schedules in this project.</value>
+  </data>
+  <data name="EmptyStateMaterialInfo" xml:space="preserve">
+    <value>There are no materials in this project.</value>
+  </data>
+  <data name="EmptyStateMaterialPsets" xml:space="preserve">
+    <value>Add one or more materials to use this option.</value>
+  </data>
+  <data name="FilterByCategory" xml:space="preserve">
+    <value>Filter by category</value>
+  </data>
+  <data name="DefaultCategoryFilterTxt" xml:space="preserve">
+    <value>Select</value>
+  </data>
+  <data name="FilterBuiltinProperties" xml:space="preserve">
+    <value>Built-in properties</value>
+  </data>
+  <data name="StructuralMaterialParams" xml:space="preserve">
+    <value>Structural</value>
+  </data>
+  <data name="FilterExtendedProperties" xml:space="preserve">
+    <value>Extended properties</value>
   </data>
 </root>

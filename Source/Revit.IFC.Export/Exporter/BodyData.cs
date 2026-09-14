@@ -19,8 +19,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
 using Revit.IFC.Export.Utility;
@@ -67,39 +65,44 @@ namespace Revit.IFC.Export.Exporter
    }
 
    /// <summary>
-   /// The class contains output information from ExportBody
+   /// This class contains output information from the ExportBody functions.
    /// </summary>
    public class BodyData
    {
       /// <summary>
-      /// The representation handle.
+      /// The created shape representation handle.
       /// </summary>
-      private IFCAnyHandle m_RepresentationHnd = null;
+      public IFCAnyHandle RepresentationHnd { get; set; } = null;
 
       /// <summary>
-      /// The representation type.
+      /// The representation type of the created shape representation handle.
       /// </summary>
-      private ShapeRepresentationType m_ShapeRepresentationType = ShapeRepresentationType.Undefined;
+      public ShapeRepresentationType ShapeRepresentationType { get; set; } = ShapeRepresentationType.Undefined;
 
       /// <summary>
-      /// The offset transform.
+      /// The new offset transform, if the local placement was shifted to closer to the exported geometry location.
       /// </summary>
-      private Transform m_OffsetTransform = null;
+      public Transform OffsetTransform { get; set; } = null;
 
       /// <summary>
-      /// The exported material Ids
+      /// Material Ids in a list to maintain its order and allows duplicate item (similar to MaterialIds)
       /// </summary>
-      private HashSet<ElementId> m_MaterialIds = new HashSet<ElementId>();
+      public IList<ElementId> MaterialIds { get; set; } = new List<ElementId>();
+
+      /// <summary>
+      /// Set of pair(s) of (Sub)Category name and the MaterialId of geometry object, which is part of a family
+      /// </summary>
+      public HashSet<Tuple<MaterialConstituentInfo, IFCAnyHandle>> RepresentationItemInfo { get; private set; } = new HashSet<Tuple<MaterialConstituentInfo, IFCAnyHandle>>();
 
       /// <summary>
       /// A handle for the Footprint representation
       /// </summary>
-      private FootPrintInfo m_FootprintInfo = null;
+      public FootPrintInfo FootprintInfo { get; set; } = null;
 
       /// <summary>
       /// A Dictionary for Material Profile
       /// </summary>
-      private MaterialAndProfile m_MaterialAndProfile = null;
+      public MaterialAndProfile MaterialAndProfile { get; set; } = new MaterialAndProfile();
 
       /// <summary>
       /// Constructs a default BodyData object.
@@ -109,109 +112,91 @@ namespace Revit.IFC.Export.Exporter
       /// <summary>
       /// Constructs a BodyData object.
       /// </summary>
-      /// <param name="representationHnd">
-      /// The representation handle.
-      /// </param>
-      /// <param name="offsetTransform">
-      /// The offset transform.
-      /// </param>
-      /// <param name="materialIds">
-      /// The material ids.
-      /// </param>
+      /// <param name="representationHnd">The representation handle.</param>
+      /// <param name="offsetTransform">The offset transform.</param>
+      /// <param name="materialIds">The material ids.</param>
       public BodyData(IFCAnyHandle representationHnd, Transform offsetTransform, HashSet<ElementId> materialIds)
       {
-         this.m_RepresentationHnd = representationHnd;
+         RepresentationHnd = representationHnd;
          if (offsetTransform != null)
-            this.m_OffsetTransform = offsetTransform;
+            OffsetTransform = offsetTransform;
          if (materialIds != null)
-            this.m_MaterialIds = materialIds;
+         {
+            MaterialIds = new List<ElementId>(materialIds);
+         }
       }
 
       /// <summary>
       /// Copies a BodyData object.
       /// </summary>
-      /// <param name="representationHnd">
-      /// The representation handle.
-      /// </param>
-      /// <param name="offsetTransform">
-      /// The offset transform.
-      /// </param>
-      /// <param name="materialIds">
-      /// The material ids.
-      /// </param>
+      /// <param name="representationHnd">The representation handle.</param>
+      /// <param name="offsetTransform">The offset transform.</param>
+      /// <param name="materialIds">The material ids.</param>
       public BodyData(BodyData bodyData)
       {
-         this.m_RepresentationHnd = bodyData.RepresentationHnd;
-         this.m_ShapeRepresentationType = bodyData.m_ShapeRepresentationType;
-         this.m_OffsetTransform = bodyData.OffsetTransform;
-         this.m_MaterialIds = bodyData.MaterialIds;
-      }
-
-      /// <summary>
-      /// The representation handle.
-      /// </summary>
-      public IFCAnyHandle RepresentationHnd
-      {
-         get { return m_RepresentationHnd; }
-         set { m_RepresentationHnd = value; }
-      }
-
-      /// <summary>
-      /// The representation type.
-      /// </summary>
-      public ShapeRepresentationType ShapeRepresentationType
-      {
-         get { return m_ShapeRepresentationType; }
-         set { m_ShapeRepresentationType = value; }
-      }
-
-      /// <summary>
-      /// The offset transform.
-      /// </summary>
-      public Transform OffsetTransform
-      {
-         get { return m_OffsetTransform; }
-         set { m_OffsetTransform = value; }
-      }
-
-      /// <summary>
-      /// The associated material ids.
-      /// </summary>
-      public HashSet<ElementId> MaterialIds
-      {
-         get { return m_MaterialIds; }
-         set { m_MaterialIds = value; }
+         RepresentationHnd = bodyData.RepresentationHnd;
+         ShapeRepresentationType = bodyData.ShapeRepresentationType;
+         OffsetTransform = bodyData.OffsetTransform;
+         MaterialIds = bodyData.MaterialIds;
+         RepresentationItemInfo = bodyData.RepresentationItemInfo;
       }
 
       /// <summary>
       /// Add a material id to the set of material ids.
       /// </summary>
-      /// <param name="matId">The new material</param>
+      /// <param name="matId">The new material id.</param>
       public void AddMaterial(ElementId matId)
       {
          MaterialIds.Add(matId);
       }
 
       /// <summary>
-      /// Footprint Handle
       /// </summary>
-      public FootPrintInfo FootprintInfo
+      /// <param name="materialId">The material id</param>
+      public void AddRepresentationItemInfo(Document document, GraphicsStyle style, ElementId materialId,
+         IFCAnyHandle repItem)
       {
-         get { return m_FootprintInfo; }
-         set { m_FootprintInfo = value; }
+         // Set with the proper category name if any
+         string catName = style?.GraphicsStyleCategory?.Name;         
+
+         if (catName == null)
+         {
+            Material material = document.GetElement(materialId) as Material;
+            catName = (material != null) ? NamingUtil.GetMaterialName(material) : "<Unnamed>";    // Default name to the Material name if not null or <Unnamed>
+         }
+
+         RepresentationItemInfo.Add(Tuple.Create(new MaterialConstituentInfo(catName, materialId), repItem));
+         AddMaterial(materialId);
       }
 
+      /// <summary>
+      /// Material and Profile information for IfcMaterialProfile
+      /// </summary>
       public MaterialAndProfile materialAndProfile
       {
          get
          {
-            if (m_MaterialAndProfile == null)
+            if (MaterialAndProfile == null)
             {
-               m_MaterialAndProfile = new MaterialAndProfile();
+               MaterialAndProfile = new MaterialAndProfile();
             }
-            return m_MaterialAndProfile;
+            return MaterialAndProfile;
          }
-         set { m_MaterialAndProfile = value; }
+         set { MaterialAndProfile = value; }
+      }
+
+      /// <summary>
+      /// Static function to create a new copy of BodyData
+      /// </summary>
+      /// <param name="bodyDataIn">the input BodyData</param>
+      /// <param name="resetMaterials">indicates whether we want to clear the MaterialIds </param>
+      /// <returns>the new copy of BodyData</returns>
+      public static BodyData Create(BodyData bodyDataIn, bool resetMaterials)
+      {
+         BodyData retBodyData = new BodyData(bodyDataIn);   // create a new copy of bodyDataIn
+         if (resetMaterials)
+            retBodyData.MaterialIds.Clear();
+         return retBodyData;
       }
    }
 }

@@ -26,6 +26,7 @@ using Autodesk.Revit.DB.IFC;
 using Revit.IFC.Export.Utility;
 using Revit.IFC.Export.Toolkit;
 using Revit.IFC.Common.Utility;
+using Revit.IFC.Common.Enums;
 
 namespace Revit.IFC.Export.Exporter
 {
@@ -37,20 +38,13 @@ namespace Revit.IFC.Export.Exporter
       /// <summary>
       /// Exports text note elements.
       /// </summary>
-      /// <param name="exporterIFC">
-      /// The ExporterIFC object.
-      /// </param>
-      /// <param name="textNote">
-      /// The text note element.
-      /// </param>
-      /// <param name="productWrapper">
-      /// The ProductWrapper.
-      /// </param>
+      /// <param name="exporterIFC">The ExporterIFC object.</param>
+      /// <param name="textNote">The text note element.</param>
+      /// <param name="productWrapper">The ProductWrapper.</param>
       public static void Export(ExporterIFC exporterIFC, TextNote textNote, ProductWrapper productWrapper)
       {
          // Check the intended IFC entity or type name is in the exclude list specified in the UI
-         string predefinedType = null;
-         IFCExportInfoPair exportType = ExporterUtil.GetExportType(exporterIFC, textNote, out predefinedType);
+         IFCExportInfoPair exportType = ExporterUtil.GetProductExportType(textNote, out string predefinedType);
          if (ExporterCacheManager.ExportOptionsCache.IsElementInExcludeList(exportType.ExportInstance))
             return;
 
@@ -59,10 +53,10 @@ namespace Revit.IFC.Export.Exporter
          {
             string textString = textNote.Text;
             if (String.IsNullOrEmpty(textString))
-               throw new Exception("TextNote does not have test string.");
+               return;
 
             ElementId symId = textNote.GetTypeId();
-            if (symId == ElementId.InvalidElementId)
+            if (MathUtil.IsInvalidElementId(symId))
                throw new Exception("TextNote does not have valid type id.");
 
             PresentationStyleAssignmentCache cache = ExporterCacheManager.PresentationStyleAssignmentCache;
@@ -83,35 +77,10 @@ namespace Revit.IFC.Export.Exporter
             {
                const double planScale = 100.0;  // currently hardwired.
 
-               XYZ orig = UnitUtil.ScaleLength(textNote.Coord);
-               XYZ yDir = textNote.UpDirection;
-               XYZ xDir = textNote.BaseDirection;
-               XYZ zDir = xDir.CrossProduct(yDir);
-
                double sizeX = UnitUtil.ScaleLength(textNote.Width * planScale);
                double sizeY = UnitUtil.ScaleLength(textNote.Height * planScale);
 
-               // When we display text on screen, we "flip" it if the xDir is negative with relation to
-               // the X-axis.  So if it is, we'll flip x and y.
-               bool flipOrig = false;
-               if (xDir.X < 0)
-               {
-                  xDir = xDir.Multiply(-1.0);
-                  yDir = yDir.Multiply(-1.0);
-                  flipOrig = true;
-               }
-
-               // xFactor, yFactor only used if flipOrig.
-               double xFactor = 0.0, yFactor = 0.0;
-               string boxAlignment = ConvertTextNoteAlignToBoxAlign(textNote, out xFactor, out yFactor);
-
-               // modify the origin to match the alignment.  In Revit, the origin is at the top-left (unless flipped,
-               // then bottom-right).
-               if (flipOrig)
-               {
-                  orig = orig.Add(xDir.Multiply(sizeX * xFactor));
-                  orig = orig.Add(yDir.Multiply(sizeY * yFactor));
-               }
+               var (orig, xDir, zDir, boxAlignment) = ComputeTextPlacement(textNote, sizeX, sizeY);
 
                IFCAnyHandle origin = ExporterUtil.CreateAxis(file, orig, zDir, xDir);
 
@@ -119,31 +88,91 @@ namespace Revit.IFC.Export.Exporter
                IFCAnyHandle repItemHnd = IFCInstanceExporter.CreateTextLiteralWithExtent(file, textString, origin, Toolkit.IFCTextPath.Left, extent, boxAlignment);
                IFCAnyHandle annoTextOccHnd = IFCInstanceExporter.CreateStyledItem(file, repItemHnd, presHndSet, null);
 
-               ElementId catId = textNote.Category != null ? textNote.Category.Id : ElementId.InvalidElementId;
-               HashSet<IFCAnyHandle> bodyItems = new HashSet<IFCAnyHandle>();
-               bodyItems.Add(repItemHnd);
-               IFCAnyHandle bodyRepHnd = RepresentationUtil.CreateAnnotationSetRep(exporterIFC, textNote, catId, exporterIFC.Get2DContextHandle(), bodyItems);
+               ElementId catId = CategoryUtil.GetSafeCategoryId(textNote);
+               HashSet<IFCAnyHandle> bodyItems = new HashSet<IFCAnyHandle>() { repItemHnd };
+               IFCAnyHandle context2d = ExporterCacheManager.Get2DContextHandle(IFCRepresentationIdentifier.Annotation);
+               IFCAnyHandle bodyRepHnd = RepresentationUtil.CreateAnnotationSetRep(exporterIFC, 
+                  textNote, catId, context2d, bodyItems, false);
 
                if (IFCAnyHandleUtil.IsNullOrHasNoValue(bodyRepHnd))
                   throw new Exception("Failed to create shape representation.");
 
-               IList<IFCAnyHandle> shapeReps = new List<IFCAnyHandle>();
-               shapeReps.Add(bodyRepHnd);
+               IList<IFCAnyHandle> shapeReps = new List<IFCAnyHandle>() { bodyRepHnd };
 
                IFCAnyHandle prodShapeHnd = IFCInstanceExporter.CreateProductDefinitionShape(file, null, null, shapeReps);
+               string guid = GUIDUtil.CreateGUID(textNote);
                IFCAnyHandle instHnd;
-               if (exportType.ExportInstance != Common.Enums.IFCEntityType.IfcAnnotation)
-                  instHnd = IFCInstanceExporter.CreateAnnotation(exporterIFC, textNote, GUIDUtil.CreateGUID(), ExporterCacheManager.OwnerHistoryHandle,
-                     setter.LocalPlacement, prodShapeHnd);
+               if (exportType.ExportInstance == Common.Enums.IFCEntityType.IfcAnnotation)
+               {
+                  instHnd = IFCInstanceExporter.CreateAnnotation(exporterIFC, textNote, guid,
+                     ExporterCacheManager.OwnerHistoryHandle, setter.LocalPlacement, prodShapeHnd,
+                     null);
+               }
                else
-                  instHnd = IFCInstanceExporter.CreateGenericIFCEntity(exportType, exporterIFC, textNote, GUIDUtil.CreateGUID(), ExporterCacheManager.OwnerHistoryHandle,
-                     setter.LocalPlacement, prodShapeHnd);
+               {
+                  instHnd = IFCInstanceExporter.CreateGenericIFCEntity(exportType, file, textNote, null, guid, 
+                     ExporterCacheManager.OwnerHistoryHandle, setter.LocalPlacement, prodShapeHnd);
+               }
 
                productWrapper.AddAnnotation(instHnd, setter.LevelInfo, true);
             }
 
             tr.Commit();
          }
+      }
+
+      /// <summary>
+      /// Computes the text placement origin, reading direction, normal, and box alignment
+      /// for an IFC text literal export. Handles mirrored link compensation.
+      /// </summary>
+      private static (XYZ orig, XYZ xDir, XYZ zDir, string boxAlignment) ComputeTextPlacement(
+         TextNote textNote, double sizeX, double sizeY)
+      {
+         XYZ coord = textNote.Coord;
+         XYZ xDir = textNote.BaseDirection;
+         XYZ yDir = textNote.UpDirection;
+
+         Transform siteRotationInverse = null;
+         if (RepresentationUtil.DocumentMirrorState.IsExportingMirroredLink())
+         {
+            Transform mirrorTrf = FederatedLinkManager.MirrorTransform;
+            if (mirrorTrf != null)
+            {
+               coord = mirrorTrf.OfPoint(coord);
+               Transform baseLinkTrf = ExporterStateManager.FederatedLinkManager.BaseLinkTransform;
+               if (baseLinkTrf != null && !baseLinkTrf.IsIdentity)
+                  siteRotationInverse = baseLinkTrf.Inverse;
+            }
+         }
+
+         XYZ orig = UnitUtil.ScaleLength(coord);
+         XYZ zDir = xDir.CrossProduct(yDir);
+
+         // When we display text on screen, we "flip" it if the xDir is negative with relation to
+         // the X-axis.  So if it is, we'll flip x and y.
+         bool flipOrig = false;
+         if (xDir.X < 0)
+         {
+            xDir = -xDir;
+            yDir = -yDir;
+            flipOrig = true;
+         }
+
+         double xFactor = 0.0, yFactor = 0.0;
+         string boxAlignment = ConvertTextNoteAlignToBoxAlign(textNote, out xFactor, out yFactor);
+
+         if (flipOrig)
+         {
+            orig += sizeX * xFactor * xDir;
+            orig += sizeY * yFactor * yDir;
+         }
+
+         // The site's IfcAxis2Placement3D encodes BaseLinkTransform's rotation.
+         // Apply the inverse rotation so the site restores the original reading direction.
+         if (siteRotationInverse != null)
+            xDir = siteRotationInverse.OfVector(xDir);
+
+         return (orig, xDir, zDir, boxAlignment);
       }
 
       /// <summary>
@@ -161,13 +190,12 @@ namespace Revit.IFC.Export.Exporter
       static void CreatePresentationStyleAssignmentForTextElementType(ExporterIFC exporterIFC, TextElementType textElemType, PresentationStyleAssignmentCache cache)
       {
          IFCFile file = exporterIFC.GetFile();
+         ElementId elementId = textElemType.Id;
 
-         string fontName;
-         if (ParameterUtil.GetStringValueFromElement(textElemType, BuiltInParameter.TEXT_FONT, out fontName) == null)
-            fontName = null;
+         (_, string fontName) = ParameterUtil.GetStringValueFromElement(textElemType, BuiltInParameter.TEXT_FONT);
 
-         double fontSize;
-         if (ParameterUtil.GetDoubleValueFromElement(textElemType, BuiltInParameter.TEXT_SIZE, out fontSize) == null)
+         (EvaluatedParameter evalParameter, double fontSize) = ParameterUtil.GetDoubleValueFromElement(elementId, BuiltInParameter.TEXT_SIZE);
+         if (evalParameter == null)
             fontSize = -1.0;
 
          double viewScale = 100.0;  // currently hardwired.
@@ -175,13 +203,13 @@ namespace Revit.IFC.Export.Exporter
 
          string ifcPreDefinedItemName = "Text Font";
 
-         IList<string> fontNameList = new List<string>();
-         fontNameList.Add(fontName);
+         IList<string> fontNameList = [fontName];
 
          IFCAnyHandle textSyleFontModelHnd = IFCInstanceExporter.CreateTextStyleFontModel(file, ifcPreDefinedItemName, fontNameList, null, null, null, IFCDataUtil.CreateAsPositiveLengthMeasure(fontSize));
 
-         int color;
-         ParameterUtil.GetIntValueFromElement(textElemType, BuiltInParameter.LINE_COLOR, out color);
+         (Parameter parameter, int color) = ParameterUtil.GetIntValueFromElement(textElemType, BuiltInParameter.LINE_COLOR);
+         if (parameter == null)
+            color = 0;
 
          double blueVal = ((double)((color & 0xff0000) >> 16)) / 255.0;
          double greenVal = ((double)((color & 0xff00) >> 8)) / 255.0;

@@ -5,6 +5,7 @@ using System.Text;
 using Autodesk.Revit.DB;
 
 using Revit.IFC.Export.Utility;
+using Revit.IFC.Common.Utility;
 
 namespace Revit.IFC.Export.Toolkit
 {
@@ -21,6 +22,28 @@ namespace Revit.IFC.Export.Toolkit
          return GetValidIFCPredefinedTypeType(/*element,*/ typeName, null, theTypeEnumstr);
       }
 
+      public static HashSet<(string, string)> DeprecatedValues4 = new()
+      {
+         ("IFCWALLTYPE", "ELEMENTEDCASE"),
+         ("IFCWALLTYPE", "POLYGONAL"),
+         ("IFCWALLTYPE", "STANDARD")
+      };
+
+      public static HashSet<(string, string)> DeprecatedValues4x3 = new()
+      {
+         ("IFCWALLTYPE", "POLYGONAL"),
+         ("IFCWALLTYPE", "STANDARD")
+      };
+
+      private static bool IsDeprecatedPredefinedType(IFCVersion version, string theTypeEnumStr, string predefinedType)
+      {
+         if (version < IFCVersion.IFC4 || string.IsNullOrEmpty(theTypeEnumStr) || string.IsNullOrEmpty(predefinedType))
+            return false;
+
+         (string, string) valueToCheck = (theTypeEnumStr.ToUpper(), predefinedType.ToUpper());
+         return (version == IFCVersion.IFC4) ? DeprecatedValues4.Contains(valueToCheck) : DeprecatedValues4x3.Contains(valueToCheck);
+      }
+
       /// <summary>
       /// Get the IFC type from shared parameters, from a type name, or from a default value.
       /// </summary>
@@ -31,30 +54,38 @@ namespace Revit.IFC.Export.Toolkit
       {
          string enumValue = null;
 
-         if (typeName != null)
+         if (typeName != null || defaultValue != null)
          {
-            try
+            IFCVersion ifcVer = IFCVersion.Default;
+            if (ExporterCacheManager.ExportOptionsCache.ExportAs4x3)
+               //desiredTypeExtra = "IFC4x3.";
+               ifcVer = IFCVersion.IFC4x3;
+            else if (ExporterCacheManager.ExportOptionsCache.ExportAs4)
+               //desiredTypeExtra = "IFC4.";
+               ifcVer = IFCVersion.IFC4;
+            else if (ExporterCacheManager.ExportOptionsCache.ExportAs2x3)
+               ifcVer = IFCVersion.IFC2x3;
+            else if (ExporterCacheManager.ExportOptionsCache.ExportAs2x2)
+               ifcVer = IFCVersion.IFC2x2;
+            else
             {
-               string desiredTypeExtra = null;
-               if (ExporterCacheManager.ExportOptionsCache.ExportAs4)
-                  desiredTypeExtra = "IFC4.";
-               else
-               {
-                  // For IFC2x3, the enum uses Ifc...Type, but in some cases there is no associated type.
-                  if (!(theTypeEnumStr.Length > 4 && theTypeEnumStr.Substring(theTypeEnumStr.Length - 4, 4).Equals("TYPE", StringComparison.InvariantCultureIgnoreCase)))
-                     theTypeEnumStr = theTypeEnumStr + "Type";
-               }
-               string desiredType = "Revit.IFC.Export.Toolkit." + desiredTypeExtra + theTypeEnumStr;
-               Type theTypeEnum = Type.GetType(desiredType, false, true);
-               if (theTypeEnum != null && !string.IsNullOrEmpty(typeName))
-                  enumValue = Enum.Parse(theTypeEnum, typeName, true).ToString();
+               // Default to
+               ifcVer = IFCVersion.IFC4;
             }
-            catch
+
+            IfcSchemaEntityTree schemaTree = IfcSchemaEntityTree.GetEntityDictFor(ifcVer, null);
+            if (schemaTree != null && typeName != null)
             {
+               IList<string> pdefTypeList = IfcSchemaEntityTree.GetPredefinedTypeList(schemaTree, theTypeEnumStr);
+               if (pdefTypeList != null && pdefTypeList.Contains(typeName, StringComparer.InvariantCultureIgnoreCase))
+                  enumValue = typeName;
             }
+
+            if (IsDeprecatedPredefinedType(ifcVer, theTypeEnumStr, enumValue))
+               enumValue = null;
          }
 
-         if (String.IsNullOrEmpty(enumValue) && !String.IsNullOrEmpty(defaultValue))
+         if (string.IsNullOrEmpty(enumValue) && !string.IsNullOrEmpty(defaultValue))
             return defaultValue;
 
          return enumValue;
@@ -70,15 +101,18 @@ namespace Revit.IFC.Export.Toolkit
       /// <returns>The found value, or null.</returns>
       public static string GetValidIFCType<TEnum>(Element element, string typeName, string defaultValue) where TEnum : struct
       {
-         string value = null;
-         if (ParameterUtil.GetStringValueFromElementOrSymbol(element, "IfcExportType", out value) != null)
+         BuiltInParameter paramId = (element is ElementType) ? BuiltInParameter.IFC_EXPORT_PREDEFINEDTYPE_TYPE :
+            BuiltInParameter.IFC_EXPORT_PREDEFINEDTYPE;
+         Parameter exportElementParameter = element.get_Parameter(paramId);
+         string value = exportElementParameter?.AsString();
+         if (ValidateStrEnum<TEnum>(value) != null)
+            return value;
+         
+         if (paramId == BuiltInParameter.IFC_EXPORT_PREDEFINEDTYPE)
          {
-            if (ValidateStrEnum<TEnum>(value) != null)
-               return value;
-         }
-
-         if (ParameterUtil.GetStringValueFromElementOrSymbol(element, "IfcType", out value) != null)
-         {
+            Element elementType = element.Document.GetElement(element.GetTypeId());
+            exportElementParameter = elementType?.get_Parameter(BuiltInParameter.IFC_EXPORT_PREDEFINEDTYPE_TYPE);
+            value = exportElementParameter?.AsString();
             if (ValidateStrEnum<TEnum>(value) != null)
                return value;
          }
@@ -122,5 +156,18 @@ namespace Revit.IFC.Export.Toolkit
       {
          return entityCheck;
       }
+
+      public static bool ProcessRuleExceptions(ref string theTypeEnumStr)
+      {
+         bool processed = false;
+         // Particular case: the Predefined type of IfcDistributionCircuit is in IfcDistributionSystemEnum
+         if (theTypeEnumStr == "IfcDistributionCircuit")
+         {
+            theTypeEnumStr = "IfcDistributionSystem";
+            processed = true;
+         }
+         return processed;
+      }
+      
    }
 }

@@ -18,6 +18,7 @@
 //
 
 using BIM.IFC.Export.UI.Properties;
+using Revit.IFC.Common.Enums;
 
 namespace BIM.IFC.Export.UI
 {
@@ -25,23 +26,27 @@ namespace BIM.IFC.Export.UI
    public class IFCSitePlacementAttributes
    {
 
-      public int Level { get; set; }
+      public SiteTransformBasis TransformBasis { get; set; }
 
-      public IFCSitePlacementAttributes(int level)
+      public IFCSitePlacementAttributes(SiteTransformBasis transformBasis)
       {
-         Level = level;
+         TransformBasis = transformBasis;
       }
 
       public override string ToString()
       {
-         switch (Level)
+         switch (TransformBasis)
          {
-            case 0:
+            case SiteTransformBasis.Shared:
                return Resources.SharedCoordinates;
-            case 1:
+            case SiteTransformBasis.Site:
                return Resources.SiteSurveyPoint;
-            case 2:
+            case SiteTransformBasis.Project:
                return Resources.ProjectBasePoint;
+            case SiteTransformBasis.ProjectInTN:
+               return Resources.ProjectInTN;
+            case SiteTransformBasis.InternalInTN:
+               return Resources.InternalCoordinatesInTN;
             default:
                return Resources.InternalCoordinates;
          }

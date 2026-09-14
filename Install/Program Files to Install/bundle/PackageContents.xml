@@ -1,10 +1,9 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
-<ApplicationPackage SchemaVersion="1.0" AutodeskProduct="Revit" ProductType="Application" Name="IFC Exporter for Revit" AppVersion="4.0.0.0" Description="This application seamlessly replaces the built-in IFC export capabilities of Revit 2015. " Author="Autodesk" Icon=".\Contents\Resources\IFCExporter.png" AppNameSpace="appstore.exchange.autodesk.com" OnlineDocumentation="http://www.autodesk.com" HelpFile=".\Contents\Resources\ADSKIFCExporterHelp.htm" ProductCode="{254DE637-077E-4181-9404-973E2884A926}" UpgradeCode="{1EAE3C38-F8B4-4FA4-91DB-51A9D7A2B42B}" SupportedLocales="Enu">
+<?xml version="1.0" encoding="utf-8"?>
+<ApplicationPackage SchemaVersion="1.0" AutodeskProduct="Revit" ProductType="Application" Name="IFC Exporter for Revit" AppVersion="27.3.0.12" Description="This application seamlessly replaces the built-in IFC export capabilities of Revit 2027. " Author="Autodesk" Icon=".\Contents\Resources\IFCExporter.png" AppNameSpace="appstore.exchange.autodesk.com" OnlineDocumentation="http://www.autodesk.com" HelpFile=".\Contents\Resources\ADSKIFCExporterHelp.htm" ProductCode="{F1A1177D-4CE7-4AAA-B4E6-EC318112D7B4}" UpgradeCode="{1A9C2C21-24B8-42D2-0000-992E73C11B3F}" SupportedLocales="Enu">
   <CompanyDetails Name="Autodesk, Inc." Phone=" " Url="http://www.autodesk.com" Email="Revit.apps@autodesk.com" />
-  <RuntimeRequirements OS="Win64" Platform="Revit" SeriesMin="R2019" SeriesMax="R2019" />
-  <Components Description="2019">
-    <RuntimeRequirements OS="Win64" Platform="Revit" SeriesMin="R2019" SeriesMax="R2019" />
-    <ComponentEntry AppName="IFC For Revit 2019" Version="19.2.0" ModuleName="./Contents/2019/IFCExporterUIOverride.addin" AppDescription="IFC For Revit 2019" />
-    <ComponentEntry AppName="IFC For Revit 2019" Version="19.2.0" ModuleName="./Contents/2019/Revit.IFC.addin" AppDescription="IFC For Revit 2019" />
+  <RuntimeRequirements OS="Win64" Platform="Revit" SeriesMin="R2027" SeriesMax="R2027" />
+  <Components Description="2027">
+    <RuntimeRequirements OS="Win64" Platform="Revit" SeriesMin="R2027" SeriesMax="R2027" />
+    <ComponentEntry AppName="IFC For Revit 2027" Version="27.3.0.12" ModuleName="./Contents/2027/Revit.IFC.addin" AppDescription="IFC For Revit 2027" />
   </Components>
 </ApplicationPackage>

@@ -16,27 +16,13 @@
 // License along with this library; if not, write to the Free Software
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
+using Autodesk.UI.Windows;
+using Revit.IFC.Common.Extensions;
+using Revit.IFC.Export.Utility;
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Data;
-using System.Windows.Documents;
-using System.Windows.Input;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Shapes;
-using System.Runtime.InteropServices;
-using System.Windows.Interop;
-using Autodesk.Revit.WPFFramework;
-using Autodesk.Revit.DB;
-using Autodesk.Revit.UI;
-using Autodesk.Revit.UI.Events;
-
-using Revit.IFC.Common.Extensions;
-
 
 namespace BIM.IFC.Export.UI
 {
@@ -55,9 +41,16 @@ namespace BIM.IFC.Export.UI
       /// initialization of IFCAssignemt class
       /// </summary>
       /// <param name="document"></param>
-      public IFCClassificationWindow()
+      public IFCClassificationWindow(IFCExportConfiguration configuration)
       {
          InitializeComponent();
+         m_newClassification = configuration.ClassificationSettings;
+
+         if (m_newClassification.ClassificationEditionDate <= DateTime.MinValue || m_newClassification.ClassificationEditionDate >= DateTime.MaxValue)
+         {
+            m_newClassification.ClassificationEditionDate = DateTime.Now.Date;
+         }
+         datePicker1.SelectedDate = m_newClassification.ClassificationEditionDate.Date;
       }
 
       /// <summary>
@@ -69,9 +62,6 @@ namespace BIM.IFC.Export.UI
       {
          ClassificationTab.DataContext = m_newClassification;
       }
-
-
-
 
       /// <summary>
       /// Event when OK button is pressed
@@ -87,6 +77,10 @@ namespace BIM.IFC.Export.UI
             if (!m_newClassification.AreMandatoryFieldsFilled())
             {
                fillMandatoryFields(m_newClassification);
+            }
+            if (datePicker1?.SelectedDate != null)
+            {
+               m_newClassification.ClassificationEditionDate = datePicker1.SelectedDate.Value.Date;
             }
             IFCClassificationMgr.UpdateClassification(IFCCommandOverrideApplication.TheDocument, m_newClassification);
          }
@@ -124,7 +118,6 @@ namespace BIM.IFC.Export.UI
          Close();
       }
 
-
       /// <summary>
       /// Initialization of the Classification Tab when there is saved item
       /// </summary>
@@ -139,11 +132,14 @@ namespace BIM.IFC.Export.UI
          {
             m_savedClassification = m_newClassification.Clone();
          }
+      }
 
-         if (m_newClassification.ClassificationEditionDate <= DateTime.MinValue || m_newClassification.ClassificationEditionDate >= DateTime.MaxValue)
+      private void datePicker1_SelectedDateChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+      {
+         var picker = sender as DatePicker;
+         if (picker?.SelectedDate != null)
          {
-            DateTime today = DateTime.Now;
-            m_newClassification.ClassificationEditionDate = today;
+            m_newClassification.ClassificationEditionDate = picker.SelectedDate.Value.Date; // Picker only use the Date
          }
       }
    }

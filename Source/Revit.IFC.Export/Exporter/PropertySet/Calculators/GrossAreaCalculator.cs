@@ -58,7 +58,7 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// The ExporterIFC object.
       /// </param>
       /// <param name="extrusionCreationData">
-      /// The IFCExtrusionCreationData.
+      /// The IFCExportBodyParams.
       /// </param>
       /// <param name="element">
       /// The element to calculate the value.
@@ -69,21 +69,30 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// <returns>
       /// True if the operation succeed, false otherwise.
       /// </returns>
-      public override bool Calculate(ExporterIFC exporterIFC, IFCExtrusionCreationData extrusionCreationData, Element element, ElementType elementType)
+      public override bool Calculate(ExporterIFC exporterIFC, IFCAnyHandle handle, IFCExportBodyParams extrusionCreationData, Element element, ElementType elementType, EntryMap entryMap)
       {
-         if (ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "IfcQtyGrossArea", out m_Area) == null)
-               ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "GrossArea", out m_Area);
-         m_Area = UnitUtil.ScaleArea(m_Area);
-         if (m_Area > MathUtil.Eps() * MathUtil.Eps())
+         (_, m_Area) = ParameterUtil.GetDoubleValueFromElementOrSymbol(element, entryMap.RevitParameterName, 
+            entryMap.CompatibleRevitParameterName, "IfcQtyGrossArea");
+         if (m_Area > MathUtil.Eps * MathUtil.Eps)
+         {
+            m_Area = UnitUtil.ScaleArea(m_Area);
             return true;
+         }
 
-         if (extrusionCreationData == null)
-            return false;
+         if (extrusionCreationData != null)
+         {
+            m_Area = extrusionCreationData.ScaledArea;
 
-         m_Area = extrusionCreationData.ScaledArea;
+            if (m_Area > MathUtil.Eps * MathUtil.Eps)
+               return true;
+         }
 
-         if (m_Area > MathUtil.Eps() * MathUtil.Eps())
+         (_, m_Area) = ParameterUtil.GetDoubleValueFromElementOrSymbol(element, BuiltInParameter.HOST_AREA_COMPUTED);
+         if (m_Area > MathUtil.Eps * MathUtil.Eps)
+         {
+            m_Area = UnitUtil.ScaleArea(m_Area);
             return true;
+         }
 
          return false;
       }

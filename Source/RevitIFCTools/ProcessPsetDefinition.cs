@@ -1,4 +1,4 @@
-﻿//
+//
 // BIM IFC library: this library works with Autodesk(R) Revit(R) to export IFC files containing model geometry.
 // Copyright (C) 2012  Autodesk, Inc.
 // 
@@ -20,12 +20,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using System.Text.RegularExpressions;
-using System.Windows;
-using System.Windows.Forms;
 using System.IO;
-using Revit.IFC.Common.Utility;
 using System.Xml.Linq;
 using RevitIFCTools.PropertySet;
 
@@ -42,6 +38,7 @@ namespace RevitIFCTools
       public bool Visibility { get; set; } = true;
       public string Description { get; set; }
       public bool UserModifiable { get; set; } = true;
+      public string OwningPset { get; set; } = null;
 
       public virtual object Clone()
       {
@@ -68,15 +65,19 @@ namespace RevitIFCTools
 
    public class ProcessPsetDefinition
    {
+      // File patterns for property set definitions
+      private const string PSET_HTM_PATTERN = "Pset_*.htm";
+      private const string PSET_XML_PATTERN = "Pset_*.xml";
+      private const string QTO_HTM_PATTERN = "Qto_*.htm";
+      private const string QTO_XML_PATTERN = "Qto_*.xml";
+      
       IDictionary<string, StreamWriter> enumFileDict;
       IDictionary<string, IList<string>> enumDict;
       public SortedDictionary<string, IList<VersionSpecificPropertyDef>> allPDefDict { get; private set; } = new SortedDictionary<string, IList<VersionSpecificPropertyDef>>();
-#if DEBUG
       StreamWriter logF;
-#endif
 
-      public static IDictionary<string, SharedParameterDef> SharedParamFileDict  { get; set; } = new Dictionary<string, SharedParameterDef>();
-      public static IDictionary<string, SharedParameterDef> SharedParamFileTypeDict { get; set; } = new Dictionary<string, SharedParameterDef>();
+      public static SortedDictionary<string, SharedParameterDef> SharedParamFileDict { get; set; } = new SortedDictionary<string, SharedParameterDef>();
+      public static SortedDictionary<string, SharedParameterDef> SharedParamFileTypeDict { get; set; } = new SortedDictionary<string, SharedParameterDef>();
 
       public ProcessPsetDefinition(StreamWriter logfile)
       {
@@ -87,6 +88,9 @@ namespace RevitIFCTools
 
       void AddPsetDefToDict(string schemaVersionName, PsetDefinition psetD)
       {
+         if (psetD == null)
+            return;
+
          VersionSpecificPropertyDef psetDefEntry = new VersionSpecificPropertyDef()
          {
             SchemaFileVersion = schemaVersionName,
@@ -96,7 +100,12 @@ namespace RevitIFCTools
 
          if (allPDefDict.ContainsKey(psetD.Name))
          {
-            allPDefDict[psetD.Name].Add(psetDefEntry);
+            // Check if there's already an entry with the same IfcVersion
+            bool alreadyExists = allPDefDict[psetD.Name].Any(x => x.IfcVersion == psetD.IfcVersion);
+            if (!alreadyExists)
+            {
+               allPDefDict[psetD.Name].Add(psetDefEntry);
+            }
          }
          else
          {
@@ -104,6 +113,11 @@ namespace RevitIFCTools
             vsPropDefList.Add(psetDefEntry);
             allPDefDict.Add(psetD.Name, vsPropDefList);
          }
+      }
+
+      void AddPredefinedPsetsToDict(string schemaVersionName)
+      {
+
       }
 
       LanguageType checkAliasLanguage(string language)
@@ -213,14 +227,14 @@ namespace RevitIFCTools
          }
 
          fileToWrite.WriteLine("");
-         fileToWrite.WriteLine("\tpublic enum " + penumName + " {");
+         fileToWrite.WriteLine("   public enum " + penumName + " {");
          foreach (string enumV in enumValues)
          {
             string endWith = ",";
             if (enumV == enumValues.Last())
                endWith = "}";
 
-            fileToWrite.WriteLine("\t\t" + enumV + endWith);
+            fileToWrite.WriteLine("      " + enumV + endWith);
          }
       }
 
@@ -264,19 +278,42 @@ namespace RevitIFCTools
          return null;
       }
 
-      public void processSimpleProperty(StreamWriter outF, PsetProperty prop, string propNamePrefix, string IfcVersion, string schemaVersion, 
+      public void processSimpleProperty(StreamWriter outF, string psetName, PsetProperty prop, string propNamePrefix, string IfcVersion, string schemaVersion,
          string varName, VersionSpecificPropertyDef vSpecPDef, string outputFile)
       {
-         outF.WriteLine("\t\t\t\tifcPSE = new PropertySetEntry(\"{0}\");", prop.Name);
-         outF.WriteLine("\t\t\t\tifcPSE.PropertyName = \"{0}\";", prop.Name);
+         string propTypeStr = "PropertyType";
+         // The original style for the param name (i.e. the same as the Property Name)
+         string propNameToUse = prop.Name;
+         if (!string.IsNullOrEmpty(propNamePrefix))
+            propNameToUse = propNamePrefix + "." + propNameToUse;
+         // The new style of parameter name (<Pset name>.<Property name>)
+         string newParamName = propNameToUse;
+         if (vSpecPDef.PropertySetDef.Name.StartsWith("Pset", StringComparison.InvariantCultureIgnoreCase))
+         {
+            newParamName = vSpecPDef.PropertySetDef.Name + "." + propNameToUse;
+            outF.WriteLine("            ifcPSE = new PropertySetEntry(\"{0}\", \"{1}\");", newParamName, propNameToUse);
+         }
+         else if (vSpecPDef.PropertySetDef.Name.StartsWith("Ifc", StringComparison.InvariantCultureIgnoreCase))
+         {
+            newParamName = vSpecPDef.PropertySetDef.Name + "." + propNameToUse;
+            outF.WriteLine("            ifcPSE = new PreDefinedPropertySetEntry(\"{0}\", \"{1}\");", newParamName, propNameToUse);
+         }
+         else
+         {
+            newParamName = vSpecPDef.PropertySetDef.Name + "." + propNameToUse;
+            propTypeStr = "QuantityType";
+            outF.WriteLine("            ifcPSE = new QuantityEntry(\"{0}\", \"{1}\");", newParamName, propNameToUse);
+         }
+
+         outF.WriteLine("            ifcPSE.PropertyName = \"{0}\";", propNameToUse);
          if (prop.PropertyType != null)
          {
             if (prop.PropertyType is PropertyEnumeratedValue)
             {
                PropertyEnumeratedValue propEnum = prop.PropertyType as PropertyEnumeratedValue;
-               outF.WriteLine("\t\t\t\tifcPSE.PropertyType = PropertyType.Label;");
-               outF.WriteLine("\t\t\t\tifcPSE.PropertyValueType = PropertyValueType.EnumeratedValue;");
-               outF.WriteLine("\t\t\t\tifcPSE.PropertyEnumerationType = typeof(Revit.IFC.Export.Exporter.PropertySet." + IfcVersion + "." + propEnum.Name + ");");
+               outF.WriteLine("            ifcPSE.{0} = {0}.Label;", propTypeStr);
+               outF.WriteLine("            ifcPSE.PropertyValueType = PropertyValueType.EnumeratedValue;");
+               outF.WriteLine("            ifcPSE.PropertyEnumerationType = typeof(Revit.IFC.Export.Exporter.PropertySet." + IfcVersion + "." + propEnum.Name + ");");
                IList<string> enumItems = new List<string>();
                foreach (PropertyEnumItem enumItem in propEnum.EnumDef)
                {
@@ -288,32 +325,52 @@ namespace RevitIFCTools
             else if (prop.PropertyType is PropertyReferenceValue)
             {
                PropertyReferenceValue propRef = prop.PropertyType as PropertyReferenceValue;
-               outF.WriteLine("\t\t\t\tifcPSE.PropertyType = PropertyType.{0};", propRef.RefEntity.Trim());
-               outF.WriteLine("\t\t\t\tifcPSE.PropertyValueType = PropertyValueType.ReferenceValue;");
+               outF.WriteLine("            ifcPSE.{0} = {0}.{1};", propTypeStr, propRef.RefEntity.Trim());
+               outF.WriteLine("            ifcPSE.PropertyValueType = PropertyValueType.ReferenceValue;");
             }
             else if (prop.PropertyType is PropertyListValue)
             {
                PropertyListValue propList = prop.PropertyType as PropertyListValue;
                if (propList.DataType != null && !propList.DataType.Equals("IfcValue", StringComparison.InvariantCultureIgnoreCase))
-                  outF.WriteLine("\t\t\t\tifcPSE.PropertyType = PropertyType.{0};", propList.DataType.ToString().Replace("Ifc", "").Replace("Measure", "").Trim());
+                  outF.WriteLine("            ifcPSE.{0} = {0}.{1};", propTypeStr, propList.DataType.ToString().Replace("Ifc", "").Replace("Measure", "").Trim());
                else
-                  outF.WriteLine("\t\t\t\tifcPSE.PropertyType = PropertyType.Label;");    // default to Label if not defined
+                  outF.WriteLine("            ifcPSE.{0} = {0}.Label;", propTypeStr);    // default to Label if not defined
 
-               outF.WriteLine("\t\t\t\tifcPSE.PropertyValueType = PropertyValueType.ListValue;");
+               outF.WriteLine("            ifcPSE.PropertyValueType = PropertyValueType.ListValue;");
             }
             else if (prop.PropertyType is PropertyTableValue)
             {
                PropertyTableValue propTab = prop.PropertyType as PropertyTableValue;
-               // TableValue has 2 types: DefiningValue and DefinedValue. This is not fully implemented yet
-               if (propTab.DefinedValueType != null)
-                  outF.WriteLine("\t\t\t\tifcPSE.PropertyType = PropertyType.{0};", propTab.DefinedValueType.ToString().Replace("Ifc", "").Replace("Measure", "").Trim());
+               if (propTab.DefiningValueType != null)
+                  outF.WriteLine("            ifcPSE.PropertyArgumentType = {0}.{1};", propTypeStr, propTab.DefiningValueType.ToString().Replace("Ifc", "").Replace("Measure", "").Trim());
                else
-                  outF.WriteLine("\t\t\t\tifcPSE.PropertyType = PropertyType.Label;");    // default to Label if missing
+                  outF.WriteLine("            ifcPSE.PropertyArgumentType = {0}.Label;", propTypeStr);    // default to Label if missing
 
-               outF.WriteLine("\t\t\t\tifcPSE.PropertyValueType = PropertyValueType.TableValue;");
+               if (propTab.DefinedValueType != null)
+                  outF.WriteLine("            ifcPSE.{0} = {0}.{1};", propTypeStr, propTab.DefinedValueType.ToString().Replace("Ifc", "").Replace("Measure", "").Trim());
+               else
+                  outF.WriteLine("            ifcPSE.{0} = {0}.Label;", propTypeStr);    // default to Label if missing
+
+               outF.WriteLine("            ifcPSE.PropertyValueType = PropertyValueType.TableValue;");
+            }
+            else if (prop.PropertyType is PropertyBoundedValue)
+            {
+               PropertyBoundedValue propBound = prop.PropertyType as PropertyBoundedValue;
+               outF.WriteLine("            ifcPSE.PropertyValueType = PropertyValueType.BoundedValue;");
+               if (propBound.DataType != null && !propBound.DataType.Equals("IfcValue", StringComparison.InvariantCultureIgnoreCase))
+                  outF.WriteLine("            ifcPSE.{0} = {0}.{1};", propTypeStr, propBound.DataType.ToString().Replace("Ifc", "").Replace("Measure", "").Trim());
+               else
+                  outF.WriteLine("            ifcPSE.{0} = {0}.Label;", propTypeStr);    // default to Label if not defined
             }
             else
-               outF.WriteLine("\t\t\t\tifcPSE.PropertyType = PropertyType.{0};", prop.PropertyType.ToString().Replace("Ifc", "").Replace("Measure", "").Trim());
+            {
+               string propType = prop.PropertyType.ToString().Replace("Ifc", "").Replace("Measure", "").Trim();
+               if (propType.Equals("String", StringComparison.InvariantCultureIgnoreCase))
+                  propType = "Text";
+               outF.WriteLine("            ifcPSE.{0} = {0}.{1};", propTypeStr, propType);
+               if (!string.IsNullOrEmpty(prop.PropertyValueType))
+                  outF.WriteLine("            ifcPSE.PropertyValueType = {0};", prop.PropertyValueType);
+            }
          }
          else
          {
@@ -341,17 +398,18 @@ namespace RevitIFCTools
                (prop.PropertyType as PropertySingleValue).DataType = "IfcReal";
             else if (prop.Name.ToLowerInvariant().Contains("loadbearing"))
                (prop.PropertyType as PropertySingleValue).DataType = "IfcBoolean";
+            else if (prop.Name.ToLowerInvariant().Contains("reference"))
+               (prop.PropertyType as PropertySingleValue).DataType = "IfcIdentifier";
             else
                (prop.PropertyType as PropertySingleValue).DataType = "IfcLabel";
-#if DEBUG
             logF.WriteLine("%Warning: " + prop.Name + " from " + vSpecPDef.PropertySetDef.Name + "(" + vSpecPDef.SchemaFileVersion + ") is missing PropertyType/datatype. Set to default "
                   + (prop.PropertyType as PropertySingleValue).DataType);
-#endif
          }
 
          // Append new definition to the Shared parameter file
          SharedParameterDef newPar = new SharedParameterDef();
-         newPar.Name = prop.Name;
+         newPar.Name = newParamName;
+         newPar.OwningPset = psetName;
 
          // Use IfdGuid for the GUID if defined
          Guid pGuid = Guid.Empty;
@@ -370,9 +428,7 @@ namespace RevitIFCTools
             newPar.Description = prop.PropertyType.ToString().Split(' ', '\t')[0].Trim();     // Put the original IFC datatype in the description
          else
          {
-#if DEBUG
-            logF.WriteLine("%Warning: " + prop.Name + " from " + vSpecPDef.PropertySetDef.Name + "(" + vSpecPDef.SchemaFileVersion + ") is missing PropertyType/datatype.");
-#endif
+            logF.WriteLine("%Warning: " + newPar.Name + " from " + vSpecPDef.PropertySetDef.Name + "(" + vSpecPDef.SchemaFileVersion + ") is missing PropertyType/datatype.");
          }
 
          if (prop.PropertyType is PropertyEnumeratedValue)
@@ -443,6 +499,7 @@ namespace RevitIFCTools
                || propSingle.DataType.Equals("IfcLanguageId", StringComparison.InvariantCultureIgnoreCase)
                || propSingle.DataType.Equals("IfcPresentableText", StringComparison.InvariantCultureIgnoreCase)
                || propSingle.DataType.Equals("IfcText", StringComparison.InvariantCultureIgnoreCase)
+               || propSingle.DataType.Equals("IfcString", StringComparison.InvariantCultureIgnoreCase)
                || propSingle.DataType.Equals("IfcTextAlignment", StringComparison.InvariantCultureIgnoreCase)
                || propSingle.DataType.Equals("IfcTextDecoration", StringComparison.InvariantCultureIgnoreCase)
                || propSingle.DataType.Equals("IfcTextFontName", StringComparison.InvariantCultureIgnoreCase)
@@ -489,32 +546,32 @@ namespace RevitIFCTools
             foreach (NameAlias alias in prop.NameAliases)
             {
                LanguageType lang = checkAliasLanguage(alias.lang);
-               outF.WriteLine("\t\t\t\tifcPSE.AddLocalizedParameterName(LanguageType.{0}, \"{1}\");", lang, alias.Alias);
+               outF.WriteLine("            ifcPSE.AddLocalizedParameterName(LanguageType.{0}, \"{1}\");", lang, alias.Alias);
             }
          }
 
          string calcName = "Revit.IFC.Export.Exporter.PropertySet.Calculators." + prop.Name + "Calculator";
-         outF.WriteLine("\t\t\t\tcalcType = System.Reflection.Assembly.GetExecutingAssembly().GetType(\"" + calcName + "\");");
-         outF.WriteLine("\t\t\t\tif (calcType != null)");
-         outF.WriteLine("\t\t\t\t\tifcPSE.PropertyCalculator = (PropertyCalculator) calcType.GetConstructor(Type.EmptyTypes).Invoke(new object[]{});");
-         outF.WriteLine("\t\t\t\t{0}.AddEntry(ifcPSE);", varName);
+         outF.WriteLine("            calcType = System.Reflection.Assembly.GetExecutingAssembly().GetType(\"" + calcName + "\");");
+         outF.WriteLine("            if (calcType != null)");
+         outF.WriteLine("               ifcPSE.PropertyCalculator = (PropertyCalculator) calcType.GetConstructor(Type.EmptyTypes).Invoke(new object[]{});");
+         outF.WriteLine("            {0}.AddEntry(ifcPSE);", varName);
          outF.WriteLine("");
       }
 
-      public static string processExistingParFile(string parFileName, bool isType, ref StreamWriter destFile)
+      public static IDictionary<string, SharedParameterDef> processExistingParFile(string parFileName/*, bool isType*/)
       {
-         IDictionary<string, SharedParameterDef> dictToFill;
-         if (isType)
-            dictToFill = SharedParamFileTypeDict;
-         else
-            dictToFill = SharedParamFileDict;
+         IDictionary<string, SharedParameterDef> dictToFill = new Dictionary<string, SharedParameterDef>();
+         //if (isType)
+         //   dictToFill = SharedParamFileTypeDict;
+         //else
+         //   dictToFill = SharedParamFileDict;
 
          string messageText = null;
          // Keep original data (for maintaining the GUID) in a dictionary
          using (StreamReader stSharedParam = File.OpenText(parFileName))
          {
             string line;
-            while ((line = stSharedParam.ReadLine()) != null && !string.IsNullOrEmpty(line))
+            while (!stSharedParam.EndOfStream && (line = stSharedParam.ReadLine()) != null && !string.IsNullOrEmpty(line))
             {
                // Copy content to the destination file
                //destFile.WriteLine(line);
@@ -587,110 +644,189 @@ namespace RevitIFCTools
                }
                catch (ArgumentException exp)
                {
-                  messageText += "\n" + parDef.Name + ": " + exp.Message;
+                  messageText += "\r\n" + parDef.Name + ": " + exp.Message;
                }
             }
          }
-         return messageText;
+         return dictToFill;
       }
 
-      public PsetProperty getPropertyDef(XNamespace ns, XElement pDef)
+      public PsetProperty getPropertyDef(XNamespace ns, XElement pDef, Dictionary<ItemsInPsetQtoDefs, string> psetOrQtoSet)
       {
-         PsetProperty prop = new PsetProperty();
-         if (pDef.Attribute("ifdguid") != null)
-            prop.IfdGuid = pDef.Attribute("ifdguid").Value;
-         prop.Name = pDef.Element(ns + "Name").Value;
-         IList<NameAlias> aliases = new List<NameAlias>();
-         XElement nAliasesElem = pDef.Elements(ns + "NameAliases").FirstOrDefault();
-         if (nAliasesElem != null)
+         try
          {
-            var nAliases = from el in nAliasesElem.Elements(ns + "NameAlias") select el;
-            foreach (XElement alias in nAliases)
+            PsetProperty prop = new PsetProperty();
+            if (pDef.Attribute("ifdguid") != null)
+               prop.IfdGuid = pDef.Attribute("ifdguid").Value;
+            prop.Name = pDef.Element(ns + "Name").Value;
+            IList<NameAlias> aliases = new List<NameAlias>();
+            XElement nAliasesElem = pDef.Elements(ns + "NameAliases").FirstOrDefault();
+            if (nAliasesElem != null)
             {
-               NameAlias nameAlias = new NameAlias();
-               nameAlias.Alias = alias.Value;
-               nameAlias.lang = alias.Attribute("lang").Value;
-               aliases.Add(nameAlias);
-            }
-         }
-         if (aliases.Count > 0)
-            prop.NameAliases = aliases;
-
-         PropertyDataType dataTyp = null;
-         var propType = pDef.Elements(ns + "PropertyType").FirstOrDefault();
-         XElement propDetType = propType.Elements().FirstOrDefault();
-         if (propDetType == null)
-         {
-#if DEBUG
-            logF.WriteLine("%Warning: Missing PropertyType for {0}.{1}", pDef.Parent.Parent.Element(ns + "Name").Value, prop.Name);
-#endif
-            return prop;
-         }
-
-         if (propDetType.Name.LocalName.Equals("TypePropertySingleValue"))
-         {
-            XElement dataType = propDetType.Element(ns + "DataType");
-            PropertySingleValue sv = new PropertySingleValue();
-            if (dataType.Attribute("type") != null)
-            {
-               sv.DataType = dataType.Attribute("type").Value;
-            }
-            else
-            {
-               sv.DataType = "IfcLabel";     // Set this to default if missing
-#if DEBUG
-               logF.WriteLine("%Warning: Missing TypePropertySingleValue for {0}.{1}", pDef.Parent.Parent.Element(ns + "Name").Value, prop.Name);
-#endif
-            }
-            dataTyp = sv;
-         }
-         else if (propDetType.Name.LocalName.Equals("TypePropertyReferenceValue"))
-         {
-            PropertyReferenceValue rv = new PropertyReferenceValue();
-            // Older versions uses Element DataType!
-            XElement dt = propDetType.Element(ns + "DataType");
-            if (dt == null)
-            {
-               rv.RefEntity = propDetType.Attribute("reftype").Value;
-            }
-            else
-            {
-               rv.RefEntity = dt.Attribute("type").Value;
-            }
-            dataTyp = rv;
-         }
-         else if (propDetType.Name.LocalName.Equals("TypePropertyEnumeratedValue"))
-         {
-            PropertyEnumeratedValue pev = new PropertyEnumeratedValue();
-            var enumItems = propDetType.Descendants(ns + "EnumItem");
-            if (enumItems.Count() > 0)
-            {
-               pev.Name = propDetType.Element(ns + "EnumList").Attribute("name").Value;
-               pev.EnumDef = new List<PropertyEnumItem>();
-               foreach (var en in enumItems)
+               var nAliases = from el in nAliasesElem.Elements(ns + "NameAlias") select el;
+               foreach (XElement alias in nAliases)
                {
-                  string enumItemName = en.Value.ToString();
-                  IEnumerable<XElement> consDef = null;
-                  if (propDetType.Element(ns + "ConstantList") != null)
-                  {
-                     consDef = from el in propDetType.Element(ns + "ConstantList").Elements(ns + "ConstantDef")
-                               where (el.Element(ns + "Name").Value.Equals(enumItemName, StringComparison.CurrentCultureIgnoreCase))
-                               select el;
-                  }
+                  NameAlias nameAlias = new NameAlias();
+                  nameAlias.Alias = alias.Value;
+                  nameAlias.lang = alias.Attribute("lang").Value;
+                  aliases.Add(nameAlias);
+               }
+            }
+            if (aliases.Count > 0)
+               prop.NameAliases = aliases;
 
-                  if (propDetType.Element(ns + "ConstantList") != null)
+            PropertyDataType dataTyp = null;
+            var propType = pDef.Elements(ns + psetOrQtoSet[ItemsInPsetQtoDefs.PropertyOrQtoType]).FirstOrDefault();
+
+            // Process QtoTypeFirst here
+            if (propType.Value.StartsWith("Q_"))
+            {
+               // Quantity type refers to IfcQuantity__ instance that has __Value and Formula. But the Formula seems not really used yet in the standard Qto
+               string qtoType = propType.Value;
+               prop.PropertyType = new PropertySingleValue();
+               if (qtoType.Equals("Q_LENGTH"))
+               {
+                  (prop.PropertyType as PropertySingleValue).DataType = "IfcLengthMeasure";
+               }
+               else if (qtoType.Equals("Q_AREA"))
+               {
+                  (prop.PropertyType as PropertySingleValue).DataType = "IfcAreaMeasure";
+               }
+               else if (qtoType.Equals("Q_VOLUME"))
+               {
+                  (prop.PropertyType as PropertySingleValue).DataType = "IfcVolumeMeasure";
+               }
+               else if (qtoType.Equals("Q_COUNT"))
+               {
+                  (prop.PropertyType as PropertySingleValue).DataType = "IfcCountMeasure";
+               }
+               else if (qtoType.Equals("Q_TIME"))
+               {
+                  (prop.PropertyType as PropertySingleValue).DataType = "IfcTimeMeasure";
+               }
+               else if (qtoType.Equals("Q_WEIGHT"))
+               {
+                  (prop.PropertyType as PropertySingleValue).DataType = "IfcMassMeasure";
+               }
+               else
+               {
+                  //Default
+                  (prop.PropertyType as PropertySingleValue).DataType = "IfcLabel";
+               }
+               return prop;
+            }
+
+            XElement propDatType = propType.Elements().FirstOrDefault();
+            if (propDatType == null)
+            {
+               logF.WriteLine("%Warning: Missing PropertyType for {0}.{1}", pDef.Parent.Parent.Element(ns + "Name").Value, prop.Name);
+               return prop;
+            }
+
+            if (propDatType.Name.LocalName.Equals("TypePropertySingleValue"))
+            {
+               XElement dataType = propDatType.Element(ns + "DataType");
+               PropertySingleValue sv = new PropertySingleValue();
+               if (dataType.Attribute("type") != null)
+               {
+                  sv.DataType = dataType.Attribute("type").Value;
+               }
+               else
+               {
+                  logF.WriteLine("%Warning: Missing TypePropertySingleValue for {0}.{1}", pDef.Parent.Parent.Element(ns + "Name").Value, prop.Name);
+                  // Hndle a known issue of missing data type for a specific property
+                  if (prop.Name.Equals("Reference", StringComparison.InvariantCultureIgnoreCase))
+                     sv.DataType = "IfcIdentifier";
+                  else
+                     sv.DataType = "IfcLabel";     // Set this to default if missing
+               }
+               dataTyp = sv;
+            }
+            else if (propDatType.Name.LocalName.Equals("TypePropertyReferenceValue"))
+            {
+               PropertyReferenceValue rv = new PropertyReferenceValue();
+               // Older versions uses Element DataType!
+               XElement dt = propDatType.Element(ns + "DataType");
+               if (dt == null)
+               {
+                  rv.RefEntity = propDatType.Attribute("reftype").Value;
+               }
+               else
+               {
+                  rv.RefEntity = dt.Attribute("type").Value;
+               }
+               dataTyp = rv;
+            }
+            else if (propDatType.Name.LocalName.Equals("TypePropertyEnumeratedValue"))
+            {
+               PropertyEnumeratedValue pev = new PropertyEnumeratedValue();
+               var enumItems = propDatType.Descendants(ns + "EnumItem");
+               if (enumItems.Count() > 0)
+               {
+                  pev.Name = propDatType.Element(ns + "EnumList").Attribute("name").Value;
+                  pev.EnumDef = new List<PropertyEnumItem>();
+                  foreach (var en in enumItems)
                   {
-                     var consList = propDetType.Element(ns + "ConstantList").Elements(ns + "ConstantDef");
-                     if (consList != null && consList.Count() != enumItems.Count())
+                     string enumItemName = en.Value.ToString();
+                     IEnumerable<XElement> consDef = null;
+                     if (propDatType.Element(ns + "ConstantList") != null)
                      {
-#if DEBUG
-                        logF.WriteLine("%Warning: EnumList (" + enumItems.Count().ToString() + ") is not consistent with the ConstantList ("
-                           + consList.Count().ToString() + ") for: {0}.{1}",
-                           pDef.Parent.Parent.Element(ns + "Name").Value, prop.Name);
-#endif
+                        consDef = from el in propDatType.Element(ns + "ConstantList").Elements(ns + "ConstantDef")
+                                  where (el.Element(ns + "Name").Value.Equals(enumItemName, StringComparison.CurrentCultureIgnoreCase))
+                                  select el;
+                     }
+
+                     if (propDatType.Element(ns + "ConstantList") != null)
+                     {
+                        var consList = propDatType.Element(ns + "ConstantList").Elements(ns + "ConstantDef");
+                        if (consList != null && consList.Count() != enumItems.Count())
+                        {
+                           logF.WriteLine("%Warning: EnumList (" + enumItems.Count().ToString() + ") is not consistent with the ConstantList ("
+                              + consList.Count().ToString() + ") for: {0}.{1}",
+                              pDef.Parent.Parent.Element(ns + "Name").Value, prop.Name);
+                        }
+                     }
+
+                     if (consDef != null && consDef.Count() > 0)
+                     {
+                        foreach (var cD in consDef)
+                        {
+                           PropertyEnumItem enumItem = new PropertyEnumItem();
+                           enumItem.EnumItem = cD.Elements(ns + "Name").FirstOrDefault().Value;
+                           enumItem.Aliases = new List<NameAlias>();
+                           var eAliases = from el in cD.Elements(ns + "NameAliases").FirstOrDefault().Elements(ns + "NameAlias") select el;
+                           if (eAliases.Count() > 0)
+                           {
+                              foreach (var aliasItem in eAliases)
+                              {
+                                 NameAlias nal = new NameAlias();
+                                 nal.Alias = aliasItem.Value;
+                                 nal.lang = aliasItem.Attribute("lang").Value;
+                                 enumItem.Aliases.Add(nal);
+                              }
+                           }
+                           pev.EnumDef.Add(enumItem);
+                        }
+                     }
+                     else
+                     {
+                        PropertyEnumItem enumItem = new PropertyEnumItem();
+                        enumItem.EnumItem = enumItemName;
+                        enumItem.Aliases = new List<NameAlias>();
+                        pev.EnumDef.Add(enumItem);
                      }
                   }
-
+               }
+               else
+               {
+                  {
+                     logF.WriteLine("%Warning: EnumList {0}.{1} is empty!", pDef.Parent.Parent.Element(ns + "Name").Value, prop.Name);
+                  }
+                  // If EnumList is empty, try to see whether ConstantDef has values. The Enum item name will be taken from the ConstantDef.Name
+                  pev.Name = "PEnum_" + prop.Name;
+                  pev.EnumDef = new List<PropertyEnumItem>();
+                  var consDef = from el in propDatType.Element(ns + "ConstantList").Elements(ns + "ConstantDef")
+                                select el;
                   if (consDef != null && consDef.Count() > 0)
                   {
                      foreach (var cD in consDef)
@@ -700,7 +836,6 @@ namespace RevitIFCTools
                         enumItem.Aliases = new List<NameAlias>();
                         var eAliases = from el in cD.Elements(ns + "NameAliases").FirstOrDefault().Elements(ns + "NameAlias") select el;
                         if (eAliases.Count() > 0)
-                        {
                            foreach (var aliasItem in eAliases)
                            {
                               NameAlias nal = new NameAlias();
@@ -708,115 +843,78 @@ namespace RevitIFCTools
                               nal.lang = aliasItem.Attribute("lang").Value;
                               enumItem.Aliases.Add(nal);
                            }
-                        }
                         pev.EnumDef.Add(enumItem);
                      }
                   }
+               }
+               dataTyp = pev;
+            }
+            else if (propDatType.Name.LocalName.Equals("TypePropertyBoundedValue"))
+            {
+               XElement dataType = propDatType.Element(ns + "DataType");
+               PropertyBoundedValue bv = new PropertyBoundedValue();
+               bv.DataType = dataType.Attribute("type").Value;
+               dataTyp = bv;
+            }
+            else if (propDatType.Name.LocalName.Equals("TypePropertyListValue"))
+            {
+               XElement dataType = propDatType.Descendants(ns + "DataType").FirstOrDefault();
+               PropertyListValue lv = new PropertyListValue();
+               lv.DataType = dataType.Attribute("type").Value;
+               dataTyp = lv;
+            }
+            else if (propDatType.Name.LocalName.Equals("TypePropertyTableValue"))
+            {
+               PropertyTableValue tv = new PropertyTableValue();
+               var tve = propDatType.Element(ns + "Expression");
+               if (tve != null)
+                  tv.Expression = tve.Value;
+               XElement el = propDatType.Element(ns + "DefiningValue");
+               if (el != null)
+               {
+                  XElement el2 = propDatType.Element(ns + "DefiningValue").Element(ns + "DataType");
+                  if (el2 != null)
+                     tv.DefiningValueType = el2.Attribute("type").Value;
+               }
+               el = propDatType.Element(ns + "DefinedValue");
+               if (el != null)
+               {
+                  XElement el2 = propDatType.Element(ns + "DefinedValue").Element(ns + "DataType");
+                  if (el2 != null)
+                     tv.DefinedValueType = el2.Attribute("type").Value;
+               }
+               dataTyp = tv;
+            }
+            else if (propDatType.Name.LocalName.Equals("TypeComplexProperty"))
+            {
+               ComplexProperty compProp = new ComplexProperty();
+               if (propDatType.Attribute("name") != null)
+                  compProp.Name = propDatType.Attribute("name").Value;
+               compProp.Properties = new List<PsetProperty>();
+               foreach (XElement cpPropDef in propDatType.Elements(ns + "PropertyDef"))
+               {
+                  PsetProperty pr = getPropertyDef(ns, cpPropDef, psetOrQtoSet);
+                  if (pr == null)
+                  {
+                     logF.WriteLine("%Error: Mising PropertyType data in complex property {0}.{1}.{2}", propDatType.Parent.Parent.Element(ns + "Name").Value,
+                        prop.Name, cpPropDef.Element(ns + "Name").Value);
+                  }
                   else
-                  {
-                     PropertyEnumItem enumItem = new PropertyEnumItem();
-                     enumItem.EnumItem = enumItemName;
-                     enumItem.Aliases = new List<NameAlias>();
-                     pev.EnumDef.Add(enumItem);
-                  }
+                     compProp.Properties.Add(pr);
                }
+               dataTyp = compProp;
             }
-            else
-            {
-               {
-#if DEBUG
-                  logF.WriteLine("%Warning: EnumList {0}.{1} is empty!", pDef.Parent.Parent.Element(ns + "Name").Value, prop.Name);
-#endif
-               }
-               // If EnumList is empty, try to see whether ConstantDef has values. The Enum item name will be taken from the ConstantDef.Name
-               pev.Name = "PEnum_" + prop.Name;
-               pev.EnumDef = new List<PropertyEnumItem>();
-               var consDef = from el in propDetType.Element(ns + "ConstantList").Elements(ns + "ConstantDef")
-                             select el;
-               if (consDef != null && consDef.Count() > 0)
-               {
-                  foreach (var cD in consDef)
-                  {
-                     PropertyEnumItem enumItem = new PropertyEnumItem();
-                     enumItem.EnumItem = cD.Elements(ns + "Name").FirstOrDefault().Value;
-                     enumItem.Aliases = new List<NameAlias>();
-                     var eAliases = from el in cD.Elements(ns + "NameAliases").FirstOrDefault().Elements(ns + "NameAlias") select el;
-                     if (eAliases.Count() > 0)
-                        foreach (var aliasItem in eAliases)
-                        {
-                           NameAlias nal = new NameAlias();
-                           nal.Alias = aliasItem.Value;
-                           nal.lang = aliasItem.Attribute("lang").Value;
-                           enumItem.Aliases.Add(nal);
-                        }
-                     pev.EnumDef.Add(enumItem);
-                  }
-               }
-            }
-            dataTyp = pev;
-         }
-         else if (propDetType.Name.LocalName.Equals("TypePropertyBoundedValue"))
-         {
-            XElement dataType = propDetType.Element(ns + "DataType");
-            PropertyBoundedValue bv = new PropertyBoundedValue();
-            bv.DataType = dataType.Attribute("type").Value;
-            dataTyp = bv;
-         }
-         else if (propDetType.Name.LocalName.Equals("TypePropertyListValue"))
-         {
-            XElement dataType = propDetType.Descendants(ns + "DataType").FirstOrDefault();
-            PropertyListValue lv = new PropertyListValue();
-            lv.DataType = dataType.Attribute("type").Value;
-            dataTyp = lv;
-         }
-         else if (propDetType.Name.LocalName.Equals("TypePropertyTableValue"))
-         {
-            PropertyTableValue tv = new PropertyTableValue();
-            var tve = propDetType.Element(ns + "Expression");
-            if (tve != null)
-               tv.Expression = tve.Value;
-            XElement el = propDetType.Element(ns + "DefiningValue");
-            if (el != null)
-            {
-               XElement el2 = propDetType.Element(ns + "DefiningValue").Element(ns + "DataType");
-               if (el2 != null)
-                  tv.DefiningValueType = el2.Attribute("type").Value;
-            }
-            el = propDetType.Element(ns + "DefinedValue");
-            if (el != null)
-            {
-               XElement el2 = propDetType.Element(ns + "DefinedValue").Element(ns + "DataType");
-               if (el2 != null)
-                  tv.DefinedValueType = el2.Attribute("type").Value;
-            }
-            dataTyp = tv;
-         }
-         else if (propDetType.Name.LocalName.Equals("TypeComplexProperty"))
-         {
-            ComplexProperty compProp = new ComplexProperty();
-            compProp.Name = propDetType.Attribute("name").Value;
-            compProp.Properties = new List<PsetProperty>();
-            foreach (XElement cpPropDef in propDetType.Elements(ns + "PropertyDef"))
-            {
-               PsetProperty pr = getPropertyDef(ns, cpPropDef);
-               if (pr == null)
-               {
-#if DEBUG
-                  logF.WriteLine("%Error: Mising PropertyType data in complex property {0}.{1}.{2}", propDetType.Parent.Parent.Element(ns + "Name").Value,
-                     prop.Name, cpPropDef.Element(ns + "Name").Value);
-#endif
-               }
-               else
-                  compProp.Properties.Add(pr);
-            }
-            dataTyp = compProp;
-         }
-         prop.PropertyType = dataTyp;
+            prop.PropertyType = dataTyp;
 
-         return prop;
+            return prop;
+         }
+         catch
+         {
+            return null;
+         }
       }
 
-      PsetDefinition Process(string schemaVersion, FileInfo PSDfileName)
+      PsetDefinition Process(string schemaVersion, FileInfo PSDfileName, Dictionary<ItemsInPsetQtoDefs, string> psetOrQtoSet)
       {
          PsetDefinition pset = new PsetDefinition();
          XDocument doc = XDocument.Load(PSDfileName.FullName);
@@ -827,20 +925,34 @@ namespace RevitIFCTools
          if (nsInfo != null)
             ns = nsInfo.Value;
 
-         pset.Name = doc.Elements(ns + "PropertySetDef").Elements(ns + "Name").FirstOrDefault().Value;
-         pset.IfcVersion = doc.Elements(ns + "PropertySetDef").Elements(ns + "IfcVersion").FirstOrDefault().Attribute("version").Value.Replace(" ", "");
+         pset.Name = doc.Elements(ns + psetOrQtoSet[ItemsInPsetQtoDefs.PropertySetOrQtoSetDef].ToString()).Elements(ns + "Name").FirstOrDefault().Value;
+         pset.IfcVersion = doc.Elements(ns + psetOrQtoSet[ItemsInPsetQtoDefs.PropertySetOrQtoSetDef].ToString()).Elements(ns + "IfcVersion").FirstOrDefault().Attribute("version").Value.Replace(" ", "");
          if (pset.IfcVersion.StartsWith("2"))
          {
-            if (pset.IfcVersion.Equals("2X", StringComparison.CurrentCultureIgnoreCase))
-               pset.IfcVersion = "IFC" + pset.IfcVersion.ToUpper() + "2";  // BUG in the documentation. It ony contains "2x" instead of "2x2"
+            if (pset.IfcVersion.Equals("2X", StringComparison.CurrentCultureIgnoreCase)
+               || pset.IfcVersion.Equals("2X2", StringComparison.CurrentCultureIgnoreCase)
+               || pset.IfcVersion.Equals("2.X", StringComparison.CurrentCultureIgnoreCase))
+               pset.IfcVersion = "IFC2X2";  // BUG in the documentation. It ony contains "2x" instead of "2x2"
+            else if (pset.IfcVersion.StartsWith("IFC2X3", StringComparison.CurrentCultureIgnoreCase))
+               pset.IfcVersion = "IFC2X3";
             else
                pset.IfcVersion = "IFC" + pset.IfcVersion.ToUpper();   // Namespace cannot start with a number. e.g. make sure 2x3 -> IFC2x3
          }
-         else if (pset.IfcVersion.StartsWith("IFC4"))
-            pset.IfcVersion = schemaVersion.ToUpper();
+         else if (pset.IfcVersion.StartsWith("IFC4X3", StringComparison.InvariantCultureIgnoreCase))
+         {
+            pset.IfcVersion = "IFC4X3";
+         }
+         else if (pset.IfcVersion.StartsWith("IFC4", StringComparison.InvariantCultureIgnoreCase))
+         {
+            pset.IfcVersion = pset.IfcVersion.ToUpper();
+         }
+         else
+         {
+            logF.WriteLine("Unrecognized IfcVersion: ", pset.IfcVersion);
+         }
 
-         if (doc.Element(ns + "PropertySetDef").Attribute("ifdguid") != null)
-            pset.IfdGuid = doc.Element(ns + "PropertySetDef").Attribute("ifdguid").Value;
+         if (doc.Element(ns + psetOrQtoSet[ItemsInPsetQtoDefs.PropertySetOrQtoSetDef].ToString()).Attribute("ifdguid") != null)
+            pset.IfdGuid = doc.Element(ns + psetOrQtoSet[ItemsInPsetQtoDefs.PropertySetOrQtoSetDef].ToString()).Attribute("ifdguid").Value;
          // Get applicable classes
          IEnumerable<XElement> applicableClasses = from el in doc.Descendants(ns + "ClassName") select el;
          IList<string> applClassesList = new List<string>();
@@ -853,7 +965,7 @@ namespace RevitIFCTools
 
          pset.ApplicableClasses = applClassesList;
 
-         XElement applType = doc.Elements(ns + "PropertySetDef").Elements(ns + "ApplicableTypeValue").FirstOrDefault();
+         XElement applType = doc.Elements(ns + psetOrQtoSet[ItemsInPsetQtoDefs.PropertySetOrQtoSetDef].ToString()).Elements(ns + "ApplicableTypeValue").FirstOrDefault();
          if (applType != null)
          {
             string applicableType = applType.Value;
@@ -865,8 +977,9 @@ namespace RevitIFCTools
 
                string[] applTypeStr = applicableType.Split('/', '.', '=');
                pset.ApplicableType = applTypeStr[0];
-               if (applTypeStr.Count() > 1)
-                  pset.PredefinedType = applTypeStr[applTypeStr.Count() - 1].Replace("\"", "");
+               string predefinedType = GetApplicablePredefinedType(applTypeStr);
+               if (predefinedType != null)
+                  pset.PredefinedTypes.Add(predefinedType);
 
                // If the applicable type contains more than 1 entry, add them into the applicable classes
                string[] addClasses = pset.ApplicableType.Split(',');
@@ -882,35 +995,1999 @@ namespace RevitIFCTools
             }
          }
 
-         IList<PsetProperty> propList = new List<PsetProperty>();
-         var pDefs = from p in doc.Descendants(ns + "PropertyDef") select p;
+         // Shouldn't be here, but some time the IFC documentation is not good
+         if (pset.ApplicableClasses.Count == 0)
+         {
+            logF.WriteLine("%Error - This pset is missing applicable class information: " + pset.IfcVersion + " " + pset.Name);
+            // Special handling of problematic issue
+            #region IFCSpecialHandling
+            if (pset.IfcVersion.Equals("IFC4", StringComparison.InvariantCultureIgnoreCase))
+            {
+               if (pset.Name.Equals("Pset_CivilElementCommon"))
+                  pset.ApplicableClasses.Add("IfcCivilElement");
+               else if (pset.Name.Equals("Pset_ElectricFlowStorageDevicePHistory", StringComparison.InvariantCultureIgnoreCase))
+                  pset.ApplicableClasses.Add("IfcElectricFlowStorageDevice");
+               else if (pset.Name.Equals("Pset_ElementAssemblyCommon", StringComparison.InvariantCultureIgnoreCase))
+                  pset.ApplicableClasses.Add("IfcElementAssembly");
+               else if (pset.Name.Equals("Pset_SpatialZoneCommon", StringComparison.InvariantCultureIgnoreCase))
+                  pset.ApplicableClasses.Add("IfcSpatialZone");
+            }
+            else if (pset.IfcVersion.Equals("IFC2X2", StringComparison.InvariantCultureIgnoreCase))
+            {
+               if (pset.Name.Equals("Pset_AnalogInput"))
+               {
+                  pset.ApplicableClasses.Add("IfcDistributionControlElement");
+               }
+               else if (pset.Name.Equals("Pset_AnalogOutput", StringComparison.InvariantCultureIgnoreCase))
+               {
+                  pset.ApplicableClasses.Add("IfcDistributionControlElement");
+               }
+               else if (pset.Name.Equals("Pset_BinaryInput", StringComparison.InvariantCultureIgnoreCase))
+               {
+                  pset.ApplicableClasses.Add("IfcDistributionControlElement");
+               }
+               else if (pset.Name.Equals("Pset_BinaryOutput", StringComparison.InvariantCultureIgnoreCase))
+               {
+                  pset.ApplicableClasses.Add("IfcDistributionControlElement");
+               }
+               else if (pset.Name.Equals("Pset_MultiStateInput", StringComparison.InvariantCultureIgnoreCase))
+               {
+                  pset.ApplicableClasses.Add("IfcDistributionControlElement");
+               }
+               else if (pset.Name.Equals("Pset_MultiStateOutput", StringComparison.InvariantCultureIgnoreCase))
+               {
+                  pset.ApplicableClasses.Add("IfcDistributionControlElement");
+               }
+               else if (pset.Name.Equals("Pset_ElectricalDeviceCommon", StringComparison.InvariantCultureIgnoreCase))
+               {
+                  pset.ApplicableClasses.Add("IfcDistributionElement");
+               }
+               else if (pset.Name.Equals("Pset_DuctConnection", StringComparison.InvariantCultureIgnoreCase))
+               {
+                  pset.ApplicableClasses.Add("IfcDuctSegmentType");
+                  pset.ApplicableClasses.Add("IfcDuctFittingType");
+               }
+               else if (pset.Name.Equals("Pset_DuctDesignCriteria", StringComparison.InvariantCultureIgnoreCase))
+               {
+                  pset.ApplicableClasses.Add("IfcSystem");
+                  pset.ApplicableClasses.Add("IfcDuctSegmentType");
+                  pset.ApplicableClasses.Add("IfcDuctFittingType");
+               }
+               else if (pset.Name.Equals("Pset_PipeConnection", StringComparison.InvariantCultureIgnoreCase))
+               {
+                  pset.ApplicableClasses.Add("IfcPipeSegmentType");
+                  pset.ApplicableClasses.Add("IfcPipeFittingType");
+               }
+               else if (pset.Name.Equals("Pset_PipeConnectionFlanged", StringComparison.InvariantCultureIgnoreCase))
+               {
+                  pset.ApplicableClasses.Add("IfcPipeSegmentType");
+                  pset.ApplicableClasses.Add("IfcPipeFittingType");
+               }
+               else if (pset.Name.Equals("Pset_AirSideSystemInformation", StringComparison.InvariantCultureIgnoreCase))
+               {
+                  pset.ApplicableClasses.Add("IfcSystem");
+               }
+               else if (pset.Name.Equals("Pset_FireRatingProperties", StringComparison.InvariantCultureIgnoreCase))
+               {
+                  pset.ApplicableClasses.Add("IfcElement");
+                  pset.ApplicableClasses.Add("IfcSpatialStructureElement");
+               }
+               else if (pset.Name.Equals("Pset_ThermalLoadAggregate", StringComparison.InvariantCultureIgnoreCase))
+               {
+                  pset.ApplicableClasses.Add("IfcElement");
+                  pset.ApplicableClasses.Add("IfcSpatialStructureElement");
+                  pset.ApplicableClasses.Add("IfcZone");
+               }
+               else if (pset.Name.Equals("Pset_ThermalLoadDesignCriteria", StringComparison.InvariantCultureIgnoreCase))
+               {
+                  pset.ApplicableClasses.Add("IfcElement");
+                  pset.ApplicableClasses.Add("IfcSpatialStructureElement");
+                  pset.ApplicableClasses.Add("IfcZone");
+                  pset.ApplicableClasses.Add("IfcBuilding");
+               }
+               else if (pset.Name.Equals("Pset_ConcreteElementGeneral", StringComparison.InvariantCultureIgnoreCase))
+               {
+                  pset.ApplicableClasses.Add("IfcBuildingElement");
+               }
+               else if (pset.Name.Equals("Pset_ConcreteElementQuantityGeneral", StringComparison.InvariantCultureIgnoreCase))
+               {
+                  pset.ApplicableClasses.Add("IfcBuildingElement");
+               }
+               else if (pset.Name.Equals("Pset_ConcreteElementSurfaceFinishQuantityGeneral", StringComparison.InvariantCultureIgnoreCase))
+               {
+                  pset.ApplicableClasses.Add("IfcBuildingElement");
+               }
+               else if (pset.Name.Equals("Pset_PrecastConcreteElementGeneral", StringComparison.InvariantCultureIgnoreCase))
+               {
+                  pset.ApplicableClasses.Add("IfcBuildingElement");
+               }
+            }
+            #endregion
+         }
+
+         // If after special handling the pset still has no applicable classes, discard it
+         if (pset.ApplicableClasses.Count == 0)
+         {
+            logF.WriteLine("%Warning - Discarding pset with no applicable classes after special handling: " + pset.IfcVersion + " " + pset.Name);
+            return null;
+         }
+
+         HashSet<PsetProperty> propSet = new HashSet<PsetProperty>(new PropertyComparer());
+         //var pDefs = from p in doc.Descendants(ns + psetOrQtoSet[ItemsInPsetQtoDefs.PropertyOrQtoDef].ToString()) select p;
+         XElement psetD = doc.Element(ns + psetOrQtoSet[ItemsInPsetQtoDefs.PropertySetOrQtoSetDef].ToString());
+         XElement propDefs = psetD.Element(ns + psetOrQtoSet[ItemsInPsetQtoDefs.PropertyOrQtoDefs].ToString());
+         var pDefs = from p in propDefs.Elements(ns + psetOrQtoSet[ItemsInPsetQtoDefs.PropertyOrQtoDef].ToString()) select p;
          foreach (XElement pDef in pDefs)
          {
-            PsetProperty prop = getPropertyDef(ns, pDef);
+            PsetProperty prop = getPropertyDef(ns, pDef, psetOrQtoSet);
             SharedParameterDef shPar = new SharedParameterDef();
             if (prop == null)
             {
-#if DEBUG
                logF.WriteLine("%Error: Mising PropertyType data for {0}.{1}", pset.Name, pDef.Element(ns + "Name").Value);
-#endif
             }
             else
             {
-               propList.Add(prop);
+               propSet.Add(prop);
             }
          }
-         pset.properties = propList;
+         pset.properties = propSet;
 
          return pset;
       }
 
-      public void ProcessSchemaPsetDef(string schemaName, DirectoryInfo psdFolder)
+      private string GetApplicablePredefinedType(string[] applTypeStr)
       {
-         foreach (FileInfo file in psdFolder.GetFiles("Pset_*.xml"))
+         // Applicable type is a single entity name
+         if (applTypeStr.Count() < 2)
+            return null;
+
+         // Do not fill the predefinedType for IfcMaterial applicable type
+         // For example in ifc4 the applicable type of Pset_MaterialConcrete is 'IfcMaterial/Concrete'
+         // I don't see any reasons to restrict the material properties export for material because:
+         // 1. These properties are exported only if the customer add and fill the corresponding SharedParameter
+         // 2. In fact IfcMaterial's don't have PredefinedType
+         // 3. The Applicable type string was fixed in ifc4x3 schema (removed predefined type name)
+         // 4. In Revit materials can be Basic, Generic or without Type at all if the 'Physical' assert isn't added
+         if (applTypeStr[0].Equals("IfcMaterial", StringComparison.InvariantCultureIgnoreCase))
+            return null;
+
+         return applTypeStr[applTypeStr.Count() - 1].Replace("\"", "").TrimEnd(',');
+      }
+
+      /// <summary>
+      /// Process HTML files (Pset_*.htm or Qto_*.htm) from lexical folders
+      /// </summary>
+      private void ProcessHtmlFiles(string schemaName, DirectoryInfo psdFolder, Dictionary<ItemsInPsetQtoDefs, string> psetOrQtoSet)
+      {
+         var htmlParser = new HtmlPsetDefinitionParser(logF);
+         string pattern = psetOrQtoSet[ItemsInPsetQtoDefs.PropertySetOrQtoSetDef].Equals("PropertySetDef") 
+            ? PSET_HTM_PATTERN : QTO_HTM_PATTERN;
+         
+         foreach (FileInfo file in psdFolder.GetFiles(pattern))
          {
-            PropertySet.PsetDefinition psetD = Process(schemaName, file);
+            PropertySet.PsetDefinition psetD = htmlParser.ProcessHtmlFile(schemaName, file, psetOrQtoSet);
             AddPsetDefToDict(schemaName, psetD);
          }
       }
+
+      /// <summary>
+      /// Process XML files (Pset_*.xml or Qto_*.xml) from psd folders
+      /// </summary>
+      private void ProcessXmlFiles(string schemaName, DirectoryInfo psdFolder, Dictionary<ItemsInPsetQtoDefs, string> psetOrQtoSet)
+      {
+         string pattern = psetOrQtoSet[ItemsInPsetQtoDefs.PropertySetOrQtoSetDef].Equals("PropertySetDef") 
+            ? PSET_XML_PATTERN : QTO_XML_PATTERN;
+         
+         foreach (FileInfo file in psdFolder.GetFiles(pattern))
+         {
+            PropertySet.PsetDefinition psetD = Process(schemaName, file, psetOrQtoSet);
+            AddPsetDefToDict(schemaName, psetD);
+         }
+      }
+
+      public void ProcessSchemaPsetDef(string schemaName, DirectoryInfo psdFolder, Dictionary<ItemsInPsetQtoDefs, string> psetOrQtoSet)
+      {
+         // Check if this is a lexical folder (contains HTML files)
+         bool isLexicalFolder = psdFolder.Name.Equals("lexical", StringComparison.InvariantCultureIgnoreCase);
+         
+         if (isLexicalFolder)
+            ProcessHtmlFiles(schemaName, psdFolder, psetOrQtoSet);
+         else
+            ProcessXmlFiles(schemaName, psdFolder, psetOrQtoSet);
+      }
+
+      public void ProcessPreIfc4QtoSets(string schemaName)
+      {
+         // The QTO set definitions are taken from the web documentation
+         // because they are not represented in the official schema files for IFC2x2 and IFC2x3.
+         if (schemaName.StartsWith("IFC2X2", StringComparison.InvariantCultureIgnoreCase))
+         {
+            AddPsetDefToDict(schemaName, Qto_SiteBaseQuantitiesIFC2x2(schemaName));
+            AddPsetDefToDict(schemaName, Qto_BuildingBaseQuantitiesIFC2x2(schemaName));
+            AddPsetDefToDict(schemaName, Qto_BuildingStoreyBaseQuantitiesIFC2x2(schemaName));
+            AddPsetDefToDict(schemaName, Qto_SpaceBaseQuantitiesIFC2x2(schemaName));
+            AddPsetDefToDict(schemaName, Qto_BeamBaseQuantitiesIFC2x2(schemaName));
+            AddPsetDefToDict(schemaName, Qto_ColumnBaseQuantitiesIFC2x2(schemaName));
+            AddPsetDefToDict(schemaName, Qto_MemberBaseQuantitiesIFC2x2(schemaName));
+            AddPsetDefToDict(schemaName, Qto_CoveringBaseQuantitiesIFC2x2(schemaName));
+            AddPsetDefToDict(schemaName, Qto_OpeningElementBaseQuantitiesIFC2x2(schemaName));
+            AddPsetDefToDict(schemaName, Qto_SlabBaseQuantitiesIFC2x2(schemaName));
+            AddPsetDefToDict(schemaName, Qto_RoofBaseQuantitiesIFC2x2(schemaName));
+            AddPsetDefToDict(schemaName, Qto_WallBaseQuantitiesIFC2x2(schemaName));
+         }
+         else if (schemaName.StartsWith("IFC2X3", StringComparison.InvariantCultureIgnoreCase))
+         {
+            AddPsetDefToDict(schemaName, Qto_SiteBaseQuantitiesIFC2x3(schemaName));
+            AddPsetDefToDict(schemaName, Qto_BuildingBaseQuantitiesIFC2x3(schemaName));
+            AddPsetDefToDict(schemaName, Qto_BuildingStoreyBaseQuantitiesIFC2x3(schemaName));
+            AddPsetDefToDict(schemaName, Qto_SpaceBaseQuantitiesIFC2x3(schemaName));
+            AddPsetDefToDict(schemaName, Qto_BeamBaseQuantitiesIFC2x3(schemaName));
+            AddPsetDefToDict(schemaName, Qto_ColumnBaseQuantitiesIFC2x3(schemaName));
+            AddPsetDefToDict(schemaName, Qto_MemberBaseQuantitiesIFC2x3(schemaName));
+            AddPsetDefToDict(schemaName, Qto_CoveringBaseQuantitiesIFC2x3(schemaName));
+            AddPsetDefToDict(schemaName, Qto_OpeningElementBaseQuantitiesIFC2x3(schemaName));
+            AddPsetDefToDict(schemaName, Qto_ProjectionElementBaseQuantitiesIFC2x3(schemaName));
+            AddPsetDefToDict(schemaName, Qto_SlabBaseQuantitiesIFC2x3(schemaName));
+            AddPsetDefToDict(schemaName, Qto_RoofBaseQuantitiesIFC2x3(schemaName));
+            AddPsetDefToDict(schemaName, Qto_WallBaseQuantitiesIFC2x3(schemaName));
+         }
+      }
+
+      private PsetDefinition Qto_SiteBaseQuantitiesIFC2x2(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_SiteBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcSite" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "SitePerimeter",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "SiteArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition Qto_BuildingBaseQuantitiesIFC2x2(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_BuildingBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcBuilding" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "TotalHeight",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "SiteCoverage",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossFloorArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetFloorArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossVolume",
+            PropertyType = new PropertySingleValue() { DataType = "IfcVolumeMeasure" }
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition Qto_BuildingStoreyBaseQuantitiesIFC2x2(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_BuildingStoreyBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcBuildingStorey" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "TotalHeight",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "SiteCoverage",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetFloorArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossVolume",
+            PropertyType = new PropertySingleValue() { DataType = "IfcVolumeMeasure" }
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition Qto_SpaceBaseQuantitiesIFC2x2(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_SpaceBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcSpace" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "AverageHeight",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "AverageClearHeight",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "AverageGrossHeight",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "Perimeter",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "Area",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "Volume",
+            PropertyType = new PropertySingleValue() { DataType = "IfcVolumeMeasure" }
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition Qto_CoveringBaseQuantitiesIFC2x2(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_CoveringBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcCovering" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "CoveredArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition Qto_BeamBaseQuantitiesIFC2x2(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_BeamBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcBeam" };
+         psetD.properties = new HashSet<PsetProperty>();
+         AddQuantitiesForStructuralElement(ref psetD);
+
+         return psetD;
+      }
+
+      private PsetDefinition Qto_ColumnBaseQuantitiesIFC2x2(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_ColumnBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcColumn" };
+         psetD.properties = new HashSet<PsetProperty>();
+         AddQuantitiesForStructuralElement(ref psetD);
+
+         return psetD;
+      }
+
+      private PsetDefinition Qto_MemberBaseQuantitiesIFC2x2(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_MemberBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcMember" };
+         psetD.properties = new HashSet<PsetProperty>();
+         AddQuantitiesForStructuralElement(ref psetD);
+
+         return psetD;
+      }
+
+      private PsetDefinition Qto_OpeningElementBaseQuantitiesIFC2x2(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_OpeningElementBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcOpeningElement" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "OpeningArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition Qto_WallBaseQuantitiesIFC2x2(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_WallBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcWall", "IfcWallStandardCase" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NominalLength",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossFootPrintArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetFootPrintArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossSideAreaLeft",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetSideAreaLeft",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossSideAreaRight",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetSideAreaRight",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossVolume",
+            PropertyType = new PropertySingleValue() { DataType = "IfcVolumeMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetVolume",
+            PropertyType = new PropertySingleValue() { DataType = "IfcVolumeMeasure" }
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition Qto_SlabBaseQuantitiesIFC2x2(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_SlabBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcSlab" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "Perimeter",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "SurfaceArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossVolume",
+            PropertyType = new PropertySingleValue() { DataType = "IfcVolumeMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetVolume",
+            PropertyType = new PropertySingleValue() { DataType = "IfcVolumeMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossWeight",
+            PropertyType = new PropertySingleValue() { DataType = "IfcMassMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetWeight",
+            PropertyType = new PropertySingleValue() { DataType = "IfcMassMeasure" }
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition Qto_RoofBaseQuantitiesIFC2x2(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_RoofBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcRoof" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "TotalSurfaceArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition Qto_SiteBaseQuantitiesIFC2x3(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_SiteBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcSite" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NominalPerimeter",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NominalArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition Qto_BuildingBaseQuantitiesIFC2x3(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_BuildingBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcBuilding" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NominalHeight",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NominalArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossFloorArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetFloorArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossVolume",
+            PropertyType = new PropertySingleValue() { DataType = "IfcVolumeMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetVolume",
+            PropertyType = new PropertySingleValue() { DataType = "IfcVolumeMeasure" }
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition Qto_BuildingStoreyBaseQuantitiesIFC2x3(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_BuildingStoreyBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcBuildingStorey" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NominalHeight",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossFloorArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetFloorArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossVolume",
+            PropertyType = new PropertySingleValue() { DataType = "IfcVolumeMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetVolume",
+            PropertyType = new PropertySingleValue() { DataType = "IfcVolumeMeasure" }
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition Qto_SpaceBaseQuantitiesIFC2x3(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_SpaceBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcSpace" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NominalHeight",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "ClearHeight",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossPerimeter",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetPerimeter",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossFloorArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetFloorArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossCeilingArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetCeilingArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossWallArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetWallArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossVolume",
+            PropertyType = new PropertySingleValue() { DataType = "IfcVolumeMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetVolume",
+            PropertyType = new PropertySingleValue() { DataType = "IfcVolumeMeasure" }
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition Qto_CoveringBaseQuantitiesIFC2x3(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_CoveringBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcCovering" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         return psetD;
+      }
+
+      private void AddQuantitiesForStructuralElement(ref PsetDefinition psetD)
+      {
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NominalLength",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "CrossSectionArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "OuterSurfaceArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "TotalSurfaceArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossVolume",
+            PropertyType = new PropertySingleValue() { DataType = "IfcVolumeMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetVolume",
+            PropertyType = new PropertySingleValue() { DataType = "IfcVolumeMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossWeight",
+            PropertyType = new PropertySingleValue() { DataType = "IfcMassMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetWeight",
+            PropertyType = new PropertySingleValue() { DataType = "IfcMassMeasure" }
+         });
+      }
+
+      private PsetDefinition Qto_BeamBaseQuantitiesIFC2x3(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_BeamBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcBeam" };
+         psetD.properties = new HashSet<PsetProperty>();
+         AddQuantitiesForStructuralElement(ref psetD);
+
+         return psetD;
+      }
+
+      private PsetDefinition Qto_ColumnBaseQuantitiesIFC2x3(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_ColumnBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcColumn" };
+         psetD.properties = new HashSet<PsetProperty>();
+         AddQuantitiesForStructuralElement(ref psetD);
+
+         return psetD;
+      }
+
+      private PsetDefinition Qto_MemberBaseQuantitiesIFC2x3(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_MemberBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcMember" };
+         psetD.properties = new HashSet<PsetProperty>();
+         AddQuantitiesForStructuralElement(ref psetD);
+
+         return psetD;
+      }
+
+      private PsetDefinition Qto_OpeningElementBaseQuantitiesIFC2x3(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_OpeningElementBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcOpeningElement" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NominalArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NominalVolume",
+            PropertyType = new PropertySingleValue() { DataType = "IfcVolumeMeasure" }
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition Qto_ProjectionElementBaseQuantitiesIFC2x3(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_ProjectionElementBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcProjectionElement" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NominalArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NominalVolume",
+            PropertyType = new PropertySingleValue() { DataType = "IfcVolumeMeasure" }
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition Qto_WallBaseQuantitiesIFC2x3(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_WallBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcWall", "IfcWallStandardCase" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NominalLength",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NominalWidth",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NominalHeight",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossFootPrintArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetFootPrintArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossSideArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetSideArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossSideAreaLeft",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetSideAreaLeft",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossSideAreaRight",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetSideAreaRight",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossVolume",
+            PropertyType = new PropertySingleValue() { DataType = "IfcVolumeMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetVolume",
+            PropertyType = new PropertySingleValue() { DataType = "IfcVolumeMeasure" }
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition Qto_SlabBaseQuantitiesIFC2x3(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_SlabBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcSlab" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NominalWidth",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "Perimeter",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossVolume",
+            PropertyType = new PropertySingleValue() { DataType = "IfcVolumeMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetVolume",
+            PropertyType = new PropertySingleValue() { DataType = "IfcVolumeMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "GrossWeight",
+            PropertyType = new PropertySingleValue() { DataType = "IfcMassMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "NetWeight",
+            PropertyType = new PropertySingleValue() { DataType = "IfcMassMeasure" }
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition Qto_RoofBaseQuantitiesIFC2x3(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "Qto_RoofBaseQuantities";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcRoof" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "TotalSurfaceArea",
+            PropertyType = new PropertySingleValue() { DataType = "IfcAreaMeasure" }
+         });
+
+         return psetD;
+      }
+
+      public void ProcessPredefinedPsets(string schemaName)
+      {
+         AddPsetDefToDict(schemaName, IfcDoorLiningProperties(schemaName));
+         AddPsetDefToDict(schemaName, IfcDoorPanelProperties(schemaName));
+         AddPsetDefToDict(schemaName, IfcPermeableCoveringProperties(schemaName));
+         AddPsetDefToDict(schemaName, IfcReinforcementDefinitionProperties(schemaName));
+         AddPsetDefToDict(schemaName, IfcWindowLiningProperties(schemaName));
+         AddPsetDefToDict(schemaName, IfcWindowPanelProperties(schemaName));
+         if (schemaName.StartsWith("ifc2x2", StringComparison.InvariantCultureIgnoreCase)
+            || schemaName.StartsWith("ifc2x3", StringComparison.InvariantCultureIgnoreCase))
+         {
+            AddPsetDefToDict(schemaName, IfcMechanicalMaterialProperties(schemaName));
+            AddPsetDefToDict(schemaName, IfcMechanicalSteelMaterialProperties(schemaName));
+            AddPsetDefToDict(schemaName, IfcMechanicalConcreteMaterialProperties(schemaName));
+            AddPsetDefToDict(schemaName, IfcThermalMaterialProperties(schemaName));
+            AddPsetDefToDict(schemaName, IfcHygroscopicMaterialProperties(schemaName));
+            AddPsetDefToDict(schemaName, IfcGeneralMaterialProperties(schemaName));
+            AddPsetDefToDict(schemaName, IfcOpticalMaterialProperties(schemaName));
+            AddPsetDefToDict(schemaName, IfcWaterProperties(schemaName));
+            AddPsetDefToDict(schemaName, IfcFuelProperties(schemaName));
+            AddPsetDefToDict(schemaName, IfcProductsOfCombustionProperties(schemaName));
+         }
+      }
+
+      private PsetDefinition IfcDoorLiningProperties(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "IfcDoorLiningProperties";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcDoor" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "LiningDepth",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "ThresholdDepth",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "TransomOffset",
+            PropertyType = new PropertySingleValue() { DataType = "IfcLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "LiningOffset",
+            PropertyType = new PropertySingleValue() { DataType = "IfcLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "ThresholdOffset",
+            PropertyType = new PropertySingleValue() { DataType = "IfcLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "CasingThickness",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "CasingDepth",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         if (schemaName.StartsWith("ifc2x2", StringComparison.InvariantCultureIgnoreCase))
+         {
+            psetD.ApplicableClasses.Add("IfcDoorStyle");
+
+            psetD.properties.Add(new PsetProperty()
+            {
+               Name = "LiningThickness",
+               PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+            });
+
+            psetD.properties.Add(new PsetProperty()
+            {
+               Name = "ThresholdThickness",
+               PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+            });
+
+            psetD.properties.Add(new PsetProperty()
+            {
+               Name = "TransomThickness",
+               PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+            });
+         }
+         else if (schemaName.StartsWith("ifc2x3", StringComparison.InvariantCultureIgnoreCase))
+         {
+            psetD.ApplicableClasses.Add("IfcDoorStyle");
+
+            psetD.properties.Add(new PsetProperty()
+            {
+               Name = "LiningThickness",
+               PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+            });
+
+            psetD.properties.Add(new PsetProperty()
+            {
+               Name = "ThresholdThickness",
+               PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+            });
+
+            psetD.properties.Add(new PsetProperty()
+            {
+               Name = "TransomThickness",
+               PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+            });
+         }
+         else if (schemaName.Equals("ifc4", StringComparison.InvariantCultureIgnoreCase))
+         {
+            psetD.ApplicableClasses.Add("IfcDoorType");
+
+            psetD.properties.Add(new PsetProperty()
+            {
+               Name = "LiningThickness",
+               PropertyType = new PropertySingleValue() { DataType = "IfcNonNegativeLengthMeasure" }
+            });
+
+            psetD.properties.Add(new PsetProperty()
+            {
+               Name = "ThresholdThickness",
+               PropertyType = new PropertySingleValue() { DataType = "IfcNonNegativeLengthMeasure" }
+            });
+
+            psetD.properties.Add(new PsetProperty()
+            {
+               Name = "TransomThickness",
+               PropertyType = new PropertySingleValue() { DataType = "IfcNonNegativeLengthMeasure" }
+            });
+
+            psetD.properties.Add(new PsetProperty()
+            {
+               Name = "LiningToPanelOffsetX",
+               PropertyType = new PropertySingleValue() { DataType = "IfcLengthMeasure" }
+            });
+
+            psetD.properties.Add(new PsetProperty()
+            {
+               Name = "LiningToPanelOffsetY",
+               PropertyType = new PropertySingleValue() { DataType = "IfcLengthMeasure" }
+            });
+         }
+
+         return psetD;
+      }
+
+      private PsetDefinition IfcDoorPanelProperties(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "IfcDoorPanelProperties";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcDoor" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "PanelDepth",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "PanelOperation",
+            PropertyType = new PropertySingleValue() { DataType = "IfcLabel" },
+            PropertyValueType = "PropertyValueType.EnumeratedValue"
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "PanelWidth",
+            PropertyType = new PropertySingleValue() { DataType = "IfcNormalisedRatioMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "PanelPosition",
+            PropertyType = new PropertySingleValue() { DataType = "IfcLabel" }
+         });
+
+         if (schemaName.StartsWith("ifc2x2", StringComparison.InvariantCultureIgnoreCase))
+         {
+            psetD.ApplicableClasses.Add("IfcDoorStyle");
+         }
+         else if (schemaName.StartsWith("ifc2x3", StringComparison.InvariantCultureIgnoreCase))
+         {
+            psetD.ApplicableClasses.Add("IfcDoorStyle");
+         }
+         else if (schemaName.Equals("ifc4", StringComparison.InvariantCultureIgnoreCase))
+         {
+            psetD.ApplicableClasses.Add("IfcDoorType");
+         }
+
+         return psetD;
+      }
+
+      private PsetDefinition IfcPermeableCoveringProperties(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "IfcPermeableCoveringProperties";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcDoor" };
+         psetD.ApplicableClasses.Add("IfcWindow");
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "OperationType",
+            PropertyType = new PropertySingleValue() { DataType = "IfcLabel" },
+            PropertyValueType = "PropertyValueType.EnumeratedValue"
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "PanelPosition",
+            PropertyType = new PropertySingleValue() { DataType = "IfcLabel" },
+            PropertyValueType = "PropertyValueType.EnumeratedValue"
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "FrameDepth",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "FrameThickness",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         if (schemaName.StartsWith("ifc2x2", StringComparison.InvariantCultureIgnoreCase))
+         {
+            psetD.ApplicableClasses.Add("IfcDoorStyle");
+            psetD.ApplicableClasses.Add("IfcWindowStyle");
+         }
+         else if (schemaName.StartsWith("ifc2x3", StringComparison.InvariantCultureIgnoreCase))
+         {
+            psetD.ApplicableClasses.Add("IfcDoorStyle");
+            psetD.ApplicableClasses.Add("IfcWindowStyle");
+         }
+         else if (schemaName.Equals("ifc4", StringComparison.InvariantCultureIgnoreCase))
+         {
+            psetD.ApplicableClasses.Add("IfcDoorType");
+            psetD.ApplicableClasses.Add("IfcWindowType");
+         }
+
+         return psetD;
+      }
+
+      private PsetDefinition IfcReinforcementDefinitionProperties(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "IfcReinforcementDefinitionProperties";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcReinforcingElement" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "DefinitionType",
+            PropertyType = new PropertySingleValue() { DataType = "IfcLabel" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "ReinforcementSectionDefinitions",
+            PropertyType = new PropertySingleValue() { DataType = "IfcLabel" },  // Not the correct one actually since it is actually a class that is not supported here directly
+            PropertyValueType = "PropertyValueType.ListValue"
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition IfcWindowLiningProperties(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "IfcWindowLiningProperties";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcWindow" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "LiningDepth",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "FirstTransomOffset",
+            PropertyType = new PropertySingleValue() { DataType = "IfcNormalisedRatioMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "SecondTransomOffset",
+            PropertyType = new PropertySingleValue() { DataType = "IfcNormalisedRatioMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "FirstMullionOffset",
+            PropertyType = new PropertySingleValue() { DataType = "IfcNormalisedRatioMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "SecondMullionOffset",
+            PropertyType = new PropertySingleValue() { DataType = "IfcNormalisedRatioMeasure" }
+         });
+
+         if (schemaName.StartsWith("ifc2x2", StringComparison.InvariantCultureIgnoreCase))
+         {
+            psetD.ApplicableClasses.Add("IfcWindowStyle");
+
+            psetD.properties.Add(new PsetProperty()
+            {
+               Name = "LiningThickness",
+               PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+            });
+
+            psetD.properties.Add(new PsetProperty()
+            {
+               Name = "TransomThickness",
+               PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+            });
+
+            psetD.properties.Add(new PsetProperty()
+            {
+               Name = "MullionThickness",
+               PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+            });
+         }
+         else if (schemaName.StartsWith("ifc2x3", StringComparison.InvariantCultureIgnoreCase))
+         {
+            psetD.ApplicableClasses.Add("IfcWindowStyle");
+
+            psetD.properties.Add(new PsetProperty()
+            {
+               Name = "LiningThickness",
+               PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+            });
+
+            psetD.properties.Add(new PsetProperty()
+            {
+               Name = "TransomThickness",
+               PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+            });
+
+            psetD.properties.Add(new PsetProperty()
+            {
+               Name = "MullionThickness",
+               PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+            });
+         }
+         else if (schemaName.Equals("ifc4", StringComparison.InvariantCultureIgnoreCase))
+         {
+            psetD.ApplicableClasses.Add("IfcWindowType");
+
+            psetD.properties.Add(new PsetProperty()
+            {
+               Name = "LiningThickness",
+               PropertyType = new PropertySingleValue() { DataType = "IfcNonNegativeLengthMeasure" }
+            });
+
+            psetD.properties.Add(new PsetProperty()
+            {
+               Name = "TransomThickness",
+               PropertyType = new PropertySingleValue() { DataType = "IfcNonNegativeLengthMeasure" }
+            });
+
+            psetD.properties.Add(new PsetProperty()
+            {
+               Name = "MullionThickness",
+               PropertyType = new PropertySingleValue() { DataType = "IfcNonNegativeLengthMeasure" }
+            });
+
+            psetD.properties.Add(new PsetProperty()
+            {
+               Name = "LiningOffset",
+               PropertyType = new PropertySingleValue() { DataType = "IfcLengthMeasure" }
+            });
+
+            psetD.properties.Add(new PsetProperty()
+            {
+               Name = "LiningToPanelOffsetX",
+               PropertyType = new PropertySingleValue() { DataType = "IfcLengthMeasure" }
+            });
+
+            psetD.properties.Add(new PsetProperty()
+            {
+               Name = "LiningToPanelOffsetY",
+               PropertyType = new PropertySingleValue() { DataType = "IfcLengthMeasure" }
+            });
+         }
+
+         return psetD;
+      }
+
+      private PsetDefinition IfcWindowPanelProperties(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "IfcWindowPanelProperties";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcWindow" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "OperationType",
+            PropertyType = new PropertySingleValue() { DataType = "IfcLabel" },
+            PropertyValueType = "PropertyValueType.EnumeratedValue"
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "PanelPosition",
+            PropertyType = new PropertySingleValue() { DataType = "IfcLabel" },
+            PropertyValueType = "PropertyValueType.EnumeratedValue"
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "FrameDepth",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "FrameThickness",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         if (schemaName.StartsWith("ifc2x2", StringComparison.InvariantCultureIgnoreCase))
+         {
+            psetD.ApplicableClasses.Add("IfcWindowStyle");
+         }
+         else if (schemaName.StartsWith("ifc2x3", StringComparison.InvariantCultureIgnoreCase))
+         {
+            psetD.ApplicableClasses.Add("IfcWindowStyle");
+         }
+         else if (schemaName.Equals("ifc4", StringComparison.InvariantCultureIgnoreCase))
+         {
+            psetD.ApplicableClasses.Add("IfcWindowType");
+         }
+
+         return psetD;
+      }
+
+      private PsetDefinition IfcMechanicalMaterialProperties(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "IfcMechanicalMaterialProperties";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcMaterial" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "DynamicViscosity",
+            PropertyType = new PropertySingleValue() { DataType = "IfcDynamicViscosityMeasure" },
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "YoungModulus",
+            PropertyType = new PropertySingleValue() { DataType = "IfcModulusOfElasticityMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "ShearModulus",
+            PropertyType = new PropertySingleValue() { DataType = "IfcModulusOfElasticityMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "PoissonRatio",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveRatioMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "ThermalExpansionCoefficient",
+            PropertyType = new PropertySingleValue() { DataType = "IfcThermalExpansionCoefficientMeasure" }
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition IfcMechanicalSteelMaterialProperties(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "IfcMechanicalSteelMaterialProperties";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcMaterial" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "YieldStress",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPressureMeasure" },
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "UltimateStress",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPressureMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "UltimateStrain",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveRatioMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "HardeningModule",
+            PropertyType = new PropertySingleValue() { DataType = "IfcModulusOfElasticityMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "ProportionalStress",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPressureMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "PlasticStrain",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveRatioMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "Relaxations",
+            PropertyType = new PropertySingleValue() { DataType = "IfcRelaxation" },
+            PropertyValueType = "PropertyValueType.ListValue"
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition IfcMechanicalConcreteMaterialProperties(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "IfcMechanicalConcreteMaterialProperties";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcMaterial" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "CompressiveStrength",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPressureMeasure" },
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "MaxAggregateSize",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveLengthMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "AdmixturesDescription",
+            PropertyType = new PropertySingleValue() { DataType = "IfcText" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "Workability",
+            PropertyType = new PropertySingleValue() { DataType = "IfcText" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "ProtectivePoreRatio",
+            PropertyType = new PropertySingleValue() { DataType = "IfcNormalisedRatioMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "WaterImpermeability",
+            PropertyType = new PropertySingleValue() { DataType = "IfcText" }
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition IfcThermalMaterialProperties(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "IfcThermalMaterialProperties";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcMaterial" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "SpecificHeatCapacity",
+            PropertyType = new PropertySingleValue() { DataType = "IfcSpecificHeatCapacityMeasure" },
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "BoilingPoint",
+            PropertyType = new PropertySingleValue() { DataType = "IfcThermodynamicTemperatureMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "FreezingPoint",
+            PropertyType = new PropertySingleValue() { DataType = "IfcThermodynamicTemperatureMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "ThermalConductivity",
+            PropertyType = new PropertySingleValue() { DataType = "IfcThermalConductivityMeasure" }
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition IfcHygroscopicMaterialProperties(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "IfcHygroscopicMaterialProperties";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcMaterial" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "UpperVaporResistanceFactor",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveRatioMeasure" },
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "LowerVaporResistanceFactor",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveRatioMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "IsothermalMoistureCapacity",
+            PropertyType = new PropertySingleValue() { DataType = "IfcIsothermalMoistureCapacityMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "VaporPermeability",
+            PropertyType = new PropertySingleValue() { DataType = "IfcVaporPermeabilityMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "MoistureDiffusivity",
+            PropertyType = new PropertySingleValue() { DataType = "IfcMoistureDiffusivityMeasure" }
+         });
+
+         return psetD;
+      }
+
+
+      private PsetDefinition IfcGeneralMaterialProperties(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "IfcGeneralMaterialProperties";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcMaterial" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "MolecularWeight",
+            PropertyType = new PropertySingleValue() { DataType = "IfcMolecularWeightMeasure" },
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "Porosity",
+            PropertyType = new PropertySingleValue() { DataType = "IfcNormalisedRatioMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "MassDensity",
+            PropertyType = new PropertySingleValue() { DataType = "IfcMassDensityMeasure" }
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition IfcOpticalMaterialProperties(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "IfcOpticalMaterialProperties";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcMaterial" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "VisibleTransmittance",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveRatioMeasure" },
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "SolarTransmittance",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveRatioMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "ThermalIrTransmittance",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveRatioMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "ThermalIrEmissivityBack",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveRatioMeasure" },
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "ThermalIrEmissivityFront",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveRatioMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "VisibleReflectanceBack",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveRatioMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "VisibleReflectanceFront",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveRatioMeasure" },
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "SolarReflectanceFront",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveRatioMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "SolarReflectanceBack",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveRatioMeasure" }
+         });
+
+         return psetD;
+      }
+
+
+      private PsetDefinition IfcWaterProperties(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "IfcWaterProperties";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcMaterial" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "IsPotable",
+            PropertyType = new PropertySingleValue() { DataType = "Boolean" },
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "Hardness",
+            PropertyType = new PropertySingleValue() { DataType = "IfcIonConcentrationMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "AlkalinityConcentration",
+            PropertyType = new PropertySingleValue() { DataType = "IfcIonConcentrationMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "AcidityConcentration",
+            PropertyType = new PropertySingleValue() { DataType = "IfcIonConcentrationMeasure" },
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "ImpuritiesContent",
+            PropertyType = new PropertySingleValue() { DataType = "IfcNormalisedRatioMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "PHLevel",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPHMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "DissolvedSolidsContent",
+            PropertyType = new PropertySingleValue() { DataType = "IfcNormalisedRatioMeasure" },
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition IfcFuelProperties(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "IfcFuelProperties";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcMaterial" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "CombustionTemperature",
+            PropertyType = new PropertySingleValue() { DataType = "IfcThermodynamicTemperatureMeasure" },
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "CarbonContent",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveRatioMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "LowerHeatingValue",
+            PropertyType = new PropertySingleValue() { DataType = "IfcHeatingValueMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "HigherHeatingValue",
+            PropertyType = new PropertySingleValue() { DataType = "IfcHeatingValueMeasure" },
+         });
+
+         return psetD;
+      }
+
+      private PsetDefinition IfcProductsOfCombustionProperties(string schemaName)
+      {
+         PsetDefinition psetD = new PsetDefinition();
+         psetD.Name = "IfcProductsOfCombustionProperties";
+         psetD.IfcVersion = schemaName;
+         psetD.ApplicableClasses = new List<string>() { "IfcMaterial" };
+         psetD.properties = new HashSet<PsetProperty>();
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "SpecificHeatCapacity",
+            PropertyType = new PropertySingleValue() { DataType = "IfcSpecificHeatCapacityMeasure" },
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "N20Content",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveRatioMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "COContent",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveRatioMeasure" }
+         });
+
+         psetD.properties.Add(new PsetProperty()
+         {
+            Name = "CO2Content",
+            PropertyType = new PropertySingleValue() { DataType = "IfcPositiveRatioMeasure" },
+         });
+
+         return psetD;
+      }
+
    }
 }

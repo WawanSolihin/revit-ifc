@@ -36,14 +36,13 @@ namespace Revit.IFC.Export.Utility
       /// <summary>
       /// The dictionary mapping from a text element type to an IfcPresentationStyleAssignment handle. 
       /// </summary>
-      private Dictionary<int, IFCAnyHandle> m_Styles;
+      private Dictionary<ElementId, IFCAnyHandle> Styles { get; set; } = new();
 
       /// <summary>
       /// Constructs a default PresentationStyleAssignmentCache object.
       /// </summary>
       public PresentationStyleAssignmentCache()
       {
-         m_Styles = new Dictionary<int, IFCAnyHandle>();
       }
 
       /// <summary>
@@ -53,14 +52,14 @@ namespace Revit.IFC.Export.Utility
       /// <returns>The IfcPresentationStyleAssignment handle.</returns>
       public IFCAnyHandle Find(ElementId materialId)
       {
-         int materialIdAsInt = materialId.IntegerValue;
          IFCAnyHandle presentationStyleAssignment;
-         if (m_Styles.TryGetValue(materialIdAsInt, out presentationStyleAssignment))
+         if (Styles.TryGetValue(materialId, out presentationStyleAssignment))
          {
             // Make sure the handle isn't stale.
             try
             {
-               bool isPSA = IFCAnyHandleUtil.IsSubTypeOf(presentationStyleAssignment, IFCEntityType.IfcPresentationStyleAssignment);
+               bool isPSA = (IFCAnyHandleUtil.IsSubTypeOf(presentationStyleAssignment, IFCEntityType.IfcPresentationStyleAssignment)
+                          || IFCAnyHandleUtil.IsSubTypeOf(presentationStyleAssignment, IFCEntityType.IfcPresentationStyle));
                if (isPSA)
                   return presentationStyleAssignment;
             }
@@ -68,7 +67,7 @@ namespace Revit.IFC.Export.Utility
             {
             }
 
-            m_Styles.Remove(materialIdAsInt);
+            Styles.Remove(materialId);
          }
 
          return null;
@@ -81,13 +80,18 @@ namespace Revit.IFC.Export.Utility
       /// <param name="handle">The IfcPresentationStyleAssignment handle.</param>
       public void Register(ElementId elementId, IFCAnyHandle handle)
       {
-         if (m_Styles.ContainsKey(elementId.IntegerValue))
-            throw new Exception("TextStyleCache already contains handle for elementId " + elementId.IntegerValue);
+         if (Styles.ContainsKey(elementId))
+            throw new Exception("TextStyleCache already contains handle for elementId " + elementId);
 
          if (!IFCAnyHandleUtil.IsNullOrHasNoValue(handle))
-            m_Styles[elementId.IntegerValue] = handle;
+            Styles[elementId] = handle;
          else
             throw new Exception("Invalid Handle.");
+      }
+
+      public void Clear()
+      {
+         Styles.Clear();
       }
    }
 }

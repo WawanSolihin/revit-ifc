@@ -35,22 +35,22 @@ namespace Revit.IFC.Export.Utility
       /// <summary>
       /// The dictionary mapping from an ElementId to an IfcMaterialLayerSet handle. 
       /// </summary>
-      private Dictionary<ElementId, IFCAnyHandle> m_ElementIdToMatLayerSetDictionary = new Dictionary<ElementId, IFCAnyHandle>();
+      private Dictionary<ElementId, IFCAnyHandle> ElementIdToMatLayerSetDictionary { get; set; } = new();
 
       /// <summary>
       /// The dictionary mapping from an ElementId to an IfcMaterialProfileSet handle. 
       /// </summary>
-      private Dictionary<ElementId, IFCAnyHandle> m_ElementIdToMatProfileSetDictionary = new Dictionary<ElementId, IFCAnyHandle>();
+      private Dictionary<ElementId, IFCAnyHandle> ElementIdToMatProfileSetDictionary { get; set; } = new();
 
       /// <summary>
       /// The dictionary mapping from an ElementId to an IfcMaterialConstituentSet handle. 
       /// </summary>
-      private Dictionary<ElementId, IFCAnyHandle> m_ElementIdToMatConstituentSetDictionary = new Dictionary<ElementId, IFCAnyHandle>();
+      private Dictionary<ElementId, MaterialLayerSetInfo> ElementIdToMaterialLayerSetInfo { get; set; } = new();
 
       /// <summary>
       /// The dictionary mapping from an ElementId to a primary IfcMaterial handle. 
       /// </summary>
-      private Dictionary<ElementId, IFCAnyHandle> m_ElementIdToMaterialHndDictionary = new Dictionary<ElementId, IFCAnyHandle>();
+      private Dictionary<ElementId, IFCAnyHandle> ElementIdToMaterialHndDictionary { get; set; } = new();
 
       /// <summary>
       /// Finds the IfcMaterialLayerSet handle from the dictionary.
@@ -59,11 +59,9 @@ namespace Revit.IFC.Export.Utility
       /// <returns>The IfcMaterialLayerSet handle.</returns>
       public IFCAnyHandle FindLayerSet(ElementId id)
       {
-         IFCAnyHandle handle;
-         if (m_ElementIdToMatLayerSetDictionary.TryGetValue(id, out handle))
-         {
+         if (ElementIdToMatLayerSetDictionary.TryGetValue(id, out IFCAnyHandle handle))
             return handle;
-         }
+         
          return null;
       }
 
@@ -74,26 +72,22 @@ namespace Revit.IFC.Export.Utility
       /// <returns>The IfcMaterialProfileSet handle.</returns>
       public IFCAnyHandle FindProfileSet(ElementId id)
       {
-         IFCAnyHandle handle;
-         if (m_ElementIdToMatProfileSetDictionary.TryGetValue(id, out handle))
-         {
+         if (ElementIdToMatProfileSetDictionary.TryGetValue(id, out IFCAnyHandle handle))
             return handle;
-         }
+         
          return null;
       }
 
       /// <summary>
-      /// Finds the IfcMaterialConsituentSet handle from the dictionary.
+      /// Find MaterialLayerSetInfo from the dictionary cache
       /// </summary>
-      /// <param name="id">The element id.</param>
-      /// <returns>The IfcMaterialConsituentSet handle.</returns>
-      public IFCAnyHandle FindConstituentSet(ElementId id)
+      /// <param name="id">The element id</param>
+      /// <returns>the MaterialLayerSetInfo</returns>
+      public MaterialLayerSetInfo FindMaterialLayerSetInfo(ElementId id)
       {
-         IFCAnyHandle handle;
-         if (m_ElementIdToMatConstituentSetDictionary.TryGetValue(id, out handle))
-         {
-            return handle;
-         }
+         if (ElementIdToMaterialLayerSetInfo.TryGetValue(id, out MaterialLayerSetInfo mlsInfo))
+            return mlsInfo;
+         
          return null;
       }
 
@@ -102,12 +96,29 @@ namespace Revit.IFC.Export.Utility
       /// </summary>
       /// <param name="elementId">The element elementId.</param>
       /// <param name="handle">The IfcMaterialLayerSet handle.</param>
-      public void RegisterLayerSet(ElementId elementId, IFCAnyHandle handle)
+      public void RegisterLayerSet(ElementId elementId, IFCAnyHandle handle, MaterialLayerSetInfo mlsInfo = null)
       {
-         if (m_ElementIdToMatLayerSetDictionary.ContainsKey(elementId))
+         if (ElementIdToMatLayerSetDictionary.ContainsKey(elementId))
             return;
 
-         m_ElementIdToMatLayerSetDictionary[elementId] = handle;
+         ElementIdToMatLayerSetDictionary[elementId] = handle;
+
+         if (ElementIdToMaterialLayerSetInfo.ContainsKey(elementId) || mlsInfo == null)
+            return;
+
+         if ((!ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4 && IFCAnyHandleUtil.IsTypeOf(handle, Common.Enums.IFCEntityType.IfcMaterialConstituentSet))
+            || (ExporterCacheManager.ExportOptionsCache.ExportAs2x3 && IFCAnyHandleUtil.IsTypeOf(handle, Common.Enums.IFCEntityType.IfcMaterialLayerSet)))
+            ElementIdToMaterialLayerSetInfo.Add(elementId, mlsInfo);
+      }
+
+      /// <summary>
+      /// Removes element id and associated info from ElementIdToMaterialLayerSetInfo and ElementIdToMatLayerSetDictionary dictionaries.
+      /// </summary>
+      /// <param name="elementId">The element elementId.</param>
+      public void UnregisterLayerSet(ElementId elementId)
+      {
+         ElementIdToMaterialLayerSetInfo.Remove(elementId);
+         ElementIdToMatLayerSetDictionary.Remove(elementId);
       }
 
       /// <summary>
@@ -117,23 +128,10 @@ namespace Revit.IFC.Export.Utility
       /// <param name="handle">The IfcMaterialLayerSet handle.</param>
       public void RegisterProfileSet(ElementId elementId, IFCAnyHandle handle)
       {
-         if (m_ElementIdToMatProfileSetDictionary.ContainsKey(elementId))
+         if (ElementIdToMatProfileSetDictionary.ContainsKey(elementId))
             return;
 
-         m_ElementIdToMatProfileSetDictionary[elementId] = handle;
-      }
-
-      /// <summary>
-      /// Adds the IfcMaterialConstituentSet handle to the dictionary.
-      /// </summary>
-      /// <param name="elementId">The element elementId.</param>
-      /// <param name="handle">The IfcMaterialConstituentSet handle.</param>
-      public void RegisterConstituentSet(ElementId elementId, IFCAnyHandle handle)
-      {
-         if (m_ElementIdToMatConstituentSetDictionary.ContainsKey(elementId))
-            return;
-
-         m_ElementIdToMatConstituentSetDictionary[elementId] = handle;
+         ElementIdToMatProfileSetDictionary[elementId] = handle;
       }
 
       /// <summary>
@@ -144,7 +142,7 @@ namespace Revit.IFC.Export.Utility
       public IFCAnyHandle FindPrimaryMaterialHnd(ElementId id)
       {
          IFCAnyHandle handle;
-         if (m_ElementIdToMaterialHndDictionary.TryGetValue(id, out handle))
+         if (ElementIdToMaterialHndDictionary.TryGetValue(id, out handle))
          {
             return handle;
          }
@@ -161,10 +159,28 @@ namespace Revit.IFC.Export.Utility
          if (IFCAnyHandleUtil.IsNullOrHasNoValue(handle))
             return;
 
-         if (m_ElementIdToMaterialHndDictionary.ContainsKey(elementId))
+         if (ElementIdToMaterialHndDictionary.ContainsKey(elementId))
             return;
 
-         m_ElementIdToMaterialHndDictionary[elementId] = handle;
+         ElementIdToMaterialHndDictionary[elementId] = handle;
+      }
+
+      /// <summary>
+      /// Removes element id and associated info from ElementIdToMaterialHndDictionary dictionary.
+      /// </summary>
+      /// <param name="elementId">The element elementId.</param>
+      /// <param name="handle">The IfcMaterial handle.</param>
+      public void UnregisterPrimaryMaterialHnd(ElementId elementId)
+      {
+         ElementIdToMaterialHndDictionary.Remove(elementId);
+      }
+
+      public void Clear()
+      {
+         ElementIdToMatLayerSetDictionary.Clear();
+         ElementIdToMatProfileSetDictionary.Clear();
+         ElementIdToMaterialLayerSetInfo.Clear();
+         ElementIdToMaterialHndDictionary.Clear();
       }
    }
 }

@@ -17,11 +17,7 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 //
 
-using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace RevitIFCTools.PropertySet
 {
@@ -30,21 +26,22 @@ namespace RevitIFCTools.PropertySet
       public string IfdGuid { get; set; }
       public string Name { get; set; }
       public PropertyDataType PropertyType { get; set; }
+      public string PropertyValueType { get; set; }
       public IList<NameAlias> NameAliases { get; set; }
       public override string ToString()
       {
-         string propStr = "\n\tPropertyName:\t" + Name;
+         string propStr = "\r\n\tPropertyName:\t" + Name;
          if (!string.IsNullOrEmpty(IfdGuid))
-            propStr += "\n\tIfdGuid:\t" + IfdGuid;
+            propStr += "\r\n\tIfdGuid:\t" + IfdGuid;
          if (NameAliases != null)
          {
             foreach (NameAlias na in NameAliases)
             {
-               propStr += "\n\t\tAliases:\tlang: " + na.lang + " :\t" + na.Alias;
+               propStr += "\r\n\t\tAliases:\tlang: " + na.lang + " :\t" + na.Alias;
             }
          }
          if (PropertyType != null)
-            propStr += "\n\tPropertyType:\t" + PropertyType.ToString();
+            propStr += "\r\n\tPropertyType:\t" + PropertyType.ToString();
          return propStr;
       }
    }

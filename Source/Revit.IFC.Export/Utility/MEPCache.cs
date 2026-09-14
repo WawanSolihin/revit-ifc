@@ -17,19 +17,10 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 //
 
-using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Diagnostics;
-using System.Text;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
-using Autodesk.Revit.DB.Mechanical;
 using Autodesk.Revit.DB.Electrical;
-using Autodesk.Revit.DB.Plumbing;
-using Autodesk.Revit.DB.Structure;
-using Revit.IFC.Common.Enums;
-using Revit.IFC.Common.Utility;
 
 namespace Revit.IFC.Export.Utility
 {
@@ -39,33 +30,35 @@ namespace Revit.IFC.Export.Utility
    public class MEPCache
    {
       /// <summary>
-      /// The dictionary mapping from a MEP element elementId to an Ifc handle. 
+      /// A cache of elements (Cable Trays and Conduits) that may be assigned to systems
       /// </summary>
-      private Dictionary<ElementId, IFCAnyHandle> m_MEPElementHandleDictionary = new Dictionary<ElementId, IFCAnyHandle>();
+      public HashSet<ElementId> CableElementsCache { get; set; } = new();
+
+      /// <summary>
+      /// A cache of elements (Ducts and Pipes) that may have coverings (Linings and/or Insulations) and their categories.
+      /// </summary>
+      public Dictionary<ElementId, ElementId> CoveredElementsCache { get; set; } = new();
 
       /// <summary>
       /// A list of connectors
       /// </summary>
-      public List<ConnectorSet> MEPConnectors = new List<ConnectorSet>();
+      public List<ConnectorSet> MEPConnectors { get; set; } = new();
 
       /// <summary>
-      /// A cache of elements (Ducts and Pipes) that may have coverings (Linings and/or Insulations).
+      /// The dictionary mapping from a MEP element elementId to an Ifc handle. 
       /// </summary>
-      public HashSet<ElementId> CoveredElementsCache = new HashSet<ElementId>();
+      /// <remarks>ElementId can't be used as a key for a SortedDictionary.</remarks>
+      private SortedDictionary<long, IFCAnyHandle> MEPElementHandleDictionary { get; set; } = new();
 
       /// <summary>
-      /// Finds the Ifc handle from the dictionary.
+      /// Finds the IFC handle from the dictionary.
       /// </summary>
-      /// <param name="elementId">
-      /// The element elementId.
-      /// </param>
-      /// <returns>
-      /// The Ifc handle.
-      /// </returns>
+      /// <param name="elementId">The element elementId.</param>
+      /// <returns>The IFC handle.</returns>
       public IFCAnyHandle Find(ElementId elementId)
       {
          IFCAnyHandle handle;
-         if (m_MEPElementHandleDictionary.TryGetValue(elementId, out handle))
+         if (MEPElementHandleDictionary.TryGetValue(elementId.Value, out handle))
          {
             return handle;
          }
@@ -73,25 +66,21 @@ namespace Revit.IFC.Export.Utility
       }
 
       /// <summary>
-      /// Adds the Ifc handle to the dictionary and connectors.
+      /// Adds the IFC handle to the dictionary and connectors.
       /// </summary>
-      /// <param name="element">
-      /// The element.
-      /// </param>
-      /// <param name="handle">
-      /// The Ifc handle.
-      /// </param>
+      /// <param name="element">The element.</param>
+      /// <param name="handle">The IFC handle.</param>
       public void Register(Element element, IFCAnyHandle handle)
       {
-         if (m_MEPElementHandleDictionary.ContainsKey(element.Id))
+         long idVal = element.Id.Value;
+         if (MEPElementHandleDictionary.ContainsKey(idVal))
             return;
 
-         m_MEPElementHandleDictionary[element.Id] = handle;
+         MEPElementHandleDictionary[idVal] = handle;
 
          ConnectorSet connectorts = GetConnectors(element);
          if (connectorts != null)
             MEPConnectors.Add(connectorts);
-
       }
 
       /// <summary>
@@ -108,38 +97,47 @@ namespace Revit.IFC.Export.Utility
 
       /// <summary>
       /// Gets a set of all connectors hosted by a single element.
-      /// From http://thebuildingcoder.typepad.com/blog/2010/06/retrieve-mep-elements-and-connectors.html.
+      /// Modified from http://thebuildingcoder.typepad.com/blog/2010/06/retrieve-mep-elements-and-connectors.html.
       /// </summary>
-      /// <param name="e">The element that may host connectors</param>
+      /// <param name="element">The element that may host connectors</param>
       /// <returns>A set of connectors</returns>
-      static ConnectorSet GetConnectors(Element e)
+      static ConnectorSet GetConnectors(Element element)
       {
-         ConnectorSet connectors = null;
-
          try
          {
-            if (e is FamilyInstance)
+            if (element is FamilyInstance)
             {
-               MEPModel m = ((FamilyInstance)e).MEPModel;
-               if (m != null && m.ConnectorManager != null)
-               {
-                  connectors = m.ConnectorManager.Connectors;
-               }
+               return (element as FamilyInstance)?.MEPModel?.ConnectorManager?.Connectors;
             }
-            else if (e is Wire)
+
+            if (element is Wire)
             {
-               connectors = ((Wire)e).ConnectorManager.Connectors;
+               return (element as Wire)?.ConnectorManager?.Connectors;
             }
-            else if (e is MEPCurve)
+
+            if (element is MEPCurve)
             {
-               connectors = ((MEPCurve)e).ConnectorManager.Connectors;
+               return (element as MEPCurve)?.ConnectorManager?.Connectors;
+            }
+
+            if (element is FabricationPart)
+            {
+               return (element as FabricationPart)?.ConnectorManager?.Connectors;
             }
          }
          catch
          {
          }
 
-         return connectors;
+         return null;
+      }
+
+      public void Clear()
+      {
+         CableElementsCache.Clear();
+         CoveredElementsCache.Clear();
+         MEPConnectors.Clear();
+         MEPElementHandleDictionary.Clear();
       }
    }
 }

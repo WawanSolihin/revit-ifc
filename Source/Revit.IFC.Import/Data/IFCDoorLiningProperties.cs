@@ -38,7 +38,7 @@ namespace Revit.IFC.Import.Data
       /// <summary>
       /// The list of properties contained in IFCDoorLiningProperties.
       /// </summary>
-      static IList<Tuple<string, UnitType, AllowedValues>> m_DoorLiningPropertyDescs = null;
+      static IList<Tuple<string, ForgeTypeId, AllowedValues>> m_DoorLiningPropertyDescs = null;
 
       /// <summary>
       /// Processes IfcDoorLiningProperties attributes.
@@ -59,20 +59,26 @@ namespace Revit.IFC.Import.Data
 
          if (m_DoorLiningPropertyDescs == null)
          {
-            m_DoorLiningPropertyDescs = new List<Tuple<string, UnitType, AllowedValues>>();
-            m_DoorLiningPropertyDescs.Add(new Tuple<string, UnitType, AllowedValues>("LiningDepth", UnitType.UT_Length, AllowedValues.Positive));
-            m_DoorLiningPropertyDescs.Add(new Tuple<string, UnitType, AllowedValues>("LiningThickness", UnitType.UT_Length, AllowedValues.Positive));
-            m_DoorLiningPropertyDescs.Add(new Tuple<string, UnitType, AllowedValues>("ThresholdDepth", UnitType.UT_Length, AllowedValues.Positive));
-            m_DoorLiningPropertyDescs.Add(new Tuple<string, UnitType, AllowedValues>("ThresholdThickness", UnitType.UT_Length, AllowedValues.Positive));
-            m_DoorLiningPropertyDescs.Add(new Tuple<string, UnitType, AllowedValues>("TransomThickness", UnitType.UT_Length, AllowedValues.Positive));
-            m_DoorLiningPropertyDescs.Add(new Tuple<string, UnitType, AllowedValues>("TransomOffset", UnitType.UT_Length, AllowedValues.All));
-            m_DoorLiningPropertyDescs.Add(new Tuple<string, UnitType, AllowedValues>("LiningOffset", UnitType.UT_Length, AllowedValues.All));
-            m_DoorLiningPropertyDescs.Add(new Tuple<string, UnitType, AllowedValues>("ThresholdOffset", UnitType.UT_Length, AllowedValues.All));
-            m_DoorLiningPropertyDescs.Add(new Tuple<string, UnitType, AllowedValues>("CasingThickness", UnitType.UT_Length, AllowedValues.Positive));
-            m_DoorLiningPropertyDescs.Add(new Tuple<string, UnitType, AllowedValues>("CasingDepth", UnitType.UT_Length, AllowedValues.Positive));
+            bool atLeastIfc4 = IFCImportFile.TheFile.SchemaVersionAtLeast(IFCSchemaVersion.IFC4Obsolete);
+            m_DoorLiningPropertyDescs = new List<Tuple<string, ForgeTypeId, AllowedValues>>();
+            m_DoorLiningPropertyDescs.Add(Tuple.Create("LiningDepth", SpecTypeId.Length, AllowedValues.Positive));
+            m_DoorLiningPropertyDescs.Add(Tuple.Create("LiningThickness", SpecTypeId.Length, atLeastIfc4 ? AllowedValues.NonNegative: AllowedValues.Positive));
+            m_DoorLiningPropertyDescs.Add(Tuple.Create("ThresholdDepth", SpecTypeId.Length, AllowedValues.Positive));
+            m_DoorLiningPropertyDescs.Add(Tuple.Create("ThresholdThickness", SpecTypeId.Length, atLeastIfc4 ? AllowedValues.NonNegative : AllowedValues.Positive));
+            m_DoorLiningPropertyDescs.Add(Tuple.Create("TransomThickness", SpecTypeId.Length, atLeastIfc4 ? AllowedValues.NonNegative : AllowedValues.Positive));
+            m_DoorLiningPropertyDescs.Add(Tuple.Create("TransomOffset", SpecTypeId.Length, AllowedValues.All));
+            m_DoorLiningPropertyDescs.Add(Tuple.Create("LiningOffset", SpecTypeId.Length, AllowedValues.All));
+            m_DoorLiningPropertyDescs.Add(Tuple.Create("ThresholdOffset", SpecTypeId.Length, AllowedValues.All));
+            m_DoorLiningPropertyDescs.Add(Tuple.Create("CasingThickness", SpecTypeId.Length, AllowedValues.Positive));
+            m_DoorLiningPropertyDescs.Add(Tuple.Create("CasingDepth", SpecTypeId.Length, AllowedValues.Positive));
+            if (atLeastIfc4)
+            {
+               m_DoorLiningPropertyDescs.Add(Tuple.Create("LiningToPanelOffsetX", SpecTypeId.Length, AllowedValues.All));
+               m_DoorLiningPropertyDescs.Add(Tuple.Create("LiningToPanelOffsetY", SpecTypeId.Length, AllowedValues.All));
+            }
          }
 
-         foreach (Tuple<string, UnitType, AllowedValues> propertyDesc in m_DoorLiningPropertyDescs)
+         foreach (Tuple<string, ForgeTypeId, AllowedValues> propertyDesc in m_DoorLiningPropertyDescs)
          {
             // Default is nonsense value.
             double currPropertyValue = IFCImportHandleUtil.GetOptionalScaledLengthAttribute(ifcDoorLiningProperties, propertyDesc.Item1, -1e+30);

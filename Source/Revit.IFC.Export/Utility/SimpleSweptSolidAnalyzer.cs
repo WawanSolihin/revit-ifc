@@ -20,7 +20,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using Autodesk.Revit.DB;
 using Revit.IFC.Common.Utility;
 
@@ -35,45 +34,20 @@ namespace Revit.IFC.Export.Utility
    /// </remarks>
    class SimpleSweptSolidAnalyzer
    {
-      PlanarFace m_ProfileFace;
-
-      Curve m_PathCurve;
-
-      XYZ m_ReferencePlaneNormal;
-
-      List<Face> m_UnalignedFaces;
-
       /// <summary>
       /// The face that represents the profile of the swept solid.
       /// </summary>
-      public PlanarFace ProfileFace
-      {
-         get { return m_ProfileFace; }
-      }
+      public PlanarFace ProfileFace { get; private set; } = null;
 
       /// <summary>
       /// The edge that represents the path of the swept solid.
       /// </summary>
-      public Curve PathCurve
-      {
-         get { return m_PathCurve; }
-      }
-
-      /// <summary>
-      /// The normal of the reference plane that the path lies on.
-      /// </summary>
-      public XYZ ReferencePlaneNormal
-      {
-         get { return m_ReferencePlaneNormal; }
-      }
+      public Curve PathCurve { get; private set; } = null;
 
       /// <summary>
       /// The unaligned faces, maybe openings or recesses.
       /// </summary>
-      public List<Face> UnalignedFaces
-      {
-         get { return m_UnalignedFaces; }
-      }
+      public List<Face> UnalignedFaces { get; } = new List<Face>();
 
       /// <summary>
       /// Creates a SimpleSweptSolidAnalyzer and computes the swept solid.
@@ -97,7 +71,7 @@ namespace Revit.IFC.Export.Utility
 
       /// <summary>
       /// Creates a SimpleSweptSolidAnalyzer and computes the swept solid. This method should be used when a swept curve (directrix) is already known. Even when it is missing (null)
-      /// it will simplu call the original one where it will try to determine the swept curve (directrix) using the connecting faces
+      /// it will simply call the original one where it will try to determine the swept curve (directrix) using the connecting faces
       /// </summary>
       /// <param name="faces">The faces of a solid.</param>
       /// <param name="normal">The normal of the reference plane that a path might lie on.  If it is null, try to guess based on the geometry.</param>
@@ -110,16 +84,22 @@ namespace Revit.IFC.Export.Utility
          IList<Tuple<PlanarFace, XYZ>> potentialSweptAreaFaces = new List<Tuple<PlanarFace, XYZ>>();
          Curve directrix = potentialPathGeom as Curve;
 
-         bool pathGeomExists = potentialPathGeom != null;
-
-         if (!pathGeomExists)
+         // In some cases potentialPathGeom comes as PolyLine
+         if (directrix == null)
             return Create(faces, normal);
 
-         // Collect plannar faces as candidates for the swept area
+         if (!directrix.IsBound)
+            return null;
+
+         XYZ directrixStartPt = directrix.GetEndPoint(0);
+         XYZ directrixEndPt = directrix.GetEndPoint(1);
+
+         // Collect planar faces as candidates for the swept area
          foreach (Face face in faces)
          {
             if (!(face is PlanarFace))
                continue;
+
             PlanarFace planarFace = face as PlanarFace;
             // Candidate face must be Orthogonal to the plane where the directrix curve is
             if (MathUtil.VectorsAreOrthogonal(normal, planarFace.FaceNormal))
@@ -130,8 +110,8 @@ namespace Revit.IFC.Export.Utility
                {
                   foreach (IntersectionResult res in intersectResults)
                   {
-                     if (res.XYZPoint.IsAlmostEqualTo(directrix.GetEndPoint(0))
-                         || res.XYZPoint.IsAlmostEqualTo(directrix.GetEndPoint(1)))
+                     if (res.XYZPoint.IsAlmostEqualTo(directrixStartPt)
+                         || res.XYZPoint.IsAlmostEqualTo(directrixEndPt))
                      {
                         Tuple<PlanarFace, XYZ> potentialEndFaceAndPoint = new Tuple<PlanarFace, XYZ>(planarFace, res.XYZPoint);
                         potentialSweptAreaFaces.Add(potentialEndFaceAndPoint);
@@ -141,12 +121,12 @@ namespace Revit.IFC.Export.Utility
             }
          }
 
-         // If there are more than 1 candidates, we need to find the congruent faces, and they cannot be on the same plane
-         IList<Tuple<PlanarFace, XYZ>> sweptEndFaces = new List<Tuple<PlanarFace, XYZ>>();
+         // If there is more than 1 candidate, we need to find the congruent faces, 
+         // and they cannot be on the same plane.
+         PlanarFace sweptEndStartFace = null;
 
-         while (potentialSweptAreaFaces.Count > 1)
+         while (potentialSweptAreaFaces.Count > 1 && (sweptEndStartFace == null))
          {
-            bool foundPair = false;
             PlanarFace face0 = potentialSweptAreaFaces[0].Item1;
             XYZ ptDirectrix = potentialSweptAreaFaces[0].Item2;
             potentialSweptAreaFaces.RemoveAt(0);    // remove the item from the List
@@ -177,25 +157,168 @@ namespace Revit.IFC.Export.Utility
 
                if (AreFacesSimpleCongruent(face0, face1))
                {
-                  sweptEndFaces.Add(new Tuple<PlanarFace, XYZ>(face0, ptDirectrix));
-                  sweptEndFaces.Add(new Tuple<PlanarFace, XYZ>(face1, potentialPair.Item2));
-                  foundPair = true;
+                  if (ptDirectrix.IsAlmostEqualTo(directrixStartPt))
+                     sweptEndStartFace = face0;
+                  else
+                     sweptEndStartFace = face1;
                   break;
                }
             }
-            if (foundPair)
-               break;
          }
 
-         if (sweptEndFaces.Count >= 2)
+         if (sweptEndStartFace != null)
          {
             simpleSweptSolidAnalyzer = new SimpleSweptSolidAnalyzer();
-            simpleSweptSolidAnalyzer.m_ProfileFace = sweptEndFaces[0].Item1;
-            simpleSweptSolidAnalyzer.m_PathCurve = directrix;
-            simpleSweptSolidAnalyzer.m_ReferencePlaneNormal = normal;
+            simpleSweptSolidAnalyzer.ProfileFace = sweptEndStartFace;
+            simpleSweptSolidAnalyzer.PathCurve = directrix;
          }
 
          return simpleSweptSolidAnalyzer;
+      }
+
+      private static Curve GetPathCurve(PlanarFace profileFace1, PlanarFace profileFace2, 
+         IList<CylindricalFace> cylindricalFaces, EdgeArray edgeArray)
+      {
+         // Get an arbitrary curve from any of the cylindrical faces that isn't shared with either of
+         // the provided planar faces.
+         // Assumptions of this routine: 2 planar faces, all cylindrical faces have 4 edges.
+         foreach (Edge edge in edgeArray)
+         {
+            Face edgeFace0 = edge.GetFace(0);
+            if (edgeFace0 == profileFace1 || edgeFace0 == profileFace2)
+            {
+               continue;
+            }
+
+            Face edgeFace1 = edge.GetFace(1);
+            if (edgeFace1 == profileFace1 || edgeFace1 == profileFace2)
+            {
+               continue;
+            }
+
+            Curve curve = edge.AsCurveFollowingFace(cylindricalFaces[0]);
+            if (curve is Line)
+            {
+               // This is a cylinder.
+               return null;
+            }
+
+            return curve;
+         }
+
+         return null;
+      }
+
+      /// <summary>
+      /// Creates a SimpleSweptSolidAnalyzer and computes the swept solid.
+      /// </summary>
+      /// <param name="faces">The faces of a solid.</param>
+      /// <returns>The analyzer.</returns>
+      /// <remarks>This is very specialized for a solid made of planes and cylinders.</remarks>
+      public static SimpleSweptSolidAnalyzer CreateFromSimpleCylindricalSurfaces(ICollection<Face> faces)
+      {
+         int numFaces = faces?.Count ?? 0;
+         if (numFaces < 3)
+         {
+            // Invalid faces.
+            return null;
+         }
+
+         // Only acceptable cases: planarFaces + at least 1 cylindricalFace, and no other face types.
+         // All faces have either 4 edges, except for the two end planar faces that have numFaces-2 edges.
+         IList<PlanarFace> endPlanarFaces = new List<PlanarFace>();
+         IList<CylindricalFace> cylindricalFaces = new List<CylindricalFace>();
+         EdgeArray edgeArray = null;
+
+         int numEndPlanarFaces = 0;
+
+         foreach (Face face in faces)
+         {
+            EdgeArrayArray edgeArrayArray = face.EdgeLoops;
+            if ((edgeArrayArray?.Size ?? 0) != 1)
+            {
+               return null;
+            }
+
+            EdgeArray currEdgeArray = edgeArrayArray.get_Item(0);
+            int currEdgeArraySize = currEdgeArray.Size;
+
+            if (face is CylindricalFace)
+            {
+               if (currEdgeArraySize != 4)
+               {
+                  return null;
+               }
+               if (edgeArray == null)
+               {
+                  edgeArray = currEdgeArray;
+               }
+
+               cylindricalFaces.Add(face as CylindricalFace);
+               continue;
+            }
+            else if (face is PlanarFace)
+            {
+               PlanarFace planarFace = face as PlanarFace;
+               if (currEdgeArraySize == 4)
+               {
+                  continue;
+               }
+
+               if (numEndPlanarFaces == 2 || currEdgeArraySize != numFaces - 2)
+               {
+                  return null;
+               }
+
+               numEndPlanarFaces++;
+               endPlanarFaces.Add(planarFace);
+            }
+            else
+            {
+               return null;
+            }
+         }
+
+         if (numEndPlanarFaces < 2 || cylindricalFaces.Count == 0)
+         {
+            return null;
+         }
+
+         Curve pathCurve = GetPathCurve(endPlanarFaces[0], endPlanarFaces[1], cylindricalFaces, edgeArray);
+         if (pathCurve == null || !pathCurve.IsBound)
+         {
+            return null;
+         }
+
+         XYZ firstPlaneNormal = endPlanarFaces[0].FaceNormal;
+         XYZ firstPlaneOrigin = endPlanarFaces[0].Origin;
+         if (!MathUtil.IsAlmostZero((pathCurve.GetEndPoint(0) - firstPlaneOrigin).DotProduct(firstPlaneNormal)))
+         {
+            pathCurve = pathCurve.CreateReversed();
+            // Sanity check.
+            if (!MathUtil.IsAlmostZero((pathCurve.GetEndPoint(0) - firstPlaneOrigin).DotProduct(firstPlaneNormal)))
+            {
+               return null;
+            }
+         }
+
+         XYZ startPathCurveNormal = pathCurve.ComputeDerivatives(0, true).BasisX.Normalize();
+         XYZ endPathCurveNormal = pathCurve.ComputeDerivatives(1, true).BasisX.Normalize();
+
+         XYZ secondPlaneNormal = endPlanarFaces[1].FaceNormal;
+
+         if (firstPlaneNormal.IsAlmostEqualTo(-startPathCurveNormal) &&
+            secondPlaneNormal.IsAlmostEqualTo(endPathCurveNormal))
+         {
+            SimpleSweptSolidAnalyzer simpleSweptSolidAnalyzer = new SimpleSweptSolidAnalyzer();
+
+            simpleSweptSolidAnalyzer.ProfileFace = endPlanarFaces[0];
+            simpleSweptSolidAnalyzer.PathCurve = pathCurve;
+
+            return simpleSweptSolidAnalyzer;
+         }
+
+         return null;
       }
 
       /// <summary>
@@ -207,7 +330,14 @@ namespace Revit.IFC.Export.Utility
       /// <remarks>This is a simple analyzer, and is not intended to be general - it works in some simple, real-world cases.</remarks>
       public static SimpleSweptSolidAnalyzer Create(ICollection<Face> faces, XYZ normal)
       {
-         if (faces == null || faces.Count < 3)
+         SimpleSweptSolidAnalyzer simpleSweptSolidAnalyzer = CreateFromSimpleCylindricalSurfaces(faces);
+         if (simpleSweptSolidAnalyzer != null)
+         {
+            return simpleSweptSolidAnalyzer;
+         }
+
+         int numFaces = faces?.Count ?? 0;
+         if (numFaces < 3)
          {
             // Invalid faces.
             return null;
@@ -272,8 +402,13 @@ namespace Revit.IFC.Export.Utility
                   if (sideFace == candidateProfileFace)
                      sideFace = candidateEdge.GetFace(1);
 
+                  // TODO: when sideFace was null, we used to throw an exception (which would be generically caught).  Instead we will
+                  // return null.  But can we just continue?
+                  if (sideFace == null)
+                     return null;
+
                   if (sideFacesWithCandidateEdges.ContainsKey(sideFace)) // should not happen
-                     throw new InvalidOperationException("Failed");
+                     throw new InvalidOperationException("Can't create SweptSolidAnalyzer.");
 
                   sideFacesWithCandidateEdges[sideFace] = candidateEdge;
                }
@@ -307,7 +442,7 @@ namespace Revit.IFC.Export.Utility
                      }
 
                      if (sideFacesWithTheOtherCandidateEdges.ContainsKey(sideFace)) // should not happen
-                        throw new InvalidOperationException("Failed");
+                        throw new InvalidOperationException("Can't create SweptSolidAnalyzer.");
 
                      sideFacesWithTheOtherCandidateEdges[sideFace] = theOtherCandidateEdge;
                   }
@@ -323,9 +458,11 @@ namespace Revit.IFC.Export.Utility
                Dictionary<Face, List<Edge>> sideFacesWithEdgesDic = new Dictionary<Face, List<Edge>>();
                foreach (Face sideFace in sideFacesWithCandidateEdges.Keys)
                {
-                  sideFacesWithEdgesDic[sideFace] = new List<Edge>();
-                  sideFacesWithEdgesDic[sideFace].Add(sideFacesWithCandidateEdges[sideFace]);
-                  sideFacesWithEdgesDic[sideFace].Add(sideFacesWithTheOtherCandidateEdges[sideFace]);
+                  sideFacesWithEdgesDic[sideFace] = new List<Edge>()
+                  {
+                     sideFacesWithCandidateEdges[sideFace],
+                     sideFacesWithTheOtherCandidateEdges[sideFace]
+                  };
                }
 
                if (!AreFacesSimpleCongruent(sideFacesWithEdgesDic))
@@ -363,8 +500,6 @@ namespace Revit.IFC.Export.Utility
                break;
          } while (ii < potentialSweepEndFaces.Count);
 
-         SimpleSweptSolidAnalyzer simpleSweptSolidAnalyzer = null;
-
          if (foundCandidateFace)
          {
             simpleSweptSolidAnalyzer = new SimpleSweptSolidAnalyzer();
@@ -372,9 +507,7 @@ namespace Revit.IFC.Export.Utility
             XYZ endPoint0 = pathCurve.GetEndPoint(0);
 
             bool foundProfileFace = false;
-            List<PlanarFace> profileFaces = new List<PlanarFace>();
-            profileFaces.Add(candidateProfileFace);
-            profileFaces.Add(candidateProfileFace2);
+            List<PlanarFace> profileFaces = new List<PlanarFace>() { candidateProfileFace, candidateProfileFace2 };
 
             foreach (PlanarFace profileFace in profileFaces)
             {
@@ -387,7 +520,7 @@ namespace Revit.IFC.Export.Utility
                      XYZ intersectPoint = intersectionResult.XYZPoint;
                      if (intersectPoint.IsAlmostEqualTo(endPoint0))
                      {
-                        simpleSweptSolidAnalyzer.m_ProfileFace = profileFace;
+                        simpleSweptSolidAnalyzer.ProfileFace = profileFace;
                         foundProfileFace = true;
                         break;
                      }
@@ -407,19 +540,15 @@ namespace Revit.IFC.Export.Utility
             // TODO: consider one profile face has an opening extrusion inside while the other does not
             List<Face> alignedFaces = FindAlignedFaces(profileFaces.ToList<Face>());
 
-            List<Face> unalignedFaces = new List<Face>();
             foreach (Face face in faces)
             {
                if (profileFaces.Contains(face) || alignedFaces.Contains(face))
                   continue;
 
-               unalignedFaces.Add(face);
+               simpleSweptSolidAnalyzer.UnalignedFaces.Add(face);
             }
 
-            simpleSweptSolidAnalyzer.m_UnalignedFaces = unalignedFaces;
-
-            simpleSweptSolidAnalyzer.m_PathCurve = pathCurve;
-            simpleSweptSolidAnalyzer.m_ReferencePlaneNormal = normal;
+            simpleSweptSolidAnalyzer.PathCurve = pathCurve;
          }
 
          return simpleSweptSolidAnalyzer;
@@ -583,7 +712,7 @@ namespace Revit.IFC.Export.Utility
                   return false;
                XYZ moveDir = curve1.GetEndPoint(1) - curve0.GetEndPoint(0);
                Curve movedCurve = GeometryUtil.MoveCurve(curve0, moveDir);
-               if (movedCurve.Intersect(curve1) != SetComparisonResult.Equal)
+               if (movedCurve.Intersect(curve1, CurveIntersectResultOption.Simple)?.Result != SetComparisonResult.Equal)
                   return false;
                continue;
             }
@@ -594,7 +723,7 @@ namespace Revit.IFC.Export.Utility
                Arc arc0 = curve0 as Arc;
                XYZ offsetVec = curve1.GetEndPoint(1) - curve0.GetEndPoint(0);
                Arc offsetArc = OffsetArc(arc0, curve0.GetEndPoint(0), offsetVec);
-               if (offsetArc.Intersect(curve1) != SetComparisonResult.Equal)
+               if (offsetArc.Intersect(curve1, CurveIntersectResultOption.Simple)?.Result != SetComparisonResult.Equal)
                   return false;
                continue;
             }

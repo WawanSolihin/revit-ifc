@@ -27,7 +27,6 @@ using Revit.IFC.Common.Utility;
 using Revit.IFC.Common.Enums;
 using Revit.IFC.Import.Data;
 using UnitSystem = Autodesk.Revit.DB.DisplayUnit;
-using UnitName = Autodesk.Revit.DB.DisplayUnitType;
 
 namespace Revit.IFC.Import.Utility
 {
@@ -87,6 +86,11 @@ namespace Revit.IFC.Import.Utility
       public static IFCMaterialInfo Create(Color color, int? transparency, int? shininess, int? smoothness, ElementId id)
       {
          return new IFCMaterialInfo(color, transparency, shininess, smoothness, id);
+      }
+
+      public bool IsValid()
+      {
+         return (Color != null) || (Transparency != null) || (Shininess != null) || (Smoothness != null);
       }
    }
 }

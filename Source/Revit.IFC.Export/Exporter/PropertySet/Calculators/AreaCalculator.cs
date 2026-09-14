@@ -17,10 +17,6 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 //
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
 using Revit.IFC.Export.Utility;
@@ -39,72 +35,63 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       private double m_Area = 0;
 
       /// <summary>
-      /// A static instance of this class.
+      /// The AreaCalculator instance.
       /// </summary>
-      static AreaCalculator s_Instance = new AreaCalculator();
+      public static AreaCalculator Instance { get; } = new AreaCalculator();
 
       /// <summary>
-      /// The DoorAreaCalculator instance.
+      /// Calculates the area.
       /// </summary>
-      public static AreaCalculator Instance
+      /// <param name="exporterIFC">The ExporterIFC object.</param>
+      /// <param name="extrusionCreationData">The IFCExportBodyParams.</param>
+      /// <param name="element">The element to calculate the value.</param>
+      /// <param name="elementType">The element type.</param>
+      /// <returns>True if the operation succeed, false otherwise.</returns>
+      public override bool Calculate(ExporterIFC exporterIFC, IFCAnyHandle handle, IFCExportBodyParams extrusionCreationData, Element element,
+         ElementType elementType, EntryMap entryMap)
       {
-         get { return s_Instance; }
-      }
+         // Check the parameter override.
+         if (ParameterUtil.TryGetDoubleValueFromElementOrSymbol(element, entryMap.RevitParameterName,
+            entryMap.CompatibleRevitParameterName, "IfcQtyArea") is double area && area > MathUtil.Eps * MathUtil.Eps)
+         {
+            m_Area = UnitUtil.ScaleArea(area);
+            return true;
+         }
 
-      /// <summary>
-      /// Calculates area for a Door.
-      /// </summary>
-      /// <param name="exporterIFC">
-      /// The ExporterIFC object.
-      /// </param>
-      /// <param name="extrusionCreationData">
-      /// The IFCExtrusionCreationData.
-      /// </param>
-      /// <param name="element">
-      /// The element to calculate the value.
-      /// </param>
-      /// <param name="elementType">
-      /// The element type.
-      /// </param>
-      /// <returns>
-      /// True if the operation succeed, false otherwise.
-      /// </returns>
-      public override bool Calculate(ExporterIFC exporterIFC, IFCExtrusionCreationData extrusionCreationData, Element element, ElementType elementType)
-      {
          double height = 0.0;
          double width = 0.0;
 
-         // Work for Door element
-         if (CategoryUtil.GetSafeCategoryId(element) == new ElementId(BuiltInCategory.OST_Doors))
-            if ((ParameterUtil.GetDoubleValueFromElementOrSymbol(element, BuiltInParameter.DOOR_HEIGHT, out height) != null) &&
-                  (ParameterUtil.GetDoubleValueFromElementOrSymbol(element, BuiltInParameter.DOOR_WIDTH, out width) != null))
+         ElementId categoryId = CategoryUtil.GetSafeCategoryId(element);
+
+         // Work for Door and window element
+         long categoryIdValue = categoryId.Value;
+         if (categoryIdValue is (long)BuiltInCategory.OST_Doors or (long)BuiltInCategory.OST_Windows)
+         {
+            // Note that DOOR_HEIGHT and WINDOW_HEIGHT are the same parameter, and DOOR_WIDTH and WINDOW_WIDTH are the same parameter.
+            (EvaluatedParameter parameter, height) = ParameterUtil.GetDoubleValueFromElementOrSymbol(element, BuiltInParameter.DOOR_HEIGHT);
+            if (parameter != null)
             {
+               (parameter, width) = ParameterUtil.GetDoubleValueFromElementOrSymbol(element, BuiltInParameter.DOOR_WIDTH);
+               if (parameter != null)
+               {
                   m_Area = UnitUtil.ScaleArea(height * width);
                   return true;
+               }
             }
-
-         // Work for Window element
-         if (CategoryUtil.GetSafeCategoryId(element) == new ElementId(BuiltInCategory.OST_Windows))
-            if ((ParameterUtil.GetDoubleValueFromElementOrSymbol(element, BuiltInParameter.WINDOW_HEIGHT, out height) != null) &&
-                  (ParameterUtil.GetDoubleValueFromElementOrSymbol(element, BuiltInParameter.WINDOW_WIDTH, out width) != null))
+         }
+         else if ((categoryIdValue is (long)BuiltInCategory.OST_Ceilings or (long)BuiltInCategory.OST_Floors) || element is Floor)
+         {
+            (EvaluatedParameter parameter, area) = ParameterUtil.GetDoubleValueFromElementOrSymbol(element, BuiltInParameter.HOST_AREA_COMPUTED);
+            if (parameter != null)
             {
-               m_Area = UnitUtil.ScaleArea(height * width);
+               m_Area = UnitUtil.ScaleArea(area);
                return true;
             }
-
-         // If no value from the above, consider the parameter override
-         if (ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "IfcQtyArea", out m_Area) == null)
-               ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "Area", out m_Area);
-         m_Area = UnitUtil.ScaleArea(m_Area);
-         if (m_Area > MathUtil.Eps() * MathUtil.Eps())
-            return true;
+         }
 
          // Work for Space element or other element that has extrusion
-         if (extrusionCreationData == null)
-            return false;
-
-         m_Area = extrusionCreationData.ScaledArea;
-         return m_Area > MathUtil.Eps() * MathUtil.Eps();
+         m_Area = extrusionCreationData?.ScaledArea ?? 0.0;
+         return m_Area > MathUtil.Eps * MathUtil.Eps;
       }
 
       /// <summary>

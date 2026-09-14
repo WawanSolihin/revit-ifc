@@ -28,6 +28,7 @@ using Revit.IFC.Common.Utility;
 using Revit.IFC.Export.Utility;
 using Revit.IFC.Export.Toolkit;
 using Revit.IFC.Export.Exporter.PropertySet;
+using Revit.IFC.Common.Enums;
 
 namespace Revit.IFC.Export.Exporter
 {
@@ -39,17 +40,16 @@ namespace Revit.IFC.Export.Exporter
       /// <summary>
       /// Exports an element as a group.
       /// </summary>
-      /// <param name="exporterIFC">The ExporterIFC object.</param>
+      /// <param name="file">The IFC File object.</param>
       /// <param name="element">The element.</param>
       /// <param name="productWrapper">The ProductWrapper.</param>
-      public static void ExportAreaScheme(ExporterIFC exporterIFC, AreaScheme element,
+      public static void ExportAreaScheme(IFCFile file, AreaScheme element,
           ProductWrapper productWrapper)
       {
          if (element == null)
             return;
 
-         HashSet<IFCAnyHandle> areaHandles = null;
-         if (!ExporterCacheManager.AreaSchemeCache.TryGetValue(element.Id, out areaHandles))
+         if (!ExporterCacheManager.AreaSchemeCache.TryGetValue(element.Id, out HashSet<IFCAnyHandle> areaHandles))
             return;
 
          if (areaHandles == null || areaHandles.Count == 0)
@@ -60,24 +60,24 @@ namespace Revit.IFC.Export.Exporter
          if (ExporterCacheManager.ExportOptionsCache.IsElementInExcludeList(elementClassTypeEnum))
             return;
 
-         IFCFile file = exporterIFC.GetFile();
-
-         using (IFCTransaction tr = new IFCTransaction(file))
+         using (IFCTransaction tr = new(file))
          {
             string guid = GUIDUtil.CreateGUID(element);
             IFCAnyHandle ownerHistory = ExporterCacheManager.OwnerHistoryHandle;
             string name = NamingUtil.GetNameOverride(element, element.Name);
             string description = NamingUtil.GetDescriptionOverride(element, null);
-            string objectType = NamingUtil.GetObjectTypeOverride(element, NamingUtil.GetFamilyAndTypeName(element));
+            string objectType = NamingUtil.GetDefaultObjectType(element);
 
             string elementTag = NamingUtil.CreateIFCElementId(element);
 
             IFCAnyHandle areaScheme = IFCInstanceExporter.CreateGroup(file, guid,
                 ownerHistory, name, description, objectType);
+            IFCExportInfoPair exportInfo = new(elementClassTypeEnum);
+            productWrapper.AddElement(element, areaScheme, exportInfo);
 
-            productWrapper.AddElement(element, areaScheme);
-
-            IFCInstanceExporter.CreateRelAssignsToGroup(file, GUIDUtil.CreateGUID(), ownerHistory,
+            string groupGuid = GUIDUtil.GenerateIFCGuidFrom(
+               GUIDUtil.CreateGUIDString(IFCEntityType.IfcRelAssignsToGroup, areaScheme));
+            IFCInstanceExporter.CreateRelAssignsToGroup(file, groupGuid, ownerHistory,
                 null, null, areaHandles, null, areaScheme);
 
             tr.Commit();

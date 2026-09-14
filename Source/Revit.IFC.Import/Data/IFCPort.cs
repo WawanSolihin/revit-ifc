@@ -91,7 +91,7 @@ namespace Revit.IFC.Import.Data
          {
             if (m_ConnectedTo == null && m_ConnectedToHandle != null)
             {
-               m_ConnectedTo = ProcessIFCRelation.ProcessRelatingPort(m_ConnectedToHandle);
+               m_ConnectedTo = ProcessIFCRelation.ProcessRelatedPort(m_ConnectedToHandle);
                m_ConnectedToHandle = null;
             }
             return m_ConnectedTo;
@@ -117,10 +117,17 @@ namespace Revit.IFC.Import.Data
          // We will delay processing the containment information to the PostProcess stp.  For complicated systems, creating all of these
          // during the standard Process step may result in a stack overflow.
 
-         HashSet<IFCAnyHandle> containedIn = IFCAnyHandleUtil.GetAggregateInstanceAttribute<HashSet<IFCAnyHandle>>(ifcPort, "ContainedIn");
-         if (containedIn != null && containedIn.Count != 0)
+         if (IFCImportFile.TheFile.SchemaVersionAtLeast(IFCSchemaVersion.IFC4))
          {
-            m_ContainedInHandle = containedIn.First();
+            HashSet<IFCAnyHandle> containedIn = IFCAnyHandleUtil.GetAggregateInstanceAttribute<HashSet<IFCAnyHandle>>(ifcPort, "ContainedIn");
+            if (containedIn != null && containedIn.Count != 0)
+            {
+               m_ContainedInHandle = containedIn.First();
+            }
+         }
+         else
+         {
+            m_ContainedInHandle = IFCAnyHandleUtil.GetInstanceAttribute(ifcPort, "ContainedIn");
          }
 
          HashSet<IFCAnyHandle> connectedFrom = IFCAnyHandleUtil.GetAggregateInstanceAttribute<HashSet<IFCAnyHandle>>(ifcPort, "ConnectedFrom");
@@ -163,37 +170,40 @@ namespace Revit.IFC.Import.Data
 
          if (element != null)
          {
-            if (ContainedIn != null)
+            IFCObjectDefinition portOwner = IFCImportFile.TheFile.SchemaVersionAtLeast(IFCSchemaVersion.IFC4) ? NestsWhole : ContainedIn;
+            Category category = (portOwner != null) || (ConnectedFrom != null) ?
+            IFCPropertySet.GetCategoryForParameterIfValid(element, Id) : null;
+            if (portOwner != null)
             {
-               string guid = ContainedIn.GlobalId;
+               string guid = portOwner.GlobalId;
                if (!string.IsNullOrWhiteSpace(guid))
-                  IFCPropertySet.AddParameterString(doc, element, "IfcElement ContainedIn IfcGUID", guid, Id);
+                  ParametersToSet.AddStringParameter(doc, element, category, this, "IfcElement ContainedIn IfcGUID", guid, Id);
 
-               string name = ContainedIn.Name;
+               string name = portOwner.Name;
                if (!string.IsNullOrWhiteSpace(name))
-                  IFCPropertySet.AddParameterString(doc, element, "IfcElement ContainedIn Name", name, Id);
+                  ParametersToSet.AddStringParameter(doc, element, category, this, "IfcElement ContainedIn Name", name, Id);
             }
 
             if (ConnectedFrom != null)
             {
                string guid = ConnectedFrom.GlobalId;
                if (!string.IsNullOrWhiteSpace(guid))
-                  IFCPropertySet.AddParameterString(doc, element, "IfcPort ConnectedFrom IfcGUID", guid, Id);
+                  ParametersToSet.AddStringParameter(doc, element, category, this, "IfcPort ConnectedFrom IfcGUID", guid, Id);
 
                string name = ConnectedFrom.Name;
                if (!string.IsNullOrWhiteSpace(name))
-                  IFCPropertySet.AddParameterString(doc, element, "IfcPort ConnectedFrom Name", name, Id);
+                  ParametersToSet.AddStringParameter(doc, element, category, this, "IfcPort ConnectedFrom Name", name, Id);
             }
 
             if (ConnectedTo != null)
             {
                string guid = ConnectedTo.GlobalId;
                if (!string.IsNullOrWhiteSpace(guid))
-                  IFCPropertySet.AddParameterString(doc, element, "IfcPort ConnectedTo IfcGUID", guid, Id);
+                  ParametersToSet.AddStringParameter(doc, element, category, this, "IfcPort ConnectedTo IfcGUID", guid, Id);
 
                string name = ConnectedTo.Name;
                if (!string.IsNullOrWhiteSpace(name))
-                  IFCPropertySet.AddParameterString(doc, element, "IfcPort ConnectedTo Name", name, Id);
+                  ParametersToSet.AddStringParameter(doc, element, category, this, "IfcPort ConnectedTo Name", name, Id);
             }
          }
       }
@@ -222,8 +232,7 @@ namespace Revit.IFC.Import.Data
          }
          catch (Exception ex)
          {
-            if (ex.Message != "Don't Import")
-               Importer.TheLog.LogError(ifcPort.StepId, ex.Message, false);
+            HandleError(ex.Message, ifcPort, true);
             return null;
          }
 

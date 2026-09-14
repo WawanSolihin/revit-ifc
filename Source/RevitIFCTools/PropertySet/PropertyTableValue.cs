@@ -17,12 +17,6 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 //
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
 namespace RevitIFCTools.PropertySet
 {
    class PropertyTableValue : PropertyDataType
@@ -37,8 +31,8 @@ namespace RevitIFCTools.PropertySet
          {
             tv += "Expression:\t" + Expression;
          }
-         tv += "\nDefiningValueType:\t" + DefiningValueType;
-         tv += "\nDefinedValueType:\t" + DefinedValueType;
+         tv += "\r\nDefiningValueType:\t" + DefiningValueType;
+         tv += "\r\nDefinedValueType:\t" + DefinedValueType;
          return tv;
       }
    }

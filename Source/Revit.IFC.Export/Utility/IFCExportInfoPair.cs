@@ -1,12 +1,9 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using Revit.IFC.Export.Exporter;
-using Revit.IFC.Common.Utility;
+﻿using Autodesk.Revit.DB;
 using Revit.IFC.Common.Enums;
+using Revit.IFC.Common.Utility;
 using Revit.IFC.Export.Toolkit;
+using System;
+using System.Collections.Generic;
 
 namespace Revit.IFC.Export.Utility
 {
@@ -16,7 +13,13 @@ namespace Revit.IFC.Export.Utility
    public class IFCExportInfoPair
    {
       IFCEntityType m_ExportInstance = IFCEntityType.UnKnown;
-      
+
+      IFCEntityType m_ExportType = IFCEntityType.UnKnown;
+
+      private string m_PredefinedType = null;
+
+      private string m_UserdefinedType = null;
+
       /// <summary>
       /// The IfcEntity for export
       /// </summary>
@@ -24,58 +27,134 @@ namespace Revit.IFC.Export.Utility
       {
          get
          {
-            CheckValidEntity();
             return m_ExportInstance;
          }
-         // Changed to read-only attribute. The value should not be set from outside to ensure integrity
-         //set
-         //{
-         //   m_ExportInstance = value;
-         //   CheckValidEntity();
-         //}
       }
-
-      IFCEntityType m_ExportType = IFCEntityType.UnKnown;
 
       /// <summary>
       /// The type for export
       /// </summary>
-      public IFCEntityType ExportType {
-         get
-         {
-            CheckValidEntity();
-            return m_ExportType;
-         }
-         // Changed to read-only attribute. The value should not be set from outside to ensure integrity
-         //set
-         //{
-         //   m_ExportType = value;
-         //   CheckValidEntity();
-         //}
-      }
-
-      private string m_ValidatedPredefinedType;
-      /// <summary>
-      /// Validated PredefinedType from IfcExportType (or IfcType for the old param), or from IfcExportAs
-      /// </summary>
-      public string ValidatedPredefinedType
+      public IFCEntityType ExportType 
       {
          get
          {
-            return m_ValidatedPredefinedType;
+            return m_ExportType;
+         }
+      }
+
+      /// <summary>
+      /// Validated PredefinedType from IfcExportType (or IfcType for the old param), 
+      /// or from IFC_EXPORT_ELEMENT*_AS
+      /// </summary>
+      public string PredefinedType
+      {
+         get
+         {
+            return m_PredefinedType;
          }
          set
          {
-            string newValidatedPredefinedType = IFCValidateEntry.GetValidIFCPredefinedTypeType(value, "NOTDEFINED", m_ExportInstance.ToString());
+            if (string.IsNullOrWhiteSpace(value))
+            {
+               // always set to null if value is null or empty to make it possible indicate that PredefinedType is default
+               m_PredefinedType = null;
+               return;
+            }
+
+            string instanceName = IFCAnyHandleUtil.GetIFCEntityTypeName(m_ExportInstance);
+            string newValidatedPredefinedType = IFCValidateEntry.GetValidIFCPredefinedType(value, instanceName);
             if (ExporterUtil.IsNotDefined(newValidatedPredefinedType))
             {
-               // if the ExportType is unknown, i.e. Entity without type (e.g. IfcGrid), must try the enum type from the instance type + "Type"
-               if (m_ExportType == IFCEntityType.UnKnown)
-                  newValidatedPredefinedType = IFCValidateEntry.GetValidIFCPredefinedTypeType(value, "NOTDEFINED", m_ExportInstance.ToString() + "Type");
-               else
-                  newValidatedPredefinedType = IFCValidateEntry.GetValidIFCPredefinedTypeType(value, "NOTDEFINED", m_ExportType.ToString());
+               // if the ExportType is unknown, i.e. Entity without type (e.g. IfcGrid),
+               // must try the enum type from the instance type + "Type" generally, but
+               // there are exceptions.
+               newValidatedPredefinedType = (m_ExportType == IFCEntityType.UnKnown) ?
+                  IFCValidateEntry.GetValidIFCPredefinedType(value, IfcSchemaEntityTree.GetTypeNameFromInstanceName(instanceName,
+                     ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4)) :
+                  IFCValidateEntry.GetValidIFCPredefinedType(value, IFCAnyHandleUtil.GetIFCEntityTypeName(m_ExportType));
+
+               // If the value is still unknown, this can come from legacy code that set the predefined type improperly.  Set it to userdefined
+               // (if possible) and set the userdefined value to predefinedType value.
+               if (ExporterUtil.IsNotDefined(newValidatedPredefinedType))
+               {
+                  newValidatedPredefinedType = IFCValidateEntry.GetValidIFCPredefinedType("USERDEFINED", IFCAnyHandleUtil.GetIFCEntityTypeName(m_ExportType));
+                  m_UserdefinedType = value;
+               }
             }
-            m_ValidatedPredefinedType = newValidatedPredefinedType;
+
+            m_PredefinedType = newValidatedPredefinedType;
+         }
+      }
+
+      /// <summary>
+      /// Gets a value indicating whether the <see cref="PredefinedType"/> is default.
+      /// </summary>
+      public bool IsPredefinedTypeDefault
+      {
+         get { return string.IsNullOrWhiteSpace(m_PredefinedType); }
+      }
+
+      /// <summary>
+      /// Retrieves the current <see cref="PredefinedType"/>, or the <c>NOTDEFINED</c> value
+      /// if the <see cref="PredefinedType"/> is default.
+      /// </summary>
+      /// <returns>
+      /// The value of the <see cref="PredefinedType"/> property if set; otherwise the <c>NOTDEFINED</c> value.
+      /// </returns>
+      public string GetPredefinedTypeOrDefault()
+      {
+         return GetPredefinedTypeOrDefault("NOTDEFINED");
+      }
+
+      /// <summary>
+      /// Retrieves the current <see cref="PredefinedType"/>, or the specified default value
+      /// if the <see cref="PredefinedType"/> is default.
+      /// </summary>
+      /// <param name="defaultPredefinedType">
+      /// A value to return if the <see cref="PredefinedType"/> is default, by default "NOTDEFINED".
+      /// </param>
+      /// <returns>
+      /// The value of the <see cref="PredefinedType"/> property if set;
+      /// otherwise the <paramref name="defaultPredefinedType"/> parameter.
+      /// </returns>
+      public string GetPredefinedTypeOrDefault(string defaultPredefinedType)
+      {
+         if (IsPredefinedTypeDefault)
+         {
+            return defaultPredefinedType;
+         }
+
+         return m_PredefinedType;
+      }
+
+      /// <summary>
+      /// Set the <see cref="PredefinedType"/> property if property value is not initialized or "NOTDEFINED".
+      /// </summary>
+      /// <param name="predefinedType">A new predefined type value.</param>
+      public void SetPredefinedTypeIfNotDefined(string predefinedType)
+      {
+         if (ExporterUtil.IsNotDefined(m_PredefinedType))
+         {
+            PredefinedType = predefinedType;
+         }
+      }
+
+      /// <summary>
+      /// The user-defined type, if the predefined type is set to USERDEFINED.
+      /// </summary>
+      public string UserDefinedType
+      {
+         get
+         {
+            if (string.Compare(PredefinedType, "USERDEFINED", StringComparison.InvariantCultureIgnoreCase) == 0)
+            {
+               return m_UserdefinedType;
+            }
+            return null;
+         }
+         set
+         {
+            m_UserdefinedType = value;
          }
       }
 
@@ -84,33 +163,67 @@ namespace Revit.IFC.Export.Utility
       /// </summary>
       public IFCExportInfoPair()
       {
-         // Set default value if not defined
-         m_ValidatedPredefinedType = "NOTDEFINED";
       }
 
       /// <summary>
-      /// Initialize the class with the entity and the type
+      /// Initialize the class with one entity by name.
       /// </summary>
-      /// <param name="instance">the entity</param>
-      /// <param name="type">the type</param>
+      /// <param name="entityType">The instance or type entity class.</param>
+      public IFCExportInfoPair(string entityTypeName)
+      {
+         IFCEntityType entityType = IFCAnyHandleUtil.GetIFCEntityTypeFromName(entityTypeName);
+         if (entityType != IFCEntityType.UnKnown)
+         {
+            SetByType(entityType);
+            return;
+         }
+
+         // We allowed in the UI to set the name of IFC2x3 entities that didn't exist.  Try this as a backup.
+         entityType = IFCAnyHandleUtil.GetIFCEntityTypeFromName(entityTypeName + "Type");
+         SetByType(entityType);
+      }
+
+      /// <summary>
+      /// Initialize the class with one entity.
+      /// </summary>
+      /// <param name="entityType">The instance or type entity class.</param>
+      public IFCExportInfoPair(IFCEntityType entityType)
+      {
+         SetByType(entityType);
+      }
+
+      /// <summary>
+      /// Initialize the class with one entity.
+      /// </summary>
+      /// <param name="entityType">The instance or type entity class.</param>
+      /// <param name="predefinedType">The optional predefined type.</param>
+      public IFCExportInfoPair(IFCEntityType entityType, string predefinedType)
+      {
+         SetByTypeAndPredefinedType(entityType, predefinedType);
+      }
+
+      /// <summary>
+      /// Initialize the class with the entity and the type.
+      /// </summary>
+      /// <param name="instance">The instance entity class.</param>
+      /// <param name="type">The type entity class.</param>
       public IFCExportInfoPair(IFCEntityType instance, IFCEntityType type, string predefinedType)
       {
-         instance = ElementFilteringUtil.GetValidIFCEntityType(instance);
-         m_ExportInstance = instance;
+         SetValue(instance, type, predefinedType);
+      }
 
-         type = ElementFilteringUtil.GetValidIFCEntityType(type);
-         m_ExportType = type;
+      /// <summary>
+      /// Initialize the class with the entity and optional predefinedType and userDefinedType..
+      /// </summary>
+      /// <param name="entity">The entity class.</param>
+      /// <param name="predefinedType">The optional predefined type.</param>
+      /// <param name="userDefinedType">The optional user defined type.</param>
+      public IFCExportInfoPair(IFCEntityType entity, string predefinedType, string userDefinedType)
+      {
+         SetByTypeAndPredefinedType(entity, predefinedType);
 
-         ValidatedPredefinedType = predefinedType;
-         //if (!string.IsNullOrEmpty(predefinedType))
-         //{
-         //   string newValidatedPredefinedType = IFCValidateEntry.GetValidIFCPredefinedTypeType(predefinedType, m_ValidatedPredefinedType, m_ExportInstance.ToString());
-         //   if (ExporterUtil.IsNotDefined(newValidatedPredefinedType))
-         //      newValidatedPredefinedType = IFCValidateEntry.GetValidIFCPredefinedTypeType(predefinedType, m_ValidatedPredefinedType, m_ExportType.ToString());
-         //   m_ValidatedPredefinedType = newValidatedPredefinedType;
-         //}
-         //else
-         //   m_ValidatedPredefinedType = IFCValidateEntry.GetValidIFCPredefinedTypeType("NOTDEFINED", m_ValidatedPredefinedType, m_ExportType.ToString());
+         if (!string.IsNullOrEmpty(userDefinedType))
+            UserDefinedType = userDefinedType;
       }
 
       /// <summary>
@@ -118,7 +231,7 @@ namespace Revit.IFC.Export.Utility
       /// </summary>
       public bool IsUnKnown
       {
-         get { return (m_ExportInstance == IFCEntityType.UnKnown); }
+         get { return m_ExportInstance == IFCEntityType.UnKnown; }
       }
 
       /// <summary>
@@ -136,178 +249,167 @@ namespace Revit.IFC.Export.Utility
       /// <param name="type">the type</param>
       public void SetValue(IFCEntityType instance, IFCEntityType type, string predefinedType)
       {
+         instance = CorrectEntityType(instance);
+         type = CorrectEntityType(type);
+
          instance = ElementFilteringUtil.GetValidIFCEntityType(instance);
          m_ExportInstance = instance;
 
          type = ElementFilteringUtil.GetValidIFCEntityType(type);
          m_ExportType = type;
 
-         ValidatedPredefinedType = predefinedType;
-         //if (!string.IsNullOrEmpty(predefinedType))
-         //{
-         //   string newValidatedPredefinedType = IFCValidateEntry.GetValidIFCPredefinedTypeType(predefinedType, m_ValidatedPredefinedType, m_ExportInstance.ToString());
-         //   if (ExporterUtil.IsNotDefined(newValidatedPredefinedType))
-         //      newValidatedPredefinedType = IFCValidateEntry.GetValidIFCPredefinedTypeType(predefinedType, m_ValidatedPredefinedType, m_ExportType.ToString());
-         //   m_ValidatedPredefinedType = newValidatedPredefinedType;
-         //}
-         //else
-         //   m_ValidatedPredefinedType = IFCValidateEntry.GetValidIFCPredefinedTypeType("NOTDEFINED", m_ValidatedPredefinedType, m_ExportType.ToString());
+         CheckValidEntity();
+
+         PredefinedType = predefinedType;
       }
 
       /// <summary>
-      /// Set the pair information using only either the entity or the type
+      /// Set the export type info by given entity type.
       /// </summary>
-      /// <param name="entityType">the entity or type</param>
-      /// <param name="predefineType">predefinedtype string</param>
-      public void SetValueWithPair(IFCEntityType entityType, string predefineType = null)
+      /// <param name="entityType">The entity type.</param>
+      public void SetByType(IFCEntityType entityType)
       {
-         SetValueWithPair(entityType.ToString(), predefineType);
+         entityType = CorrectEntityType(entityType);
+
+         IfcSchemaEntityTree theTree = ExporterCacheManager.IFCSchemaEntityTree;
+         IFCVersion ifcVersion = ExporterCacheManager.ExportOptionsCache.FileVersion;
+
+         (IFCEntityType, IFCEntityType) matchPair = IFCAnyHandleUtil.GetMatchingPair(entityType, theTree, ifcVersion);
+         m_ExportInstance = matchPair.Item1;
+         m_ExportType = matchPair.Item2;
+
+         CheckValidEntity();
       }
 
       /// <summary>
-      /// Set the pair information using only either the entity or the type
+      /// Set the export type info by given entity type and predefined type.
       /// </summary>
-      /// <param name="entityTypeStr">the entity or type string</param>
-      /// <param name="predefineType">predefinedtype string</param>
-      public void SetValueWithPair(string entityTypeStr, string predefineType = null)
-      { 
-         int typeLen = 4;
-         bool isType = entityTypeStr.Substring(entityTypeStr.Length - 4, 4).Equals("Type", StringComparison.CurrentCultureIgnoreCase);
-         if (!isType)
+      /// <param name="entityType">The entinty type.</param>
+      /// <param name="predefinedTypeName">The PredefinedType attribute value.</param>
+      public void SetByTypeAndPredefinedType(IFCEntityType entityType, string predefinedTypeName)
+      {
+         SetByType(entityType);
+
+         PredefinedType = predefinedTypeName;
+      }
+
+      private IFCEntityType CorrectEntityType(IFCEntityType originalEntityType)
+      {
+         // IfcElectricDistributionBoard and IfcElectricDistributionBoardType were deprecated in IFC4x3,
+         // replaced by IfcDistributionBoard / IfcDistributionBoardType.  A deprecated entity must not be
+         // exported (normative rule IFC102 - Absence of deprecated entities), so for IFC4x3 and onward
+         // remap them - as well as the legacy IFC2x3 IfcElectricDistributionPoint - to the current entities.
+         // Their PredefinedType values (CONSUMERUNIT, DISTRIBUTIONBOARD, MOTORCONTROLCENTRE, SWITCHBOARD, ...)
+         // are all valid IfcDistributionBoardTypeEnum values, so the PredefinedType stays valid after the remap.
+         if (!ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4x3)
          {
-            if (entityTypeStr.Equals("IfcDoorStyle", StringComparison.InvariantCultureIgnoreCase) 
-               || entityTypeStr.Equals("IfcWindowStyle", StringComparison.InvariantCultureIgnoreCase))
+            switch (originalEntityType)
             {
-               isType = true;
-               typeLen = 5;
+               case IFCEntityType.IfcElectricDistributionPoint:
+               case IFCEntityType.IfcElectricDistributionBoard:
+                  return IFCEntityType.IfcDistributionBoard;
+               case IFCEntityType.IfcElectricDistributionBoardType:
+                  return IFCEntityType.IfcDistributionBoardType;
             }
          }
 
-         if (isType)
+         // We allow user to input entities from any schema.  Remap as needed based on the actual schema chosen.
+         if (!ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4)
          {
-            // Get the instance
-            string instName = entityTypeStr.Substring(0, entityTypeStr.Length - typeLen);
-            IfcSchemaEntityNode node = IfcSchemaEntityTree.Find(instName);
-            if (node != null && !node.isAbstract)
+            switch (originalEntityType)
             {
-               IFCEntityType instType = IFCEntityType.UnKnown;
-               if (IFCEntityType.TryParse(instName, true, out instType))
-                  m_ExportInstance = instType;
-            }
-            else
-            {
-               // If not found, try non-abstract supertype derived from the type
-               node = IfcSchemaEntityTree.FindNonAbsInstanceSuperType(instName);
-               if (node != null)
-               {
-                  IFCEntityType instType = IFCEntityType.UnKnown;
-                  if (IFCEntityType.TryParse(node.Name, true, out instType))
-                     m_ExportInstance = instType;
-               }
-            }
-
-            // set the type
-            IFCEntityType entityType = ElementFilteringUtil.GetValidIFCEntityType(entityTypeStr);
-            if (entityType != IFCEntityType.UnKnown)
-               m_ExportType = entityType;
-            else
-            {
-               node = IfcSchemaEntityTree.FindNonAbsInstanceSuperType(entityTypeStr);
-               if (node != null)
-               {
-                  IFCEntityType instType = IFCEntityType.UnKnown;
-                  if (IFCEntityType.TryParse(node.Name, true, out instType))
-                     m_ExportType = instType;
-               }
+               case IFCEntityType.IfcBeamStandardCase:
+                  return IFCEntityType.IfcBeam;
+               case IFCEntityType.IfcColumnStandardCase:
+                  return IFCEntityType.IfcColumn;
+               case IFCEntityType.IfcDoorStandardCase:
+                  return IFCEntityType.IfcDoor;
+               case IFCEntityType.IfcDoorStyle:
+                  return IFCEntityType.IfcDoorType;
+               case IFCEntityType.IfcElectricDistributionPoint:
+                  return IFCEntityType.IfcElectricDistributionBoard;
+               case IFCEntityType.IfcElectricHeaterType:
+                  return IFCEntityType.IfcSpaceHeaterType;
+               case IFCEntityType.IfcGasTerminalType:
+                  return IFCEntityType.IfcBurnerType;
+               case IFCEntityType.IfcMemberStandardCase:
+                  return IFCEntityType.IfcMember;
+               case IFCEntityType.IfcOpeningStandardCase:
+                  return IFCEntityType.IfcOpeningElement;
+               case IFCEntityType.IfcPlateStandardCase:
+                  return IFCEntityType.IfcPlate;
+               case IFCEntityType.IfcProxy:
+                  return IFCEntityType.IfcBuildingElementProxy;
+               case IFCEntityType.IfcSlabStandardCase:
+               case IFCEntityType.IfcSlabElementedCase:
+                  return IFCEntityType.IfcSlab;
+               case IFCEntityType.IfcWallStandardCase:
+               case IFCEntityType.IfcWallElementedCase:
+                  return IFCEntityType.IfcWall;
+               case IFCEntityType.IfcWindowStandardCase:
+                  return IFCEntityType.IfcWindow;
+               case IFCEntityType.IfcWindowStyle:
+                  return IFCEntityType.IfcWindowType;
             }
          }
          else
          {
-            // set the instance
-            IFCEntityType instType = ElementFilteringUtil.GetValidIFCEntityType(entityTypeStr);
-            if (instType != IFCEntityType.UnKnown)
-               m_ExportInstance = instType;
-            else
+            switch (originalEntityType)
             {
-               // If not found, try non-abstract supertype derived from the type
-               IfcSchemaEntityNode node = IfcSchemaEntityTree.FindNonAbsInstanceSuperType(entityTypeStr);
-               if (node != null)
-               {
-                  instType = IFCEntityType.UnKnown;
-                  if (IFCEntityType.TryParse(node.Name, true, out instType))
-                     m_ExportInstance = instType;
-               }
-            }
-
-            // set the type pair
-            string typeName = entityTypeStr;
-            if (ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4 &&
-               (entityTypeStr.Equals("IfcDoorStyle", StringComparison.InvariantCultureIgnoreCase)
-               || entityTypeStr.Equals("IfcWindowStyle", StringComparison.InvariantCultureIgnoreCase)))
-               typeName += "Style";
-            else
-               typeName += "Type";
-
-            IFCEntityType entityType = ElementFilteringUtil.GetValidIFCEntityType(typeName);
-            if (entityType != IFCEntityType.UnKnown)
-               m_ExportType = entityType;
-            else
-            {
-               IfcSchemaEntityNode node = IfcSchemaEntityTree.FindNonAbsInstanceSuperType(typeName);
-               if (node != null)
-               {
-                  instType = IFCEntityType.UnKnown;
-                  if (IFCEntityType.TryParse(node.Name, true, out instType))
-                     m_ExportType = instType;
-               }
+               case IFCEntityType.IfcAudioVisualAppliance:
+                  return IFCEntityType.IfcElectricAppliance;
+               case IFCEntityType.IfcBuildingElementPartType:
+                  return IFCEntityType.IfcBuildingElementPart;
+               case IFCEntityType.IfcBurnerType:
+                  return IFCEntityType.IfcGasTerminalType;
+               case IFCEntityType.IfcDoorType:
+                  return IFCEntityType.IfcDoorStyle;
+               case IFCEntityType.IfcElectricDistributionBoard:
+                  return IFCEntityType.IfcElectricDistributionPoint;
+               case IFCEntityType.IfcFootingType:
+                  return IFCEntityType.IfcFooting;
+               case IFCEntityType.IfcMedicalDevice:
+                  return IFCEntityType.IfcBuildingElementProxy;
+               case IFCEntityType.IfcMedicalDeviceType:
+                  return IFCEntityType.IfcBuildingElementProxyType;
+               case IFCEntityType.IfcRampType:
+                  return IFCEntityType.IfcRamp;
+               case IFCEntityType.IfcRoofType:
+                  return IFCEntityType.IfcRoof;
+               case IFCEntityType.IfcStairType:
+                  return IFCEntityType.IfcStair;
+               case IFCEntityType.IfcWindowType:
+                  return IFCEntityType.IfcWindowStyle;
             }
          }
 
-         ValidatedPredefinedType = predefineType;
+         return originalEntityType;
       }
 
       // Check valid entity and type set according to the MVD used in the export
       // Also check and correct older standardcase entities and change it without StandardCase for IFC4 and onward
       void CheckValidEntity()
       {
+         // TODO: Incorporate this into the setter.
          IFCCertifiedEntitiesAndPSets certEntAndPset = ExporterCacheManager.CertifiedEntitiesAndPsetsCache;
 
-         // Special handling for *StandardCase entities that are not used anymore in IFC4
-         if (!ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4)
+         if (!certEntAndPset.IsValidEntityInCurrentMVD(m_ExportInstance))
          {
-            if (m_ExportInstance.ToString().EndsWith("StandardCase", StringComparison.InvariantCultureIgnoreCase))
+            if (certEntAndPset.IsValidEntityInCurrentMVD(IFCEntityType.IfcBuildingElementProxy) &&
+               certEntAndPset.IsValidEntityInCurrentMVD(IFCEntityType.IfcBuildingElementProxyType))
             {
-               string newInstanceName = m_ExportInstance.ToString().Remove(m_ExportInstance.ToString().Length - 12);
-
-               // Special handling for IfcOpeningStandardCase to turn it to IfcOpeningElement
-               if (newInstanceName.Equals("IfcOpening", StringComparison.InvariantCultureIgnoreCase))
-                  newInstanceName = newInstanceName + "Element";
-
-               IFCEntityType newInst;
-               if (Enum.TryParse<IFCEntityType>(newInstanceName, true, out newInst))
-                  //m_ExportInstance = newInst;
-                  SetValueWithPair(newInst);
+               m_ExportInstance = IFCEntityType.IfcBuildingElementProxy;
+               m_ExportType = IFCEntityType.IfcBuildingElementProxyType;
             }
-            else if (m_ExportInstance.ToString().EndsWith("ElementedCase", StringComparison.InvariantCultureIgnoreCase))
+            else
             {
-               string newInstanceName = m_ExportInstance.ToString().Remove(m_ExportInstance.ToString().Length - 13);
-               IFCEntityType newInst;
-               if (Enum.TryParse<IFCEntityType>(newInstanceName, true, out newInst))
-                  SetValueWithPair(newInst);
+               m_ExportInstance = IFCEntityType.UnKnown;
+               m_ExportType = IFCEntityType.UnKnown;
             }
          }
-
-         if (!certEntAndPset.IsValidEntityInCurrentMVD(m_ExportType.ToString()))
-            m_ExportType = IFCEntityType.UnKnown;
-
-         if (!certEntAndPset.IsValidEntityInCurrentMVD(m_ExportInstance.ToString()))
-            m_ExportInstance = IFCEntityType.UnKnown;
-
-         // IfcProxy is deprecated, we will change it to IfcBuildingElementProxy
-         if (m_ExportInstance == IFCEntityType.IfcProxy && !ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4)
+         else if (!certEntAndPset.IsValidEntityInCurrentMVD(m_ExportType))
          {
-            m_ExportInstance = IFCEntityType.IfcBuildingElementProxy;
-            m_ExportType = IFCEntityType.IfcBuildingElementProxyType;
+            m_ExportType = IFCEntityType.UnKnown;
          }
       }
    }

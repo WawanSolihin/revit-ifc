@@ -137,29 +137,58 @@ namespace Revit.IFC.Import.Data
 
          m_Tag = IFCAnyHandleUtil.GetStringAttribute(ifcElement, "Tag");
 
-         if (IFCImportFile.TheFile.SchemaVersion > IFCSchemaVersion.IFC2x || IFCAnyHandleUtil.IsSubTypeOf(ifcElement, IFCEntityType.IfcBuildingElement))
+         if (IFCImportFile.TheFile.SchemaVersionAtLeast(IFCSchemaVersion.IFC2x2) || IFCAnyHandleUtil.IsSubTypeOf(ifcElement, IFCEntityType.IfcBuildingElement))
             ProcessOpenings(ifcElement);
 
          // "HasPorts" is new to IFC2x2.
          // For IFC4, "HasPorts" has moved to IfcDistributionElement.  We'll keep the check here, but we will only check it
          // if we are exporting before IFC4 or if we have an IfcDistributionElement handle.
-         bool checkPorts = (IFCImportFile.TheFile.SchemaVersion > IFCSchemaVersion.IFC2x2) &&
-            (IFCImportFile.TheFile.SchemaVersion < IFCSchemaVersion.IFC4 || IFCAnyHandleUtil.IsSubTypeOf(ifcElement, IFCEntityType.IfcDistributionElement));
+         bool checkPorts = (IFCImportFile.TheFile.SchemaVersionAtLeast(IFCSchemaVersion.IFC2x3)) &&
+            (!IFCImportFile.TheFile.SchemaVersionAtLeast(IFCSchemaVersion.IFC4Obsolete) || IFCAnyHandleUtil.IsSubTypeOf(ifcElement, IFCEntityType.IfcDistributionElement));
 
          if (checkPorts)
          {
-            ICollection<IFCAnyHandle> hasPorts = IFCAnyHandleUtil.GetAggregateInstanceAttribute<List<IFCAnyHandle>>(ifcElement, "HasPorts");
-            if (hasPorts != null)
+            // Since IFC4 the inverse attribute 'HasPorts' is deprecated.
+            // Relationship to ports, contained within the IfcDistributionElement is now realized by the inverse relationship NestedBy referencing IfcRelNests.
+            if (IFCImportFile.TheFile.SchemaVersionAtLeast(IFCSchemaVersion.IFC4))
             {
-               foreach (IFCAnyHandle hasPort in hasPorts)
+               ICollection<IFCAnyHandle> isNestedBy = IFCAnyHandleUtil.GetValidAggregateInstanceAttribute<List<IFCAnyHandle>>(ifcElement, "IsNestedBy");
+               if (isNestedBy != null)
                {
-                  IFCAnyHandle relatingPort = IFCAnyHandleUtil.GetInstanceAttribute(hasPort, "RelatingPort");
-                  if (IFCAnyHandleUtil.IsNullOrHasNoValue(relatingPort))
-                     continue;
+                  foreach (IFCAnyHandle relNests in isNestedBy)
+                  {
+                     ICollection<IFCAnyHandle> relatedObjects = IFCAnyHandleUtil.GetValidAggregateInstanceAttribute<List<IFCAnyHandle>>(relNests, "RelatedObjects");
+                     if (relatedObjects == null)
+                        continue;
 
-                  IFCPort port = IFCPort.ProcessIFCPort(relatingPort);
-                  if (port != null)
-                     Ports.Add(port);
+                     foreach (IFCAnyHandle relatedObject in relatedObjects)
+                     {
+                        if (IFCAnyHandleUtil.IsNullOrHasNoValue(relatedObject) ||
+                            !IFCAnyHandleUtil.IsSubTypeOf(relatedObject, IFCEntityType.IfcDistributionPort))
+                           continue;
+
+                        IFCPort port = IFCPort.ProcessIFCPort(relatedObject);
+                        if (port != null)
+                           Ports.Add(port);
+                     }
+                  }
+               }
+            }
+            else
+            {
+               ICollection<IFCAnyHandle> hasPorts = IFCAnyHandleUtil.GetValidAggregateInstanceAttribute<List<IFCAnyHandle>>(ifcElement, "HasPorts");
+               if (hasPorts != null)
+               {
+                  foreach (IFCAnyHandle hasPort in hasPorts)
+                  {
+                     IFCAnyHandle relatingPort = IFCAnyHandleUtil.GetInstanceAttribute(hasPort, "RelatingPort");
+                     if (IFCAnyHandleUtil.IsNullOrHasNoValue(relatingPort))
+                        continue;
+
+                     IFCPort port = IFCPort.ProcessIFCPort(relatingPort);
+                     if (port != null)
+                        Ports.Add(port);
+                  }
                }
             }
          }
@@ -176,10 +205,12 @@ namespace Revit.IFC.Import.Data
 
          if (element != null)
          {
+            Category category = IFCPropertySet.GetCategoryForParameterIfValid(element, Id);
+
             // Set "Tag" parameter.
             string ifcTag = Tag;
             if (!string.IsNullOrWhiteSpace(ifcTag))
-               IFCPropertySet.AddParameterString(doc, element, "IfcTag", ifcTag, Id);
+               ParametersToSet.AddStringParameter(doc, element, category, this, "IfcTag", ifcTag, Id);
 
             IFCFeatureElementSubtraction ifcFeatureElementSubtraction = FillsOpening;
             if (ifcFeatureElementSubtraction != null)
@@ -187,8 +218,8 @@ namespace Revit.IFC.Import.Data
                IFCElement ifcElement = ifcFeatureElementSubtraction.VoidsElement;
                if (ifcElement != null)
                {
-                  string ifcContainerName = ifcElement.Name;
-                  IFCPropertySet.AddParameterString(doc, element, "IfcContainedInHost", ifcContainerName, Id);
+                  ParametersToSet.AddStringParameter(doc, element, category, this, "IfcContainedInHost", ifcElement.Name, Id);
+                  ParametersToSet.AddStringParameter(doc, element, category, this, "IfcContainedInHostGUID", ifcElement.GlobalId, Id);
                }
             }
 
@@ -203,13 +234,13 @@ namespace Revit.IFC.Import.Data
                if (!string.IsNullOrWhiteSpace(name))
                {
                   string parameterName = "IfcElement HasPorts Name " + ((numPorts == 0) ? "" : (numPorts + 1).ToString());
-                  IFCPropertySet.AddParameterString(doc, element, parameterName, name, Id);
+                  ParametersToSet.AddStringParameter(doc, element, category, this, parameterName, name, Id);
                }
 
                if (!string.IsNullOrWhiteSpace(guid))
                {
                   string parameterName = "IfcElement HasPorts IfcGUID " + ((numPorts == 0) ? "" : (numPorts + 1).ToString());
-                  IFCPropertySet.AddParameterString(doc, element, parameterName, guid, Id);
+                  ParametersToSet.AddStringParameter(doc, element, category, this, parameterName, guid, Id);
                }
 
                numPorts++;
@@ -229,8 +260,7 @@ namespace Revit.IFC.Import.Data
       {
          using (TemporaryDisableLogging disableLogging = new TemporaryDisableLogging())
          {
-            IFCElement clone = new IFCElement();
-
+            var clone = Activator.CreateInstance(original.GetType(), true) as IFCElement ?? new IFCElement();
             // Note that the GlobalId is left to null here; this allows us to later decide not to create a DirectShape for the result.
 
             // Get the ObjectLocation and ProductRepresentation from the original entity, which is all we need to create geometry.
@@ -250,7 +280,6 @@ namespace Revit.IFC.Import.Data
                   clone.MaterialSelect = parentMaterial;
             }
 
-            IList<GeometryObject> geomObjs = new List<GeometryObject>();
             CreateElement(doc, clone);
             return clone.Solids;
          }
@@ -292,24 +321,32 @@ namespace Revit.IFC.Import.Data
             return null;
          }
 
-         IFCEntity cachedIFCElement;
-         IFCImportFile.TheFile.EntityMap.TryGetValue(ifcElement.StepId, out cachedIFCElement);
-         if (cachedIFCElement != null)
-            return (cachedIFCElement as IFCElement);
+         try
+         {
+            IFCEntity cachedIFCElement;
+            IFCImportFile.TheFile.EntityMap.TryGetValue(ifcElement.StepId, out cachedIFCElement);
+            if (cachedIFCElement != null)
+               return (cachedIFCElement as IFCElement);
 
-         IFCElement newIFCElement = null;
-         // other subclasses not handled yet.
-         if (IFCAnyHandleUtil.IsSubTypeOf(ifcElement, IFCEntityType.IfcBuildingElement))
-            newIFCElement = IFCBuildingElement.ProcessIFCBuildingElement(ifcElement);
-         else if (IFCAnyHandleUtil.IsSubTypeOf(ifcElement, IFCEntityType.IfcFeatureElement))
-            newIFCElement = IFCFeatureElement.ProcessIFCFeatureElement(ifcElement);
-         else if (IFCAnyHandleUtil.IsSubTypeOf(ifcElement, IFCEntityType.IfcElementAssembly))
-            newIFCElement = IFCElementAssembly.ProcessIFCElementAssembly(ifcElement);
-         else if (IFCAnyHandleUtil.IsSubTypeOf(ifcElement, IFCEntityType.IfcElementComponent))
-            newIFCElement = IFCElementComponent.ProcessIFCElementComponent(ifcElement);
-         else
-            newIFCElement = new IFCElement(ifcElement);
-         return newIFCElement;
+            // other subclasses not handled yet.
+            if (IFCAnyHandleUtil.IsValidSubTypeOf(ifcElement, IFCEntityType.IfcBuildingElement))
+               return IFCBuildingElement.ProcessIFCBuildingElement(ifcElement);
+            if (IFCAnyHandleUtil.IsValidSubTypeOf(ifcElement, IFCEntityType.IfcFeatureElement))
+               return IFCFeatureElement.ProcessIFCFeatureElement(ifcElement);
+            if (IFCAnyHandleUtil.IsValidSubTypeOf(ifcElement, IFCEntityType.IfcElementAssembly))
+               return IFCElementAssembly.ProcessIFCElementAssembly(ifcElement);
+            if (IFCAnyHandleUtil.IsValidSubTypeOf(ifcElement, IFCEntityType.IfcElementComponent))
+               return IFCElementComponent.ProcessIFCElementComponent(ifcElement);
+            if (IFCAnyHandleUtil.IsValidSubTypeOf(ifcElement, IFCEntityType.IfcGeotechnicalElement))
+               return IFCGeotechnicalElement.ProcessIFCGeotechnicalElement(ifcElement);
+
+            return new IFCElement(ifcElement);
+         }
+         catch (Exception ex)
+         {
+            HandleError(ex.Message, ifcElement, true);
+            return null;
+         }
       }
    }
 }

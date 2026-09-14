@@ -17,10 +17,6 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 //
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
 using Revit.IFC.Common.Utility;
@@ -34,11 +30,6 @@ namespace Revit.IFC.Import.Data
    /// </summary>
    public abstract class IFCRoot : IFCEntity
    {
-      private string m_GlobalId = null;
-      private string m_Name = null;
-      private string m_Description = null;
-      private IFCOwnerHistory m_OwnerHistory = null;
-
       /// <summary>
       /// Default constructor.
       /// </summary>
@@ -61,21 +52,21 @@ namespace Revit.IFC.Import.Data
          else
             Importer.TheCache.CreatedGUIDs.Add(GlobalId);
 
-         m_Name = IFCAnyHandleUtil.GetStringAttribute(ifcRoot, "Name");
-         if (string.IsNullOrWhiteSpace(m_Name) && CreateNameIfNull())
-            m_Name = ifcRoot.TypeName;
-         m_Description = IFCAnyHandleUtil.GetStringAttribute(ifcRoot, "Description");
+         Name = IFCAnyHandleUtil.GetStringAttribute(ifcRoot, "Name");
+         if (string.IsNullOrWhiteSpace(Name))
+            Name = GetDefaultName(Name);
+         Description = IFCAnyHandleUtil.GetStringAttribute(ifcRoot, "Description");
 
          IFCAnyHandle ownerHistoryHandle = IFCAnyHandleUtil.GetInstanceAttribute(ifcRoot, "OwnerHistory");
 
          if (IFCAnyHandleUtil.IsNullOrHasNoValue(ownerHistoryHandle))
          {
-            if (IFCImportFile.TheFile.SchemaVersion < IFCSchemaVersion.IFC4)
+            if (!IFCImportFile.TheFile.SchemaVersionAtLeast(IFCSchemaVersion.IFC4Obsolete))
                Importer.TheLog.LogWarning(Id, "Missing IfcOwnerHistory, ignoring.", true);
          }
          else
          {
-            m_OwnerHistory = IFCOwnerHistory.ProcessIFCOwnerHistory(ownerHistoryHandle);
+            OwnerHistory = IFCOwnerHistory.ProcessIFCOwnerHistory(ownerHistoryHandle);
          }
       }
 
@@ -89,35 +80,22 @@ namespace Revit.IFC.Import.Data
       /// <summary>
       /// The global id.
       /// </summary>
-      public string GlobalId
-      {
-         get { return m_GlobalId; }
-         protected set { m_GlobalId = value; }
-      }
+      public string GlobalId { get; protected set; } = null;
 
       /// <summary>
       /// The name.
       /// </summary>
-      public string Name
-      {
-         get { return m_Name; }
-      }
+      public string Name { get; protected set; } = null;
 
       /// <summary>
       /// The description.
       /// </summary>
-      public string Description
-      {
-         get { return m_Description; }
-      }
+      public string Description { get; protected set; } = null;
 
       /// <summary>
       /// The owner history.
       /// </summary>
-      public IFCOwnerHistory OwnerHistory
-      {
-         get { return m_OwnerHistory; }
-      }
+      public IFCOwnerHistory OwnerHistory { get; protected set; } = null;
 
       /// <summary>
       /// True if two IFCRoots have the same id, or are both null.
@@ -144,12 +122,13 @@ namespace Revit.IFC.Import.Data
       }
 
       /// <summary>
-      /// Determines if we require the IfcRoot entity to have a name.
+      /// Determines the default name of an IfcRoot, if any.
       /// </summary>
-      /// <returns>Returns true if we require the IfcRoot entity to have a name.</returns>
-      protected virtual bool CreateNameIfNull()
+      /// <param name="name">The original name.</param>
+      /// <returns>The default name of an IfcRoot, if any.</returns>
+      protected virtual string GetDefaultName(string name)
       {
-         return false;
+         return name;
       }
    }
 }

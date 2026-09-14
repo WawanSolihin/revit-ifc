@@ -58,7 +58,7 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// The ExporterIFC object.
       /// </param>
       /// <param name="extrusionCreationData">
-      /// The IFCExtrusionCreationData.
+      /// The IFCExportBodyParams.
       /// </param>
       /// <param name="element">
       /// The element to calculate the value.
@@ -69,12 +69,14 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// <returns>
       /// True if the operation succeed, false otherwise.
       /// </returns>
-      public override bool Calculate(ExporterIFC exporterIFC, IFCExtrusionCreationData extrusionCreationData, Element element, ElementType elementType)
+      public override bool Calculate(ExporterIFC exporterIFC, IFCAnyHandle handle, IFCExportBodyParams extrusionCreationData, Element element, ElementType elementType, EntryMap entryMap)
       {
-         ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "SpaceLevelArea", out m_Area);
-         m_Area = UnitUtil.ScaleArea(m_Area);
-         if (m_Area > MathUtil.Eps() * MathUtil.Eps())
+         (_, m_Area) = ParameterUtil.GetDoubleValueFromElementOrSymbol(element, entryMap.RevitParameterName, entryMap.CompatibleRevitParameterName);
+         if (m_Area > MathUtil.Eps * MathUtil.Eps)
+         {
+            m_Area = UnitUtil.ScaleArea(m_Area);
             return true;
+         }
 
          if (extrusionCreationData == null || element == null)
                return false;
@@ -85,7 +87,7 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
 
          m_Area = extrusionCreationData.ScaledArea;
 
-         return m_Area > MathUtil.Eps() * MathUtil.Eps();
+         return m_Area > MathUtil.Eps * MathUtil.Eps;
       }
 
       /// <summary>

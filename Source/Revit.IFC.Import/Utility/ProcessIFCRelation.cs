@@ -38,7 +38,7 @@ namespace Revit.IFC.Import.Utility
          if (IFCAnyHandleUtil.IsNullOrHasNoValue(ifcRelAssigns))
             throw new ArgumentNullException("ifcRelAssigns");
 
-         if (!IFCAnyHandleUtil.IsSubTypeOf(ifcRelAssigns, IFCEntityType.IfcRelAssigns))
+         if (!IFCAnyHandleUtil.IsValidSubTypeOf(ifcRelAssigns, IFCEntityType.IfcRelAssigns))
             throw new ArgumentException("ifcRelAssigns");
       }
 
@@ -47,8 +47,8 @@ namespace Revit.IFC.Import.Utility
          if (IFCAnyHandleUtil.IsNullOrHasNoValue(ifcRelAssignsOrAggregates))
             throw new ArgumentNullException("ifcRelAssignsOrAggregates");
 
-         if (!IFCAnyHandleUtil.IsSubTypeOf(ifcRelAssignsOrAggregates, IFCEntityType.IfcRelAssigns) &&
-             (!IFCAnyHandleUtil.IsSubTypeOf(ifcRelAssignsOrAggregates, IFCEntityType.IfcRelAggregates)))
+         if (!IFCAnyHandleUtil.IsValidSubTypeOf(ifcRelAssignsOrAggregates, IFCEntityType.IfcRelAssigns) &&
+             (!IFCAnyHandleUtil.IsValidSubTypeOf(ifcRelAssignsOrAggregates, IFCEntityType.IfcRelAggregates)))
             throw new ArgumentException("ifcRelAssignsOrAggregates");
       }
 
@@ -85,6 +85,18 @@ namespace Revit.IFC.Import.Utility
 
          foreach (IFCAnyHandle relatedObject in relatedObjects)
          {
+            if (IFCAnyHandleUtil.IsNullOrHasNoValue(relatedObject))
+            {
+               Importer.TheLog.LogError(ifcRelAssignsOrAggregates.Id, "Invalid relation found, ignoring.", false);
+               continue;
+            }
+
+            if (relatedObject.Id == relatedTo.Id)
+            {
+               Importer.TheLog.LogError(ifcRelAssignsOrAggregates.Id, "An objected is related to itself, ignoring.", false);
+               continue;
+            }
+
             IFCObjectDefinition objectDefinition = IFCObjectDefinition.ProcessIFCObjectDefinition(relatedObject);
             if (objectDefinition != null)
             {
@@ -112,14 +124,9 @@ namespace Revit.IFC.Import.Utility
             return null;
          }
 
-         IFCAnyHandle relatingGroup = IFCAnyHandleUtil.GetInstanceAttribute(ifcRelAssignsToGroup, "RelatingGroup");
+         IFCAnyHandle relatingGroup = IFCAnyHandleUtil.GetValidInstanceAttribute(ifcRelAssignsToGroup, "RelatingGroup");
 
-         // Receiving apps need to decide whether to post an error or not.
-         if (IFCAnyHandleUtil.IsNullOrHasNoValue(relatingGroup))
-            return null;
-
-         IFCGroup group = IFCGroup.ProcessIFCGroup(relatingGroup);
-         return group;
+         return IFCGroup.ProcessIFCGroup(relatingGroup);
       }
 
       /// <summary>
@@ -140,6 +147,24 @@ namespace Revit.IFC.Import.Utility
          }
 
          return IFCAnyHandleUtil.GetStringAttribute(ifcRelAssigns, "RelatedObjectsType");
+      }
+
+      /// <summary>
+      /// Gets the relating IFCObjectDefinition associated via an IfcRelNests handle.
+      /// </summary>
+      /// <param name="ifcRelNests">The IfcRelNests handle.</param>
+      /// <returns>The IFCObjectDefinition class corresponding to the IFCObjectDefinition handle, if any.</returns>
+      static public IFCObjectDefinition ProcessRelatingObject(IFCAnyHandle ifcRelNests)
+      {
+         if (IFCAnyHandleUtil.IsNullOrHasNoValue(ifcRelNests))
+            return null;
+
+         IFCAnyHandle ifcRelatedElement = IFCAnyHandleUtil.GetInstanceAttribute(ifcRelNests, "RelatingObject");
+         if (IFCAnyHandleUtil.IsNullOrHasNoValue(ifcRelatedElement))
+            return null;
+
+         IFCObjectDefinition relatedElement = IFCObjectDefinition.ProcessIFCObjectDefinition(ifcRelatedElement);
+         return relatedElement;
       }
 
       /// <summary>
@@ -201,7 +226,8 @@ namespace Revit.IFC.Import.Utility
       /// </summary>
       /// <param name="ifcRelDefinesByProperties">The IfcRelDefinesByProperties handle.</param>
       /// <param name="propertySets">The map of property sets that will be modified by this function based on the IfcRelDefinesByProperties handle.</param>
-      static public void ProcessIFCRelDefinesByProperties(IFCAnyHandle ifcRelDefinesByProperties, IDictionary<string, IFCPropertySetDefinition> propertySets)
+      /// <param name="hostIfcObjectId">The STEP Id of the IFC entity which invoked this method.</param>
+      static public void ProcessIFCRelDefinesByProperties(IFCAnyHandle ifcRelDefinesByProperties, IDictionary<string, IFCPropertySetDefinition> propertySets, int hostIfcObjectId)
       {
          IFCAnyHandle propertySetDefinition = IFCAnyHandleUtil.GetInstanceAttribute(ifcRelDefinesByProperties, "RelatingPropertyDefinition");
 
@@ -211,7 +237,7 @@ namespace Revit.IFC.Import.Utility
             return;
          }
 
-         IFCPropertySetDefinition ifcPropertySet = IFCPropertySetDefinition.ProcessIFCPropertySetDefinition(propertySetDefinition);
+         IFCPropertySetDefinition ifcPropertySet = IFCPropertySetDefinition.ProcessIFCPropertySetDefinition(propertySetDefinition, hostIfcObjectId);
 
          if (ifcPropertySet != null)
          {

@@ -8,17 +8,9 @@ using System.Threading.Tasks;
 
 namespace Revit.IFC.Import.Utility
 {
-   public class BuilderScope : IDisposable
+   public abstract class BuilderScope : IDisposable
    {
-      private IFCImportShapeEditScope m_Container = null;
-
-      private ElementId m_faceMaterialId = ElementId.InvalidElementId;
-
-      protected ElementId FaceMaterialId
-      {
-         get { return m_faceMaterialId; }
-         set { m_faceMaterialId = value; }
-      }
+      protected ElementId FaceMaterialId { get; set; }
 
       /// <summary>
       /// The id of the associated graphics style, if any.
@@ -31,14 +23,7 @@ namespace Revit.IFC.Import.Utility
       /// <summary>
       /// The IFCImportShapeEditScope that contains this builder scope
       /// </summary>
-      public IFCImportShapeEditScope Container
-      {
-         get { return m_Container; }
-         private set
-         {
-            m_Container = value;
-         }
-      }
+      public IFCImportShapeEditScope Container { get; private set; } = null;
 
       public BuilderScope(IFCImportShapeEditScope container)
       {
@@ -55,6 +40,10 @@ namespace Revit.IFC.Import.Utility
          else
             return -1;
       }
+
+      public abstract void StartCollectingFaceSet(BRepType brepType);
+
+      public abstract IList<GeometryObject> CreateGeometry(string guid);
 
       /// <summary>
       /// Remove the current invalid face from the list of faces to create a BRep solid.

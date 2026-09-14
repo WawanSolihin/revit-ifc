@@ -46,23 +46,18 @@ namespace Revit.IFC.Export.Exporter
       /// <param name="levelId">The level id.</param>
       /// <param name="direction">The IFCLayerSetDirection.</param>
       /// <param name="containsBRepGeometry">True if the geometry contains BRep geoemtry.  If so, we will export an IfcMaterialList</param>
+      /// <param name="layersetInfo">Material layer info.</param>
       /// <returns>True if exported successfully, false otherwise.</returns>
       public static bool ExportHostObjectMaterials(ExporterIFC exporterIFC, HostObject hostObject,
           IList<IFCAnyHandle> elemHnds, GeometryElement geometryElement, ProductWrapper productWrapper,
-          ElementId levelId, Toolkit.IFCLayerSetDirection direction, bool containsBRepGeometry, IFCAnyHandle typeHnd = null)
+          ElementId levelId, IFCLayerSetDirection direction, bool containsBRepGeometry, IFCAnyHandle typeHnd = null, MaterialLayerSetInfo layersetInfo = null)
       {
-         if (hostObject == null)
-            return true; //nothing to do
-
-         if (elemHnds == null || (elemHnds.Count == 0))
+         if (hostObject == null || ((elemHnds?.Count ?? 0) == 0))
             return true; //nothing to do
 
          IFCFile file = exporterIFC.GetFile();
          using (IFCTransaction tr = new IFCTransaction(file))
          {
-            //if (productWrapper != null)
-            //    productWrapper.ClearFinishMaterials();
-
             double scaledOffset = 0.0, scaledWallWidth = 0.0, wallHeight = 0.0;
             Wall wall = hostObject as Wall;
 
@@ -75,17 +70,19 @@ namespace Revit.IFC.Export.Exporter
                   wallHeight = boundingBox.Max.Z - boundingBox.Min.Z;
             }
 
-            List<ElementId> matIds;
-            IFCAnyHandle primaryMaterialHnd;
-            IFCAnyHandle materialLayerSet = ExporterUtil.CollectMaterialLayerSet(exporterIFC, hostObject, productWrapper, out matIds, out primaryMaterialHnd);
+            MaterialLayerSetInfo mlsInfo = layersetInfo == null ? new MaterialLayerSetInfo(exporterIFC, hostObject, productWrapper, geometryElement) : layersetInfo;
+            IFCAnyHandle materialLayerSet = mlsInfo.MaterialLayerSetHandle;
+            List<ElementId> materialIds = mlsInfo.MaterialIds.Select(x => x.BaseMatId).ToList();
 
-            // For IFC4 RV, material layer may still be created even if the geometry is Brep/Tessellation
-            if ((containsBRepGeometry && matIds.Count > 0)
-                  && !(ExporterCacheManager.ExportOptionsCache.ExportAs4ReferenceView && !IFCAnyHandleUtil.IsNullOrHasNoValue(materialLayerSet)))
+            // Among all the calls of this method the problem of material association absence was found only 
+            // for CeilingAndFloor host object type (see JIRA item REVIT-164913)
+            if (containsBRepGeometry && (hostObject is CeilingAndFloor)
+               && materialIds.Count > 0
+               && !ExporterCacheManager.ExportOptionsCache.ExportAsReferenceView)
             {
                foreach (IFCAnyHandle elemHnd in elemHnds)
                {
-                  CategoryUtil.CreateMaterialAssociation(exporterIFC, elemHnd, matIds);
+                  CategoryUtil.CreateMaterialAssociation(exporterIFC, hostObject, elemHnd, materialIds);
                }
             }
 
@@ -96,15 +93,13 @@ namespace Revit.IFC.Export.Exporter
                {
                   if (typeHnd != null)
                   {
-                     CategoryUtil.CreateMaterialAssociation(exporterIFC, typeHnd, materialLayerSet);
+                     CategoryUtil.CreateMaterialAssociation(typeHnd, materialLayerSet);
                   }
-                  //else
-                  //{
-                     foreach (IFCAnyHandle elemHnd in elemHnds)
-                     {
-                        CategoryUtil.CreateMaterialAssociation(exporterIFC, elemHnd, materialLayerSet);
-                     }
-                  //}
+
+                  foreach (IFCAnyHandle elemHnd in elemHnds)
+                  {
+                     CategoryUtil.CreateMaterialAssociation(elemHnd, materialLayerSet);
+                  }
                }
                else
                {
@@ -118,8 +113,9 @@ namespace Revit.IFC.Export.Exporter
 
                      SpaceBoundingElementUtil.RegisterSpaceBoundingElementHandle(exporterIFC, elemHnd, hostObject.Id, levelId);
 
-                     // Even if it is Tessellated geometry in IFC4RV, the material layer will still be assigned
-                     if (containsBRepGeometry && !ExporterCacheManager.ExportOptionsCache.ExportAs4ReferenceView)
+                     // Even if it is Tessellated geometry in Reference View, the material layer will still be assigned
+                     if (containsBRepGeometry 
+                        && !ExporterCacheManager.ExportOptionsCache.ExportAsReferenceView)
                         continue;
 
                      HashSet<IFCAnyHandle> relDecomposesSet = IFCAnyHandleUtil.GetRelDecomposes(elemHnd);
@@ -142,15 +138,14 @@ namespace Revit.IFC.Export.Exporter
                         bool materialAlreadyAssoc = false;
                         if (typeHnd != null)
                         {
-                           CategoryUtil.CreateMaterialAssociation(exporterIFC, typeHnd, materialLayerSet);
-                              //materialAlreadyAssoc = true;
+                           CategoryUtil.CreateMaterialAssociation(typeHnd, materialLayerSet);
                         }
 
-                        if (ExporterCacheManager.ExportOptionsCache.ExportAs4ReferenceView)
+                        if (ExporterCacheManager.ExportOptionsCache.ExportAsReferenceView)
                         {
                            if (!materialAlreadyAssoc)
                            {
-                              CategoryUtil.CreateMaterialAssociation(exporterIFC, elemHnd, materialLayerSet);
+                              CategoryUtil.CreateMaterialAssociation(elemHnd, materialLayerSet);
                            }
                         }
                         else
@@ -171,17 +166,25 @@ namespace Revit.IFC.Export.Exporter
                                     flipDirSense = !(wall.Flipped ^ curveFlipped);
                                  }
                               }
-                              else if (hostObject is CeilingAndFloor)
+                              else if (hostObject is Floor)
                               {
                                  flipDirSense = false;
+                              }
+                              else if (hostObject is Ceiling)
+                              {
+                                 // flip the direction sense for the ceiling and add material layer set base offset to preserve
+                                 // the original Revit material layers order (compound structure) and comply with
+                                 // the IfcMaterialLayerSetUsage concept.
+                                 scaledOffset = -mlsInfo.TotalThickness;
                               }
 
                               double offsetFromReferenceLine = flipDirSense ? -scaledOffset : scaledOffset;
                               IFCDirectionSense sense = flipDirSense ? IFCDirectionSense.Negative : IFCDirectionSense.Positive;
 
-                              layerSetUsage = IFCInstanceExporter.CreateMaterialLayerSetUsage(file, materialLayerSet, direction, sense, offsetFromReferenceLine);
+                              layerSetUsage = IFCInstanceExporter.CreateMaterialLayerSetUsage(file, materialLayerSet,
+                                 direction, sense, offsetFromReferenceLine);
                            }
-                           ExporterCacheManager.MaterialLayerRelationsCache.Add(layerSetUsage, elemHnd);
+                           ExporterCacheManager.MaterialSetUsageCache.Add(layerSetUsage, elemHnd);
                         }
                      }
                      else
@@ -194,7 +197,7 @@ namespace Revit.IFC.Export.Exporter
                               //    the Revit Element to get the type, other information for name, GUID, etc.
                               if (!IFCAnyHandleUtil.IsNullOrHasNoValue(subElemHnd))
                               {
-                                 CategoryUtil.CreateMaterialAssociation(exporterIFC, subElemHnd, materialLayerSet);
+                                 CategoryUtil.CreateMaterialAssociation(subElemHnd, materialLayerSet);
                               }
                            }
                         }
@@ -202,22 +205,22 @@ namespace Revit.IFC.Export.Exporter
                         {
                            if (typeHnd != null)
                            {
-                              CategoryUtil.CreateMaterialAssociation(exporterIFC, typeHnd, materialLayerSet);
+                              CategoryUtil.CreateMaterialAssociation(typeHnd, materialLayerSet);
                            }
                            else
                            {
-                              CategoryUtil.CreateMaterialAssociation(exporterIFC, elemHnd, materialLayerSet);
+                              CategoryUtil.CreateMaterialAssociation(elemHnd, materialLayerSet);
                            }
                         }
-                        else if (primaryMaterialHnd != null)
+                        else if (mlsInfo.PrimaryMaterialHandle != null)
                         {
                            if (typeHnd != null)
                            {
-                              CategoryUtil.CreateMaterialAssociation(exporterIFC, typeHnd, materialLayerSet);
+                              CategoryUtil.CreateMaterialAssociation(typeHnd, materialLayerSet);
                            }
                            else
                            {
-                              CategoryUtil.CreateMaterialAssociation(exporterIFC, elemHnd, materialLayerSet);
+                              CategoryUtil.CreateMaterialAssociation(elemHnd, materialLayerSet);
                            }
                         }
                      }
@@ -241,18 +244,22 @@ namespace Revit.IFC.Export.Exporter
       /// <param name="levelId">The level id.</param>
       /// <param name="direction">The IFCLayerSetDirection.</param>
       /// <param name="containsBRepGeometry">True if the geometry contains BRep geoemtry.  If so, we will export an IfcMaterialList.  If null, we will calculate.</param>
+      /// <param name="layersetInfo">Material layer info.</param>
       /// <returns>True if exported successfully, false otherwise.</returns>
       public static bool ExportHostObjectMaterials(ExporterIFC exporterIFC, HostObject hostObject,
           IFCAnyHandle elemHnd, GeometryElement geometryElement, ProductWrapper productWrapper,
-          ElementId levelId, Toolkit.IFCLayerSetDirection direction, bool? containsBRepGeometry, IFCAnyHandle typeHnd)
+          ElementId levelId, IFCLayerSetDirection direction, bool? containsBRepGeometry, IFCAnyHandle typeHnd, MaterialLayerSetInfo layersetInfo = null)
       {
-         IList<IFCAnyHandle> elemHnds = new List<IFCAnyHandle>();
-         elemHnds.Add(elemHnd);
+         if (IFCAnyHandleUtil.IsNullOrHasNoValue(elemHnd))
+            return false;
+
+         IList<IFCAnyHandle> elemHnds = new List<IFCAnyHandle>() { elemHnd };
 
          // Setting doesContainBRepGeometry to false below preserves the original behavior that we created IfcMaterialLists for all geometries.
          // TODO: calculate, or pass in, a valid bool value for Ceilings, Roofs, and Wall Sweeps.
          bool doesContainBRepGeometry = containsBRepGeometry.HasValue ? containsBRepGeometry.Value : false;
-         return ExportHostObjectMaterials(exporterIFC, hostObject, elemHnds, geometryElement, productWrapper, levelId, direction, doesContainBRepGeometry, typeHnd);
+         return ExportHostObjectMaterials(exporterIFC, hostObject, elemHnds, geometryElement, productWrapper, levelId, 
+            direction, doesContainBRepGeometry, typeHnd, layersetInfo);
       }
 
       /// <summary>
@@ -262,6 +269,9 @@ namespace Revit.IFC.Export.Exporter
       /// <returns>The material id.</returns>
       public static ElementId GetFirstLayerMaterialId(HostObject hostObject)
       {
+         if (hostObject == null)
+            return ElementId.InvalidElementId;
+
          ElementId typeElemId = hostObject.GetTypeId();
          HostObjAttributes hostObjAttr = hostObject.Document.GetElement(typeElemId) as HostObjAttributes;
          if (hostObjAttr == null)
@@ -271,7 +281,7 @@ namespace Revit.IFC.Export.Exporter
          if (cs != null)
          {
             ElementId matId = cs.LayerCount > 0 ? cs.GetMaterialId(0) : ElementId.InvalidElementId;
-            if (matId != ElementId.InvalidElementId)
+            if (!MathUtil.IsInvalidElementId(matId))
                return matId;
             else
                return CategoryUtil.GetBaseMaterialIdForElement(hostObject); ;
@@ -304,11 +314,11 @@ namespace Revit.IFC.Export.Exporter
                if (function == MaterialFunctionAssignment.Finish1 || function == MaterialFunctionAssignment.Finish2)
                {
                   ElementId matId = cs.GetMaterialId(ii);
-                  if (matId != ElementId.InvalidElementId)
+                  if (!MathUtil.IsInvalidElementId(matId))
                   {
                      matIds.Add(matId);
                   }
-                  else if (baseMatId != ElementId.InvalidElementId)
+                  else if (!MathUtil.IsInvalidElementId(baseMatId))
                   {
                      matIds.Add(baseMatId);
                   }

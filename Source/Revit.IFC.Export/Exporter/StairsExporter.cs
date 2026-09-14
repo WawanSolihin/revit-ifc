@@ -17,16 +17,16 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 //
 
-using System;
-using System.Collections.Generic;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Architecture;
 using Autodesk.Revit.DB.IFC;
-using Revit.IFC.Export.Exporter.PropertySet;
-using Revit.IFC.Export.Utility;
-using Revit.IFC.Export.Toolkit;
-using Revit.IFC.Common.Utility;
 using Revit.IFC.Common.Enums;
+using Revit.IFC.Common.Utility;
+using Revit.IFC.Export.Exporter.PropertySet;
+using Revit.IFC.Export.Toolkit;
+using Revit.IFC.Export.Utility;
+using System;
+using System.Collections.Generic;
 
 namespace Revit.IFC.Export.Exporter
 {
@@ -38,15 +38,18 @@ namespace Revit.IFC.Export.Exporter
       /// <summary>
       /// The IfcMemberType shared by all stringers to keep their type.  This is a placeholder IfcMemberType.
       /// </summary>
-      public static IFCAnyHandle GetMemberTypeHandle(ExporterIFC exporterIFC, Element stringer)
+      public static IFCAnyHandle GetMemberTypeHandle(ExporterIFC exporterIFC, Element stringer,
+         ProductWrapper productWrapper, IFCExportInfoPair exportInfo)
       {
-         Element stringerType = stringer.Document.GetElement(stringer.GetTypeId());
+         ElementType stringerType = stringer.Document.GetElement(stringer.GetTypeId()) as ElementType;
          IFCAnyHandle memberType = ExporterCacheManager.ElementToHandleCache.Find(stringerType.Id);
          if (IFCAnyHandleUtil.IsNullOrHasNoValue(memberType))
          {
             IFCFile file = exporterIFC.GetFile();
-            memberType = IFCInstanceExporter.CreateMemberType(file, stringerType, null, null, IFCMemberType.Stringer.ToString());
+            memberType = IFCInstanceExporter.CreateMemberType(file, stringerType, null, null, null, IFCMemberType.Stringer.ToString());
             ExporterCacheManager.ElementToHandleCache.Register(stringerType.Id, memberType);
+
+            productWrapper?.RegisterHandleWithElementType(stringerType, exportInfo, memberType, null);
          }
          return memberType;
       }
@@ -78,22 +81,13 @@ namespace Revit.IFC.Export.Exporter
       /// <summary>
       /// Gets the stairs height for a legacy (R2012 or before) stairs.
       /// </summary>
-      /// <param name="exporterIFC">
-      /// The exporter.
-      /// </param>
-      /// <param name="element">
-      /// The element.
-      /// </param>
-      /// <param name="defaultHeight">
-      /// The default height of the stair, in feet.
-      /// </param>
-      /// <returns>
-      /// The unscaled height.
-      /// </returns>
-      static public double GetStairsHeightForLegacyStair(ExporterIFC exporterIFC, Element element, double defaultHeight)
+      /// <param name="element">The element.</param>
+      /// <param name="defaultHeight">The default height of the stair, in feet.</param>
+      /// <returns>The unscaled height.</returns>
+      static public double GetStairsHeightForLegacyStair(Element element, double defaultHeight)
       {
-         ElementId baseLevelId;
-         if (ParameterUtil.GetElementIdValueFromElement(element, BuiltInParameter.STAIRS_BASE_LEVEL_PARAM, out baseLevelId) == null)
+         ElementId baseLevelId = ParameterUtil.GetElementIdValueFromElement(element, BuiltInParameter.STAIRS_BASE_LEVEL_PARAM);
+         if (MathUtil.IsInvalidElementId(baseLevelId))
             return 0.0;
 
          Level bottomLevel = element.Document.GetElement(baseLevelId) as Level;
@@ -101,17 +95,14 @@ namespace Revit.IFC.Export.Exporter
             return 0.0;
          double bottomLevelElev = bottomLevel.Elevation;
 
-         ElementId topLevelId;
-         Level topLevel = null;
-         if ((ParameterUtil.GetElementIdValueFromElement(element, BuiltInParameter.STAIRS_TOP_LEVEL_PARAM, out topLevelId) != null) &&
-             (topLevelId != ElementId.InvalidElementId))
-            topLevel = element.Document.GetElement(topLevelId) as Level;
+         ElementId elementId = element.Id;
 
-         double bottomLevelOffset;
-         ParameterUtil.GetDoubleValueFromElement(element, BuiltInParameter.STAIRS_BASE_OFFSET, out bottomLevelOffset);
+         ElementId topLevelId = ParameterUtil.GetElementIdValueFromElement(element, BuiltInParameter.STAIRS_TOP_LEVEL_PARAM);
+         Level topLevel = !MathUtil.IsInvalidElementId(topLevelId) ? element.Document.GetElement(topLevelId) as Level : null;
 
-         double topLevelOffset;
-         ParameterUtil.GetDoubleValueFromElement(element, BuiltInParameter.STAIRS_TOP_OFFSET, out topLevelOffset);
+         (_, double bottomLevelOffset) = ParameterUtil.GetDoubleValueFromElement(elementId, BuiltInParameter.STAIRS_BASE_OFFSET);
+
+         (_, double topLevelOffset) = ParameterUtil.GetDoubleValueFromElement(elementId, BuiltInParameter.STAIRS_TOP_OFFSET);
 
          double minHeight = bottomLevelElev + bottomLevelOffset;
          double maxHeight = (topLevel != null) ? topLevel.Elevation + topLevelOffset : minHeight + defaultHeight;
@@ -123,28 +114,17 @@ namespace Revit.IFC.Export.Exporter
       /// <summary>
       /// Gets the number of flights of a multi-story staircase for a legacy (R2012 or before) stairs.
       /// </summary>
-      /// <param name="exporterIFC">
-      /// The exporter.
-      /// </param>
-      /// <param name="element">
-      /// The element.
-      /// </param>
-      /// <param name="defaultHeight">
-      /// The default height.
-      /// </param>
-      /// <returns>
-      /// The number of flights (at least 1.)
-      /// </returns>
-      static public int GetNumFlightsForLegacyStair(ExporterIFC exporterIFC, Element element, double defaultHeight)
+      /// <param name="element">The element.</param>
+      /// <param name="defaultHeight">The default height.</param>
+      /// <returns>The number of flights (at least 1.)</returns>
+      static public int GetNumFlightsForLegacyStair(Element element, double defaultHeight)
       {
-         ElementId multistoryTopLevelId;
-         if ((ParameterUtil.GetElementIdValueFromElement(element, BuiltInParameter.STAIRS_MULTISTORY_TOP_LEVEL_PARAM, out multistoryTopLevelId) == null) ||
-             (multistoryTopLevelId == ElementId.InvalidElementId))
+         ElementId multistoryTopLevelId = ParameterUtil.GetElementIdValueFromElement(element, BuiltInParameter.STAIRS_MULTISTORY_TOP_LEVEL_PARAM);
+         if (MathUtil.IsInvalidElementId(multistoryTopLevelId))
             return 1;
 
-         ElementId baseLevelId;
-         if ((ParameterUtil.GetElementIdValueFromElement(element, BuiltInParameter.STAIRS_BASE_LEVEL_PARAM, out baseLevelId) == null) ||
-             (baseLevelId == ElementId.InvalidElementId))
+         ElementId baseLevelId = ParameterUtil.GetElementIdValueFromElement(element, BuiltInParameter.STAIRS_BASE_LEVEL_PARAM);
+         if (MathUtil.IsInvalidElementId(baseLevelId))
             return 1;
 
          Level bottomLevel = element.Document.GetElement(baseLevelId) as Level;
@@ -156,37 +136,36 @@ namespace Revit.IFC.Export.Exporter
          double multistoryLevelElev = multistoryTopLevel.Elevation;
 
          Level topLevel = null;
-         ElementId topLevelId;
-         if ((ParameterUtil.GetElementIdValueFromElement(element, BuiltInParameter.STAIRS_TOP_LEVEL_PARAM, out topLevelId) != null) &&
-             (topLevelId != ElementId.InvalidElementId))
+         ElementId elementId = element.Id;
+
+         ElementId topLevelId = ParameterUtil.GetElementIdValueFromElement(element, BuiltInParameter.STAIRS_TOP_LEVEL_PARAM);
+         if (!MathUtil.IsInvalidElementId(topLevelId))
             topLevel = element.Document.GetElement(topLevelId) as Level;
 
-         double bottomLevelOffset;
-         ParameterUtil.GetDoubleValueFromElement(element, BuiltInParameter.STAIRS_BASE_OFFSET, out bottomLevelOffset);
+         (_, double bottomLevelOffset) = ParameterUtil.GetDoubleValueFromElement(elementId, BuiltInParameter.STAIRS_BASE_OFFSET);
 
-         double topLevelOffset;
-         ParameterUtil.GetDoubleValueFromElement(element, BuiltInParameter.STAIRS_TOP_OFFSET, out topLevelOffset);
+         (_, double topLevelOffset) = ParameterUtil.GetDoubleValueFromElement(elementId, BuiltInParameter.STAIRS_TOP_OFFSET);
 
          double minHeight = bottomLevelElev + bottomLevelOffset;
          double maxHeight = (topLevel != null) ? topLevel.Elevation + topLevelOffset : minHeight + defaultHeight;
          double unconnectedHeight = maxHeight;
 
-         double stairsHeight = GetStairsHeightForLegacyStair(exporterIFC, element, defaultHeight);
+         double stairsHeight = GetStairsHeightForLegacyStair(element, defaultHeight);
 
          double topElev = (topLevel != null) ? topLevel.Elevation : unconnectedHeight;
 
-         if ((topElev + MathUtil.Eps() > multistoryLevelElev) || (bottomLevelElev + MathUtil.Eps() > multistoryLevelElev))
+         if ((topElev + MathUtil.Eps > multistoryLevelElev) || (bottomLevelElev + MathUtil.Eps > multistoryLevelElev))
             return 1;
 
          double multistoryHeight = multistoryLevelElev - bottomLevelElev;
          double oneStairHeight = stairsHeight;
          double currentHeight = oneStairHeight;
 
-         if (oneStairHeight < MathUtil.Eps())
+         if (oneStairHeight < MathUtil.Eps)
             return 1;
 
          int flightNumber = 0;
-         for (; currentHeight < multistoryHeight + MathUtil.Eps() * flightNumber;
+         for (; currentHeight < multistoryHeight + MathUtil.Eps * flightNumber;
              currentHeight += oneStairHeight, flightNumber++)
          {
             // Fail if we reach some arbitrarily huge number.
@@ -197,13 +176,13 @@ namespace Revit.IFC.Export.Exporter
          return (flightNumber > 0) ? flightNumber : 1;
       }
 
-      static private double GetStairsHeight(ExporterIFC exporterIFC, Element stair)
+      static private double GetStairsHeight(Element stair)
       {
          if (IsLegacyStairs(stair))
          {
             // The default height for legacy stairs are either 12' or 3.5m.  Figure it out based on the scale of the export, and convert to feet.
             double defaultHeight = GetDefaultHeightForLegacyStair(stair.Document);
-            return GetStairsHeightForLegacyStair(exporterIFC, stair, defaultHeight);
+            return GetStairsHeightForLegacyStair(stair, defaultHeight);
          }
 
          if (stair is Stairs)
@@ -224,28 +203,24 @@ namespace Revit.IFC.Export.Exporter
          StairsRunStyle runStyle = stairsRun.StairsRunStyle;
          if (ExporterCacheManager.ExportOptionsCache.ExportAs4)
          {
-            Toolkit.IFC4.IFCStairFlightType stairFlightTypeEnum = Toolkit.IFC4.IFCStairFlightType.NOTDEFINED;
-            if (Enum.TryParse(runStyle.ToString(), true, out stairFlightTypeEnum))
+            if (Enum.TryParse(runStyle.ToString(), true, out Toolkit.IFC4.IFCStairFlightType stairFlightTypeEnum))
                return stairFlightTypeEnum.ToString();
-            else
-               return "NOTDEFINED";
          }
          else
          {
-            Toolkit.IFCStairFlightType stairFlightTypeEnum = Toolkit.IFCStairFlightType.NOTDEFINED;
-            if (Enum.TryParse(runStyle.ToString(), true, out stairFlightTypeEnum))
-               return stairFlightTypeEnum.ToString();
-            else
-               return "NOTDEFINED";
+            if (Enum.TryParse(runStyle.ToString(), true, out IFCStairFlightType stairFlightTypeEnum))
+               return stairFlightTypeEnum.ToString();               
          }
+
+         return "NOTDEFINED";
       }
 
       /// <summary>
-      /// Get validated IfcStairTypeEnum of Revit stairs based on the information obtained from its components
+      /// Get validated IfcStairTypeEnum of Revit stairs based on the information obtained from its components.
       /// </summary>
-      /// <param name="stairs">the Revit stair object</param>
-      /// <param name="ifcExportType">potential override value from IfcExportAs or IfcExportType</param>
-      /// <returns>string value of the validated IfcStairTypeEnum</returns>
+      /// <param name="stairs">The Revit stair object.</param>
+      /// <param name="ifcExportType">The potential shared parameter override value.</param>
+      /// <returns>The string value of the validated IfcStairTypeEnum.</returns>
       public static string GetValidatedStairType(Stairs stairs, string ifcExportType)
       {
          string stairType = "NOTDEFINED";
@@ -416,61 +391,54 @@ namespace Revit.IFC.Export.Exporter
          return stairType;
       }
 
+      static readonly Dictionary<NamingUtil.IFCStringKey, string> StairTypes = new()
+      {
+         { new NamingUtil.IFCStringKey("CURVEDRUN"), "CURVED_RUN" },
+         { new NamingUtil.IFCStringKey("CURVEDRUNSTAIR"), "CURVED_RUN" },
+         { new NamingUtil.IFCStringKey("DOUBLERETURN"), "DOUBLE_RETURN" },
+         { new NamingUtil.IFCStringKey("DOUBLERETURNSTAIR"), "DOUBLE_RETURN" },
+         { new NamingUtil.IFCStringKey("HALFTURN"), "HALF_TURN" },
+         { new NamingUtil.IFCStringKey("HALFTURNSTAIR"), "HALF_TURN" },
+         { new NamingUtil.IFCStringKey("HALFWINDING"), "HALF_WINDING" },
+         { new NamingUtil.IFCStringKey("HALFWINDINGSTAIR"), "HALF_WINDING" },
+         { new NamingUtil.IFCStringKey("USERDEFINED"), "USERDEFINED" },
+         { new NamingUtil.IFCStringKey("QUARTERTURN"), "QUARTER_TURN" },
+         { new NamingUtil.IFCStringKey("QUARTERTURNSTAIR"), "QUARTER_TURN" },
+         { new NamingUtil.IFCStringKey("QUARTERWINDING"), "QUARTER_WINDING" },
+         { new NamingUtil.IFCStringKey("QUARTERWINDINGSTAIR"), "QUARTER_WINDING" },
+         { new NamingUtil.IFCStringKey("SPIRAL"), "SPIRAL" },
+         { new NamingUtil.IFCStringKey("SPIRALSTAIR"), "SPIRAL" },
+         { new NamingUtil.IFCStringKey("STRAIGHTRUN"), "STRAIGHT_RUN" },
+         { new NamingUtil.IFCStringKey("STRAIGHTRUNSTAIR"), "STRAIGHT_RUN" },
+         { new NamingUtil.IFCStringKey("TWOCURVEDRUN"), "TWO_CURVED_RUN" },
+         { new NamingUtil.IFCStringKey("TWOCURVEDRUNSTAIR"), "TWO_CURVED_RUN" },
+         { new NamingUtil.IFCStringKey("TWOSTRAIGHTRUN"), "TWO_STRAIGHT_RUN" },
+         { new NamingUtil.IFCStringKey("TWOSTRAIGHTRUNSTAIR"), "TWO_STRAIGHT_RUN" },
+         { new NamingUtil.IFCStringKey("TWOQUARTERTURN"), "TWO_QUARTER_TURN" },
+         { new NamingUtil.IFCStringKey("TWOQUARTERTURNSTAIR"), "TWO_QUARTER_TURN" },
+         { new NamingUtil.IFCStringKey("TWOQUARTERWINDING"), "TWO_QUARTER_WINDING" },
+         { new NamingUtil.IFCStringKey("TWOQUARTERWINDINGSTAIR"), "TWO_QUARTER_WINDING" },
+         { new NamingUtil.IFCStringKey("THREEQUARTERTURN"), "THREE_QUARTER_TURN" },
+         { new NamingUtil.IFCStringKey("THREEQUARTERTURNSTAIR") , "THREE_QUARTER_TURN" },
+         { new NamingUtil.IFCStringKey("THREEQUARTERWINDING"), "THREE_QUARTER_WINDING" },
+         { new NamingUtil.IFCStringKey("THREEQUARTERWINDINGSTAIR") , "THREE_QUARTER_WINDING" }
+      };
+
       /// <summary>
-      /// Gets IFCStairType from stair type name.
+      /// Converts acceptable values for the predefined type of a stair into the string version of the enumeration, if any.
       /// </summary>
       /// <param name="stairTypeName">The stair type name.</param>
-      /// <returns>The IFCStairType.</returns>
+      /// <returns>The string version of the enumeration, or null, if <paramref name="stairTypeName"/> is empty.</returns>
       public static string GetIFCStairType(string stairTypeName)
       {
-         string typeName = NamingUtil.RemoveSpacesAndUnderscores(stairTypeName);
+         if (string.IsNullOrEmpty(stairTypeName))
+            return null;
 
-         if (String.Compare(typeName, "StraightRun", true) == 0 ||
-             String.Compare(typeName, "StraightRunStair", true) == 0)
-            return "Straight_Run_Stair";
-         if (String.Compare(typeName, "QuarterWinding", true) == 0 ||
-             String.Compare(typeName, "QuarterWindingStair", true) == 0)
-            return "Quarter_Winding_Stair";
-         if (String.Compare(typeName, "QuarterTurn", true) == 0 ||
-             String.Compare(typeName, "QuarterTurnStair", true) == 0)
-            return "Quarter_Turn_Stair";
-         if (String.Compare(typeName, "HalfWinding", true) == 0 ||
-             String.Compare(typeName, "HalfWindingStair", true) == 0)
-            return "Half_Winding_Stair";
-         if (String.Compare(typeName, "HalfTurn", true) == 0 ||
-             String.Compare(typeName, "HalfTurnStair", true) == 0)
-            return "Half_Turn_Stair";
-         if (String.Compare(typeName, "TwoQuarterWinding", true) == 0 ||
-             String.Compare(typeName, "TwoQuarterWindingStair", true) == 0)
-            return "Two_Quarter_Winding_Stair";
-         if (String.Compare(typeName, "TwoStraightRun", true) == 0 ||
-             String.Compare(typeName, "TwoStraightRunStair", true) == 0)
-            return "Two_Straight_Run_Stair";
-         if (String.Compare(typeName, "TwoQuarterTurn", true) == 0 ||
-             String.Compare(typeName, "TwoQuarterTurnStair", true) == 0)
-            return "Two_Quarter_Turn_Stair";
-         if (String.Compare(typeName, "ThreeQuarterWinding", true) == 0 ||
-             String.Compare(typeName, "ThreeQuarterWindingStair", true) == 0)
-            return "Three_Quarter_Winding_Stair";
-         if (String.Compare(typeName, "ThreeQuarterTurn", true) == 0 ||
-             String.Compare(typeName, "ThreeQuarterTurnStair", true) == 0)
-            return "Three_Quarter_Turn_Stair";
-         if (String.Compare(typeName, "Spiral", true) == 0 ||
-             String.Compare(typeName, "SpiralStair", true) == 0)
-            return "Spiral_Stair";
-         if (String.Compare(typeName, "DoubleReturn", true) == 0 ||
-             String.Compare(typeName, "DoubleReturnStair", true) == 0)
-            return "Double_Return_Stair";
-         if (String.Compare(typeName, "CurvedRun", true) == 0 ||
-             String.Compare(typeName, "CurvedRunStair", true) == 0)
-            return "Curved_Run_Stair";
-         if (String.Compare(typeName, "TwoCurvedRun", true) == 0 ||
-             String.Compare(typeName, "TwoCurvedRunStair", true) == 0)
-            return "Two_Curved_Run_Stair";
-         if (String.Compare(typeName, "UserDefined", true) == 0)
-            return "UserDefined";
+         NamingUtil.IFCStringKey compName = new(stairTypeName);
+         if (StairTypes.TryGetValue(compName, out string stairType))
+            return stairType;
 
-         return "NotDefined";
+         return "NOTDEFINED";
       }
 
       /// <summary>
@@ -481,14 +449,14 @@ namespace Revit.IFC.Export.Exporter
       /// <param name="stair">the stair which contains the stair flights</param>
       /// <returns>The offset list of stairs flights which different from the original flight. 
       /// the original flight will be contained in the return list, its offset is zero.</returns>
-      public static List<double> GetFlightsOffsetList(ExporterIFC exporterIFC, Stairs stair)
+      public static List<double> GetFlightsOffsetList(Stairs stair)
       {
          List<double> offsetList = new List<double>();
          // the flights are generated by "Multistory Top Level" parameter
-         if (stair.MultistoryStairsId == ElementId.InvalidElementId)
+         if (MathUtil.IsInvalidElementId(stair.MultistoryStairsId))
          {
             int numberOfFlights = stair.NumberOfStories;
-            double heightNonScaled = GetStairsHeight(exporterIFC, stair);
+            double heightNonScaled = GetStairsHeight(stair);
             for (int ii = 0; ii < numberOfFlights; ii++)
             {
                offsetList.Add(heightNonScaled * ii);
@@ -505,13 +473,17 @@ namespace Revit.IFC.Export.Exporter
                if (null != baseLevel)
                {
                   offsetList.Add(0.0); // base level should always be the 1st.
-                  double original = baseLevel.Elevation;
+                  double original = baseLevel.ProjectElevation;
                   foreach (var levelId in placementLevelIds)
                   {
                      if (levelId != baseLevel.Id)
                      {
-                        double elevationOffset = (doc.GetElement(levelId) as Level).Elevation - original;
-                        offsetList.Add(elevationOffset);
+                        Level placementLevel = doc.GetElement(levelId) as Level;
+                        if (placementLevel != null)
+                        {
+                           double elevationOffset = placementLevel.ProjectElevation - original;
+                           offsetList.Add(elevationOffset);
+                        }
                      }
                   }
                }
@@ -532,16 +504,20 @@ namespace Revit.IFC.Export.Exporter
       /// <param name="componentECData">The extrusion creation data for the components.</param>
       /// <param name="placementSetter">The placement setter.</param>
       /// <param name="productWrapper">The ProductWrapper.</param>
+      /// <param name="componentParentIndices">Optional positional nesting map (index of a component
+      /// in <paramref name="components"/> to the index of the component that should decompose it).
+      /// Used to reproduce, on each storey copy, the stringer-under-flight/landing nesting computed
+      /// for the base storey.</param>
       public static void ExportMultistoryStair(ExporterIFC exporterIFC, Element stair, List<double> flightOffsets,
-          IFCAnyHandle stairHnd, IList<IFCAnyHandle> components, IList<IFCExtrusionCreationData> componentECData,
-          PlacementSetter placementSetter, ProductWrapper productWrapper)
+          IFCAnyHandle stairHnd, IList<IFCAnyHandle> components, IList<IFCExportBodyParams> componentECData,
+          PlacementSetter placementSetter, ProductWrapper productWrapper, IDictionary<int, int> componentParentIndices = null)
       {
          int numFlights = flightOffsets.Count;
          if (numFlights < 2)
             return;
 
-         double heightNonScaled = GetStairsHeight(exporterIFC, stair);
-         if (heightNonScaled < MathUtil.Eps())
+         double heightNonScaled = GetStairsHeight(stair);
+         if (heightNonScaled < MathUtil.Eps)
             return;
 
          if (IFCAnyHandleUtil.IsNullOrHasNoValue(stairHnd))
@@ -647,30 +623,34 @@ namespace Revit.IFC.Export.Exporter
             }
 
             IList<IFCAnyHandle> localComponentHnds = new List<IFCAnyHandle>();
+            IList<IFCExportInfoPair> localCompExportInfo = new List<IFCExportInfoPair>();
+
             if (isSubStair)
             {
-               string componentType = IFCAnyHandleUtil.GetEnumerationAttribute(component, ExporterCacheManager.ExportOptionsCache.ExportAs4 ? "PredefinedType" : "ShapeType");
+               string componentType = IFCAnyHandleUtil.GetEnumerationAttribute(component, !ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4 ? "PredefinedType" : "ShapeType");
                string localStairType = GetIFCStairType(componentType);
-
+               
                ElementId catId = CategoryUtil.GetSafeCategoryId(stair);
 
                for (int ii = 0; ii < numFlights - 1; ii++)
                {
                   IFCAnyHandle representationCopy =
-                      ExporterUtil.CopyProductDefinitionShape(exporterIFC, stair, catId, componentProdRep);
+                     ExporterUtil.CopyProductDefinitionShape(exporterIFC, stair, catId, componentProdRep);
 
-                  IFCAnyHandle localComponent = IFCInstanceExporter.CreateStair(exporterIFC, null, GUIDUtil.CreateGUID(), ownerHistory,
-                        componentPlacementHnds[ii], representationCopy, localStairType);
+                  string stairGuid = GUIDUtil.GenerateIFCGuidFrom(
+                     GUIDUtil.CreateGUIDString(stair, "IfcStair: " + (ii+1).ToString()));
+                  IFCAnyHandle localComponent = IFCInstanceExporter.CreateStair(file, null, null,
+                     stairGuid, ownerHistory, componentPlacementHnds[ii], representationCopy, localStairType);
                   IFCAnyHandleUtil.OverrideNameAttribute(localComponent, localComponentNames[ii]);
                   localComponentHnds.Add(localComponent);
-
-                  //ExporterUtil.CreateGenericTypeFromElement()
+                  IFCExportInfoPair exportInfo = new IFCExportInfoPair(IFCEntityType.IfcStair, localStairType);
+                  localCompExportInfo.Add(exportInfo);
                }
             }
             else if (IFCAnyHandleUtil.IsSubTypeOf(component, IFCEntityType.IfcStairFlight))
             {
                Element runElem = (runIter == null) ? stair : stair.Document.GetElement(runIter.Current);
-               Element runElemToUse = (runElem == null) ? stair : runElem;
+               Element runElemToUse = runElem ?? stair;
                ElementId catId = CategoryUtil.GetSafeCategoryId(runElemToUse);
 
                int? numberOfRiser = IFCAnyHandleUtil.GetIntAttribute(component, "NumberOfRiser");
@@ -683,33 +663,40 @@ namespace Revit.IFC.Export.Exporter
                   IFCAnyHandle representationCopy =
                       ExporterUtil.CopyProductDefinitionShape(exporterIFC, runElemToUse, catId, componentProdRep);
 
-                  IFCAnyHandle localComponent = IFCInstanceExporter.CreateStairFlight(exporterIFC, runElemToUse, GUIDUtil.CreateGUID(), 
-                     ownerHistory, componentPlacementHnds[ii], representationCopy, 
-                     numberOfRiser, numberOfTreads, riserHeight, treadLength, "NOTDEFINED");
+                  string ifcType = "NOTDEFINED";
+                  string stairFlightGuid = GUIDUtil.GenerateIFCGuidFrom(
+                     GUIDUtil.CreateGUIDString(runElemToUse, "IfcStairFlight: " + ii.ToString()));
+                  IFCAnyHandle localComponent = IFCInstanceExporter.CreateStairFlight(file, runElemToUse, null,
+                     stairFlightGuid, ownerHistory, componentPlacementHnds[ii], representationCopy, 
+                     numberOfRiser, numberOfTreads, riserHeight, treadLength, ifcType);
                   IFCAnyHandleUtil.OverrideNameAttribute(localComponent, localComponentNames[ii]);
                   localComponentHnds.Add(localComponent);
+                  IFCExportInfoPair exportInfo = new IFCExportInfoPair(IFCEntityType.IfcStairFlight, ifcType);
+                  localCompExportInfo.Add(exportInfo);
                }
                runIter.MoveNext();
             }
             else if (IFCAnyHandleUtil.IsSubTypeOf(component, IFCEntityType.IfcSlab))
             {
                Element landingElem = (landingIter == null) ? stair : stair.Document.GetElement(landingIter.Current);
-               Element landingElemToUse = (landingElem == null) ? stair : landingElem;
+               Element landingElemToUse = landingElem ?? stair;
                ElementId catId = CategoryUtil.GetSafeCategoryId(landingElemToUse);
-
-               //string componentType = IFCValidateEntry.GetValidIFCPredefinedType(landingElemToUse, IFCAnyHandleUtil.GetEnumerationAttribute(component, "PredefinedType"));
-               // IFCSlabType localLandingType = FloorExporter.GetIFCSlabType(componentType);
 
                for (int ii = 0; ii < numFlights - 1; ii++)
                {
                   IFCAnyHandle representationCopy =
                       ExporterUtil.CopyProductDefinitionShape(exporterIFC, landingElemToUse, catId, componentProdRep);
 
-                  IFCAnyHandle localComponent = IFCInstanceExporter.CreateSlab(exporterIFC, landingElemToUse, 
-                     GUIDUtil.CreateGUID(), ownerHistory,
-                     componentPlacementHnds[ii], representationCopy, "PredefinedType");
+                  string ifcType = "LANDING";
+                  string slabGuid = GUIDUtil.GenerateIFCGuidFrom(
+                     GUIDUtil.CreateGUIDString(landingElemToUse, "IfcSlab: " + ii.ToString()));
+
+                  IFCAnyHandle localComponent = IFCInstanceExporter.CreateSlab(file, landingElemToUse, null,
+                     slabGuid, ownerHistory, componentPlacementHnds[ii], representationCopy, ifcType);
                   IFCAnyHandleUtil.OverrideNameAttribute(localComponent, localComponentNames[ii]);
                   localComponentHnds.Add(localComponent);
+                  IFCExportInfoPair exportInfo = new IFCExportInfoPair(IFCEntityType.IfcSlab, ifcType);
+                  localCompExportInfo.Add(exportInfo);
                }
 
                landingIter.MoveNext();
@@ -717,22 +704,28 @@ namespace Revit.IFC.Export.Exporter
             else if (IFCAnyHandleUtil.IsSubTypeOf(component, IFCEntityType.IfcMember))
             {
                Element supportElem = (supportIter == null) ? stair : stair.Document.GetElement(supportIter.Current);
-               Element supportElemToUse = (supportElem == null) ? stair : supportElem;
+               Element supportElemToUse = supportElem ?? stair;
                ElementId catId = CategoryUtil.GetSafeCategoryId(supportElemToUse);
 
-               IFCAnyHandle memberType = (supportElemToUse != stair) ? GetMemberTypeHandle(exporterIFC, supportElemToUse) : null;
+               IFCExportInfoPair memberExportInfo = new IFCExportInfoPair(IFCEntityType.IfcMember, "STRINGER");
+               IFCAnyHandle memberType = (supportElemToUse != stair) ? GetMemberTypeHandle(exporterIFC, supportElemToUse, productWrapper, memberExportInfo) : null;
 
                for (int ii = 0; ii < numFlights - 1; ii++)
                {
                   IFCAnyHandle representationCopy =
                   ExporterUtil.CopyProductDefinitionShape(exporterIFC, supportElemToUse, catId, componentProdRep);
 
-                  IFCAnyHandle localComponent = IFCInstanceExporter.CreateMember(exporterIFC, supportElemToUse, 
-                     GUIDUtil.CreateGUID(), ownerHistory, componentPlacementHnds[ii], representationCopy, "STRINGER");
+                  string ifcType = "STRINGER";
+                  string memberGuid = GUIDUtil.GenerateIFCGuidFrom(
+                     GUIDUtil.CreateGUIDString(supportElemToUse, "IfcMember: " + ii.ToString()));
+
+                  IFCAnyHandle localComponent = IFCInstanceExporter.CreateMember(file, supportElemToUse, memberType,
+                     memberGuid, ownerHistory, componentPlacementHnds[ii], representationCopy, ifcType);
                   IFCAnyHandleUtil.OverrideNameAttribute(localComponent, localComponentNames[ii]);
                   localComponentHnds.Add(localComponent);
-                  if (memberType != null)
-                     ExporterCacheManager.TypeRelationsCache.Add(memberType, localComponentHnds[ii]);
+                  IFCExportInfoPair exportInfo = new IFCExportInfoPair(IFCEntityType.IfcMember, ifcType);
+                  localCompExportInfo.Add(exportInfo);
+                  ExporterCacheManager.TypeRelationsCache.Add(memberType, localComponentHnds[ii]);
                }
 
                supportIter.MoveNext();
@@ -743,7 +736,7 @@ namespace Revit.IFC.Export.Exporter
                if (localComponentHnds[ii] != null)
                {
                   newComponents[ii].Add(localComponentHnds[ii]);
-                  productWrapper.AddElement(null, localComponentHnds[ii], levelInfos[ii], componentECData[compIdx], false);
+                  productWrapper.AddElement(null, localComponentHnds[ii], levelInfos[ii], componentECData[compIdx], false, localCompExportInfo[ii]);
                }
             }
             compIdx++;
@@ -752,28 +745,43 @@ namespace Revit.IFC.Export.Exporter
          // finally add a copy of the container.
          {
             IList<IFCAnyHandle> stairCopyHnds = new List<IFCAnyHandle>();
+            string stairTypeAttribute = !ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4 ? 
+               "PredefinedType" : "ShapeType";
+            string stairTypeAsString = IFCAnyHandleUtil.GetEnumerationAttribute(stairHnd, stairTypeAttribute);
+            string stairType = GetIFCStairType(stairTypeAsString);
+            string baseStairName = IFCAnyHandleUtil.GetStringAttribute(stairHnd, "Name");
+            IFCExportInfoPair exportInfo = new IFCExportInfoPair(IFCEntityType.IfcStair, stairType);
+
             for (int ii = 0; ii < numFlights - 1; ii++)
             {
-               string stairTypeAsString = null;
-               if (ExporterCacheManager.ExportOptionsCache.ExportAs4)
-                  stairTypeAsString = IFCAnyHandleUtil.GetEnumerationAttribute(stairHnd, "PredefinedType");
-               else
-                  stairTypeAsString = IFCAnyHandleUtil.GetEnumerationAttribute(stairHnd, "ShapeType");
-               string stairType = GetIFCStairType(stairTypeAsString);
-
-               string containerStairName = IFCAnyHandleUtil.GetStringAttribute(stairHnd, "Name") + ":" + (ii + 2);
-               IFCAnyHandle containerStairHnd = IFCInstanceExporter.CreateStair(exporterIFC, stair, GUIDUtil.CreateGUID(), ownerHistory,
-                   stairLocalPlacementHnds[ii], null, stairType);
+               string containerStairName = baseStairName + ":" + (ii + 2);
+               string containerGuid = GUIDUtil.GenerateIFCGuidFrom(GUIDUtil.CreateGUIDString(stair, "IfcStair Copy: " + (ii+2).ToString()));
+               IFCAnyHandle containerStairHnd = IFCInstanceExporter.CreateStair(file, stair, null,
+                  containerGuid, ownerHistory, stairLocalPlacementHnds[ii], null, stairType);
                stairCopyHnds.Add(containerStairHnd);
                IFCAnyHandleUtil.OverrideNameAttribute(containerStairHnd, containerStairName);
 
-               productWrapper.AddElement(stair, stairCopyHnds[ii], levelInfos[ii], null, true);
+               productWrapper.AddElement(stair, stairCopyHnds[ii], levelInfos[ii], null, true,exportInfo);
             }
 
             for (int ii = 0; ii < numFlights - 1; ii++)
             {
                StairRampContainerInfo stairRampInfo = new StairRampContainerInfo(stairCopyHnds[ii], newComponents[ii],
                    stairLocalPlacementHnds[ii]);
+
+               // Reproduce the base storey's stringer -> host nesting on this copy.  newComponents[ii]
+               // is built in the same order as the original components, so the positional parent map
+               // applies directly.
+               if (componentParentIndices != null && componentParentIndices.Count > 0)
+               {
+                  Dictionary<IFCAnyHandle, IFCAnyHandle> nesting = stairRampInfo.ComponentNesting[0];
+                  foreach (KeyValuePair<int, int> childToParent in componentParentIndices)
+                  {
+                     if (childToParent.Key < newComponents[ii].Count && childToParent.Value < newComponents[ii].Count)
+                        nesting[newComponents[ii][childToParent.Key]] = newComponents[ii][childToParent.Value];
+                  }
+               }
+
                ExporterCacheManager.StairRampContainerInfoCache.AppendStairRampContainerInfo(stair.Id, stairRampInfo);
             }
          }
@@ -798,27 +806,24 @@ namespace Revit.IFC.Export.Exporter
 
          using (IFCTransaction tr = new IFCTransaction(file))
          {
-            // Check for containment override
-            IFCAnyHandle overrideContainerHnd = null;
-            ElementId overrideContainerId = ParameterUtil.OverrideContainmentParameter(exporterIFC, stair, out overrideContainerHnd);
-
-            using (PlacementSetter placementSetter = PlacementSetter.Create(exporterIFC, stair, null, null, overrideContainerId, overrideContainerHnd))
+            using (PlacementSetter placementSetter = PlacementSetter.Create(exporterIFC, stair, null))
             {
-               using (IFCExtrusionCreationData ecData = new IFCExtrusionCreationData())
+               using (IFCExportBodyParams ecData = new IFCExportBodyParams())
                {
                   ecData.SetLocalPlacement(placementSetter.LocalPlacement);
                   ecData.ReuseLocalPlacement = false;
                   Transform trf = ExporterIFCUtils.GetUnscaledTransform(exporterIFC, placementSetter.LocalPlacement);
 
                   int numFlights = flightOffsets.Count;
-                  GeometryElement stairsGeom = GeometryUtil.GetOneLevelGeometryElement(geometryElement, numFlights);
+                  var oneLevelGeom = GeometryUtil.GetOneLevelGeometryElement(geometryElement, numFlights);
+                  GeometryElement stairsGeom = oneLevelGeom.element;
 
                   BodyData bodyData;
                   ElementId categoryId = CategoryUtil.GetSafeCategoryId(stair);
 
                   BodyExporterOptions bodyExporterOptions = new BodyExporterOptions(true, ExportOptionsCache.ExportTessellationLevel.ExtraLow);
                   IFCAnyHandle representation = RepresentationUtil.CreateAppropriateProductDefinitionShape(exporterIFC,
-                      stair, categoryId, stairsGeom, bodyExporterOptions, null, ecData, out bodyData);
+                      stair, categoryId, stairsGeom, bodyExporterOptions, null, ecData, out bodyData, instanceGeometry: true);
 
                   if (IFCAnyHandleUtil.IsNullOrHasNoValue(representation))
                   {
@@ -828,7 +833,7 @@ namespace Revit.IFC.Export.Exporter
 
                   if (!ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4)
                   {
-                     IList<IFCAnyHandle> reps = IFCAnyHandleUtil.GetRepresentations(representation);
+                     List<IFCAnyHandle> reps = IFCAnyHandleUtil.GetRepresentations(representation);
                      Stairs theStairs = stair as Stairs;
                      if (theStairs != null)
                      {
@@ -858,36 +863,35 @@ namespace Revit.IFC.Export.Exporter
 
                   IFCAnyHandle containedStairLocalPlacement = ExporterUtil.CreateLocalPlacement(file, ecData.GetLocalPlacement(), null);
                   //string predefType = GetValidatedStairType(stair as Stairs, ifcEnumType);
-                  IFCExportInfoPair exportType = new IFCExportInfoPair();
-                  exportType.SetValueWithPair(IFCEntityType.IfcStair, ifcEnumType);
-
-                  List<IFCAnyHandle> components = new List<IFCAnyHandle>();
-                  IList<IFCExtrusionCreationData> componentExtrusionData = new List<IFCExtrusionCreationData>();
-                  IFCAnyHandle containedStairHnd = IFCInstanceExporter.CreateStair(exporterIFC, stair, containedStairGuid, ownerHistory,
-                      containedStairLocalPlacement, representation, exportType.ValidatedPredefinedType);
+                  IFCExportInfoPair exportType = new IFCExportInfoPair(IFCEntityType.IfcStair, ifcEnumType);
 
                   // Create appropriate type
+                  IFCAnyHandle stairTypeHnd = ExporterUtil.CreateGenericTypeFromElement(stair, exportType, exporterIFC.GetFile(), productWrapper);
 
-                  IFCAnyHandle stairTypeHnd = ExporterUtil.CreateGenericTypeFromElement(stair, exportType, exporterIFC.GetFile(), ownerHistory, exportType.ValidatedPredefinedType, productWrapper);
+                  List<IFCAnyHandle> components = new List<IFCAnyHandle>();
+                  IList<IFCExportBodyParams> componentExtrusionData = new List<IFCExportBodyParams>();
+                  IFCAnyHandle containedStairHnd = IFCInstanceExporter.CreateStair(file, stair, stairTypeHnd, containedStairGuid, ownerHistory,
+                      containedStairLocalPlacement, representation, exportType.GetPredefinedTypeOrDefault());
+
                   ExporterCacheManager.TypeRelationsCache.Add(stairTypeHnd, containedStairHnd);
-                  CategoryUtil.CreateMaterialAssociation(exporterIFC, containedStairHnd, bodyData.MaterialIds);
+                  CategoryUtil.CreateMaterialAssociation(exporterIFC, stair, containedStairHnd, bodyData.MaterialIds);
 
                   if (ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4)
                   {
                      components.Add(containedStairHnd);
                      componentExtrusionData.Add(ecData);
 
+                     // Create appropriate type for the container
+                     IFCAnyHandle stairContTypeHnd = ExporterUtil.CreateGenericTypeFromElement(stair, exportType, exporterIFC.GetFile(), productWrapper);
+
                      IFCAnyHandle localPlacement = ecData.GetLocalPlacement();
 
-                     IFCAnyHandle stairContainerHnd = IFCInstanceExporter.CreateStair(exporterIFC, stair, stairGuid, ownerHistory,
-                          localPlacement, null, exportType.ValidatedPredefinedType);
+                     IFCAnyHandle stairContainerHnd = IFCInstanceExporter.CreateStair(file, stair, stairContTypeHnd, stairGuid, ownerHistory,
+                          localPlacement, null, exportType.GetPredefinedTypeOrDefault());
 
-                     // Create appropriate type for the container
-                     //string contPredefType = GetValidatedStairType(stair as Stairs, ifcEnumType);
-                     IFCAnyHandle stairContTypeHnd = ExporterUtil.CreateGenericTypeFromElement(stair, exportType, exporterIFC.GetFile(), ownerHistory, exportType.ValidatedPredefinedType, productWrapper);
                      ExporterCacheManager.TypeRelationsCache.Add(stairContTypeHnd, stairContainerHnd);
 
-                     productWrapper.AddElement(stair, stairContainerHnd, placementSetter.LevelInfo, ecData, true);
+                     productWrapper.AddElement(stair, stairContainerHnd, placementSetter.LevelInfo, ecData, true, exportType);
 
                      StairRampContainerInfo stairRampInfo = new StairRampContainerInfo(stairContainerHnd, components, localPlacement);
                      ExporterCacheManager.StairRampContainerInfoCache.AddStairRampContainerInfo(stair.Id, stairRampInfo);
@@ -926,10 +930,6 @@ namespace Revit.IFC.Export.Exporter
          if (stair == null || geometryElement == null)
             return;
 
-         // Don't process Stair that has only one Flight -> export it as a single IfcStair instead by returning immediately 
-         if (stair.GetStairsRuns().Count == 1)
-            return;
-
          Document doc = stair.Document;
          IFCFile file = exporterIFC.GetFile();
          Options geomOptions = GeometryUtil.GetIFCExportGeometryOptions();
@@ -937,36 +937,54 @@ namespace Revit.IFC.Export.Exporter
 
          using (IFCTransaction tr = new IFCTransaction(file))
          {
-            // Check for containment override
-            IFCAnyHandle overrideContainerHnd = null;
-            ElementId overrideContainerId = ParameterUtil.OverrideContainmentParameter(exporterIFC, stair, out overrideContainerHnd);
-
-            using (PlacementSetter placementSetter =  PlacementSetter.Create(exporterIFC, stair, null, null, overrideContainerId, overrideContainerHnd))
+            using (PlacementSetter placementSetter = PlacementSetter.Create(exporterIFC, stair, null))
             {
-               List<IFCAnyHandle> componentHandles = new List<IFCAnyHandle>();
-               IList<IFCExtrusionCreationData> componentExtrusionData = new List<IFCExtrusionCreationData>();
+               List<IFCAnyHandle> componentHandles = [];
+               List<IFCExportBodyParams> componentExtrusionData = [];
 
-               IFCAnyHandle contextOfItemsFootPrint = exporterIFC.Get3DContextHandle("FootPrint");
-               IFCAnyHandle contextOfItemsAxis = exporterIFC.Get3DContextHandle("Axis");
+               // From IFC4 onward an IfcStair may only be decomposed into IfcStairFlight, IfcSlab
+               // (landing) and IfcRailing.  Stringers (exported as IfcMember) must therefore be
+               // nested under the flight or landing that actually hosts them rather than directly
+               // under the stair (BLT003 stair decomposition).  A run or a landing can each host
+               // several stringers, and a stair can have several runs/landings, so we resolve the
+               // host of every support and nest accordingly.  IFC2x3 does not allow these nested
+               // decompositions, so the maps below are only populated from IFC4 onward.
+               bool nestStringers = !ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4;
+
+               // Maps the element id of a host run/landing to its index within componentHandles.
+               Dictionary<ElementId, int> hostComponentIndices = new Dictionary<ElementId, int>();
+               // Maps a support (stringer) element id to the element id of the run or landing hosting it.
+               Dictionary<ElementId, ElementId> supportToHostId = new Dictionary<ElementId, ElementId>();
+               // Maps the index of a stringer in componentHandles to the index of its host component.
+               // This is positional so that the multistory copies, which are built in the same order,
+               // can reproduce the same nesting.
+               Dictionary<int, int> componentParentIndices = new Dictionary<int, int>();
+               // Fallback host index (first flight, otherwise first landing) for stringers whose host
+               // cannot be resolved, e.g. when the host geometry failed to export.
+               int fallbackHostIndex = -1;
 
                Transform trf = ExporterIFCUtils.GetUnscaledTransform(exporterIFC, placementSetter.LocalPlacement);
+
+               // Create appropriate type
+               string predefinedType = ifcEnumType;
+               if (string.IsNullOrWhiteSpace(predefinedType))
+                  predefinedType = GetValidatedStairType(stair, null); // override by stair components if predefined type is not set
+
+               IFCExportInfoPair exportType = new IFCExportInfoPair(IFCEntityType.IfcStair, predefinedType);
+               IFCAnyHandle stairTypeHnd = ExporterUtil.CreateGenericTypeFromElement(stair, exportType, exporterIFC.GetFile(), productWrapper);
 
                IFCAnyHandle ownerHistory = ExporterCacheManager.OwnerHistoryHandle;
                string stairGUID = GUIDUtil.CreateGUID(stair);
                IFCAnyHandle stairLocalPlacement = placementSetter.LocalPlacement;
-               //string stairType = GetIFCStairType(ifcEnumType);
-               string predefType = GetValidatedStairType(stair, null);
 
-               IFCAnyHandle stairContainerHnd = IFCInstanceExporter.CreateStair(exporterIFC, stair, stairGUID, ownerHistory,
-                   stairLocalPlacement, null, predefType);
+               IFCAnyHandle stairContainerHnd = IFCInstanceExporter.CreateStair(file, stair, stairTypeHnd, stairGUID, ownerHistory,
+                   stairLocalPlacement, null, predefinedType);
 
-               // Create appropriate type
-               IFCExportInfoPair exportType = new IFCExportInfoPair();
-               exportType.SetValueWithPair(IFCEntityType.IfcStair, predefType);
-               IFCAnyHandle stairTypeHnd = ExporterUtil.CreateGenericTypeFromElement(stair, exportType, exporterIFC.GetFile(), ownerHistory, predefType, productWrapper);
                ExporterCacheManager.TypeRelationsCache.Add(stairTypeHnd, stairContainerHnd);
 
                productWrapper.AddElement(stair, stairContainerHnd, placementSetter.LevelInfo, null, true, exportType);
+
+               string ifcCADLayer = RepresentationUtil.GetPresentationLayerOverride(stair);
 
                // Get List of runs to export their geometry.
                ICollection<ElementId> runIds = stair.GetStairsRuns();
@@ -976,67 +994,86 @@ namespace Revit.IFC.Export.Exporter
                   index++;
                   StairsRun run = doc.GetElement(runId) as StairsRun;
 
-                  using (IFCExtrusionCreationData ecData = new IFCExtrusionCreationData())
+                  // Remember which run hosts each of its supports so the stringers can be nested
+                  // under this run's IfcStairFlight below.
+                  if (nestStringers && run != null)
                   {
-                     ecData.AllowVerticalOffsetOfBReps = false;
-                     ecData.SetLocalPlacement(ExporterUtil.CreateLocalPlacement(file, placementSetter.LocalPlacement, null));
-                     ecData.ReuseLocalPlacement = true;
-
-                     GeometryElement runGeometryElement = run.get_Geometry(geomOptions);
-
-                     BodyExporterOptions bodyExporterOptions = new BodyExporterOptions(true, ExportOptionsCache.ExportTessellationLevel.ExtraLow);
-                     BodyData bodyData = BodyExporter.ExportBody(exporterIFC, run, categoryId, ElementId.InvalidElementId, runGeometryElement,
-                         bodyExporterOptions, ecData);
-
-                     IFCAnyHandle bodyRep = bodyData.RepresentationHnd;
-                     if (IFCAnyHandleUtil.IsNullOrHasNoValue(bodyRep))
-                     {
-                        ecData.ClearOpenings();
-                        continue;
-                     }
-
-                     IList<IFCAnyHandle> reps = new List<IFCAnyHandle>();
-                     reps.Add(bodyRep);
-
-                     if (!ExporterCacheManager.ExportOptionsCache.ExportAsCoordinationView2)
-                     {
-                        CreateWalkingLineAndFootprint(exporterIFC, run, bodyData, categoryId, trf, ref reps);
-                     }
-
-                     Transform boundingBoxTrf = (bodyData.OffsetTransform == null) ? Transform.Identity : bodyData.OffsetTransform.Inverse;
-                     IFCAnyHandle boundingBoxRep = BoundingBoxExporter.ExportBoundingBox(exporterIFC, runGeometryElement, boundingBoxTrf);
-                     if (boundingBoxRep != null)
-                        reps.Add(boundingBoxRep);
-
-                     IFCAnyHandle representation = IFCInstanceExporter.CreateProductDefinitionShape(exporterIFC.GetFile(), null, null, reps);
-
-                     string runGUID = GUIDUtil.CreateGUID(run);
-                     string origRunName = IFCAnyHandleUtil.GetStringAttribute(stairContainerHnd, "Name") + " Run " + index;
-                     string runName = NamingUtil.GetNameOverride(run, origRunName);
-
-                     IFCAnyHandle runLocalPlacement = ecData.GetLocalPlacement();
-                     string runElementTag = NamingUtil.GetTagOverride(run, NamingUtil.CreateIFCElementId(run));
-
-                     string flightPredefType = GetValidatedStairFlightType(run);
-                     
-                     IFCAnyHandle stairFlightHnd = IFCInstanceExporter.CreateStairFlight(exporterIFC, run, runGUID, ownerHistory, runLocalPlacement,
-                         representation, run.ActualRisersNumber, run.ActualTreadsNumber, stair.ActualRiserHeight, stair.ActualTreadDepth, flightPredefType);
-                     IFCAnyHandleUtil.OverrideNameAttribute(stairFlightHnd, runName);
-                     // Create type
-                     IFCExportInfoPair flightEportType = new IFCExportInfoPair();
-                     flightEportType.SetValueWithPair(IFCEntityType.IfcStairFlight, flightPredefType);
-                     IFCAnyHandle flightTypeHnd = ExporterUtil.CreateGenericTypeFromElement(run, flightEportType, exporterIFC.GetFile(), ownerHistory, flightPredefType, productWrapper);
-                     ExporterCacheManager.TypeRelationsCache.Add(flightTypeHnd, stairFlightHnd);
-
-                     componentHandles.Add(stairFlightHnd);
-                     componentExtrusionData.Add(ecData);
-
-                     CategoryUtil.CreateMaterialAssociation(exporterIFC, stairFlightHnd, bodyData.MaterialIds);
-
-                     productWrapper.AddElement(run, stairFlightHnd, placementSetter.LevelInfo, ecData, false, exportType);
-
-                     ExporterCacheManager.HandleToElementCache.Register(stairFlightHnd, run.Id);
+                     foreach (ElementId hostedSupportId in run.GetAllSupports())
+                        supportToHostId[hostedSupportId] = runId;
                   }
+
+                  IFCExportBodyParams ecData = new();
+                  ecData.AllowVerticalOffsetOfBReps = false;
+                  ecData.SetLocalPlacement(ExporterUtil.CreateLocalPlacement(file, placementSetter.LocalPlacement, null));
+                  ecData.ReuseLocalPlacement = true;
+                  ecData.IFCCADLayerOverride = ifcCADLayer;
+                  GeometryElement runGeometryElement = run.get_Geometry(geomOptions);
+
+                  BodyExporterOptions bodyExporterOptions = new(true, ExportOptionsCache.ExportTessellationLevel.ExtraLow);
+                  BodyData bodyData = BodyExporter.ExportBody(exporterIFC, run, categoryId, ElementId.InvalidElementId, runGeometryElement,
+                      bodyExporterOptions, ecData);
+
+                  IFCAnyHandle bodyRep = bodyData.RepresentationHnd;
+                  if (IFCAnyHandleUtil.IsNullOrHasNoValue(bodyRep))
+                  {
+                     ecData.ClearOpenings();
+                     ecData.Dispose();
+                     continue;
+                  }
+
+                  List<IFCAnyHandle> reps = [bodyRep];
+
+                  if (!ExporterCacheManager.ExportOptionsCache.ExportAsCoordinationView2)
+                  {
+                     CreateWalkingLineAndFootprint(exporterIFC, run, bodyData, categoryId, trf, ref reps);
+                  }
+
+                  Transform boundingBoxTrf = (bodyData.OffsetTransform == null) ? Transform.Identity : bodyData.OffsetTransform.Inverse;
+                  reps.AddIfNotNull(BoundingBoxExporter.ExportBoundingBox(exporterIFC, runGeometryElement, boundingBoxTrf));
+
+                  IFCAnyHandle representation = IFCInstanceExporter.CreateProductDefinitionShape(exporterIFC.GetFile(), null, null, reps);
+
+                  string runGUID = GUIDUtil.CreateGUID(run);
+                  string origRunName = IFCAnyHandleUtil.GetStringAttribute(stairContainerHnd, "Name") + " Run " + index;
+                  string runName = NamingUtil.GetNameOverride(run, origRunName);
+
+                  IFCAnyHandle runLocalPlacement = ecData.GetLocalPlacement();
+                  string runElementTag = NamingUtil.GetTagOverride(run);
+
+                  // NOTE: If we are exporting stairs, we are ignoring the IfcExportAs for the Run, and forcing export
+                  // to IfcStairFlight.
+                  IFCExportInfoPair runExportType = ExporterUtil.GetProductExportType(run, out string flightPredefType);
+                  if (runExportType.ExportInstance != IFCEntityType.IfcStairFlight || ExporterUtil.IsNotDefined(flightPredefType))
+                  {
+                     flightPredefType = GetValidatedStairFlightType(run);
+                  }
+
+                  // Create type.
+                  IFCExportInfoPair flightExportType = new IFCExportInfoPair(IFCEntityType.IfcStairFlight, flightPredefType);
+                  IFCAnyHandle flightTypeHnd = ExporterUtil.CreateGenericTypeFromElement(run, flightExportType, exporterIFC.GetFile(), productWrapper);
+
+                  // Create instance.
+                  IFCAnyHandle stairFlightHnd = IFCInstanceExporter.CreateStairFlight(file, run, flightTypeHnd, runGUID, ownerHistory, runLocalPlacement,
+                      representation, run.ActualRisersNumber, run.ActualTreadsNumber, stair.ActualRiserHeight, stair.ActualTreadDepth, flightPredefType);
+                  IFCAnyHandleUtil.OverrideNameAttribute(stairFlightHnd, runName);
+
+                  ExporterCacheManager.TypeRelationsCache.Add(flightTypeHnd, stairFlightHnd);
+
+                  componentHandles.Add(stairFlightHnd);
+                  componentExtrusionData.Add(ecData);
+
+                  if (nestStringers)
+                  {
+                     hostComponentIndices[runId] = componentHandles.Count - 1;
+                     if (fallbackHostIndex < 0)
+                        fallbackHostIndex = componentHandles.Count - 1;
+                  }
+
+                  CategoryUtil.CreateMaterialAssociation(exporterIFC, run, stairFlightHnd, bodyData.MaterialIds);
+
+                  productWrapper.AddElement(run, stairFlightHnd, placementSetter.LevelInfo, ecData, false, flightExportType);
+
+                  ExporterCacheManager.HandleToElementCache.Register(stairFlightHnd, run.Id);
                }
 
                // Get List of landings to export their geometry.
@@ -1047,65 +1084,82 @@ namespace Revit.IFC.Export.Exporter
                   index++;
                   StairsLanding landing = doc.GetElement(landingId) as StairsLanding;
 
-                  using (IFCExtrusionCreationData ecData = new IFCExtrusionCreationData())
+                  // Remember which landing hosts each of its supports so the stringers can be nested
+                  // under this landing's IfcSlab below.
+                  if (nestStringers && landing != null)
                   {
-                     ecData.AllowVerticalOffsetOfBReps = false;
-                     ecData.SetLocalPlacement(ExporterUtil.CreateLocalPlacement(file, placementSetter.LocalPlacement, null));
-                     ecData.ReuseLocalPlacement = true;
-
-                     GeometryElement landingGeometryElement = landing.get_Geometry(geomOptions);
-
-                     BodyExporterOptions bodyExporterOptions = new BodyExporterOptions(true, ExportOptionsCache.ExportTessellationLevel.ExtraLow);
-                     BodyData bodyData = BodyExporter.ExportBody(exporterIFC, landing, categoryId, ElementId.InvalidElementId, landingGeometryElement,
-                         bodyExporterOptions, ecData);
-
-                     IFCAnyHandle bodyRep = bodyData.RepresentationHnd;
-                     if (IFCAnyHandleUtil.IsNullOrHasNoValue(bodyRep))
-                     {
-                        ecData.ClearOpenings();
-                        continue;
-                     }
-
-                     // create Boundary rep.
-                     IList<IFCAnyHandle> reps = new List<IFCAnyHandle>();
-                     reps.Add(bodyRep);
-
-                     if (!ExporterCacheManager.ExportOptionsCache.ExportAsCoordinationView2)
-                     {
-                        CreateWalkingLineAndFootprint(exporterIFC, landing, bodyData, categoryId, trf, ref reps);
-                     }
-
-                     Transform boundingBoxTrf = (bodyData.OffsetTransform == null) ? Transform.Identity : bodyData.OffsetTransform.Inverse;
-                     IFCAnyHandle boundingBoxRep = BoundingBoxExporter.ExportBoundingBox(exporterIFC, landingGeometryElement, boundingBoxTrf);
-                     if (boundingBoxRep != null)
-                        reps.Add(boundingBoxRep);
-
-                     string landingGUID = GUIDUtil.CreateGUID(landing);
-                     string origLandingName = IFCAnyHandleUtil.GetStringAttribute(stairContainerHnd, "Name") + " Landing " + index;
-                     string landingName = NamingUtil.GetNameOverride(landing, origLandingName);
-                     IFCAnyHandle landingLocalPlacement = ecData.GetLocalPlacement();
-                     
-                     IFCAnyHandle representation = IFCInstanceExporter.CreateProductDefinitionShape(exporterIFC.GetFile(), null, null, reps);
-
-                     string landingPredefinedType = "LANDING";
-                     IFCAnyHandle landingHnd = IFCInstanceExporter.CreateSlab(exporterIFC, landing, landingGUID, ownerHistory,
-                         landingLocalPlacement, representation, landingPredefinedType);
-                     IFCAnyHandleUtil.OverrideNameAttribute(landingHnd, landingName);
-
-                     // Create type
-                     IFCExportInfoPair landingExportType = new IFCExportInfoPair();
-                     landingExportType.SetValueWithPair(IFCEntityType.IfcSlab, landingPredefinedType);
-                     IFCAnyHandle landingTypeHnd = ExporterUtil.CreateGenericTypeFromElement(landing, landingExportType, exporterIFC.GetFile(), ownerHistory, landingPredefinedType, productWrapper);
-                     ExporterCacheManager.TypeRelationsCache.Add(landingTypeHnd, landingHnd);
-
-                     componentHandles.Add(landingHnd);
-                     componentExtrusionData.Add(ecData);
-
-                     CategoryUtil.CreateMaterialAssociation(exporterIFC, landingHnd, bodyData.MaterialIds);
-
-                     productWrapper.AddElement(landing, landingHnd, placementSetter.LevelInfo, ecData, false, exportType);
-                     ExporterCacheManager.HandleToElementCache.Register(landingHnd, landing.Id);
+                     foreach (ElementId hostedSupportId in landing.GetAllSupports())
+                        supportToHostId[hostedSupportId] = landingId;
                   }
+
+                  IFCExportBodyParams ecData = new IFCExportBodyParams();
+                  ecData.AllowVerticalOffsetOfBReps = false;
+                  ecData.SetLocalPlacement(ExporterUtil.CreateLocalPlacement(file, placementSetter.LocalPlacement, null));
+                  ecData.ReuseLocalPlacement = true;
+
+                  GeometryElement landingGeometryElement = landing.get_Geometry(geomOptions);
+
+                  BodyExporterOptions bodyExporterOptions = new BodyExporterOptions(true, ExportOptionsCache.ExportTessellationLevel.ExtraLow);
+                  BodyData bodyData = BodyExporter.ExportBody(exporterIFC, landing, categoryId, ElementId.InvalidElementId, landingGeometryElement,
+                      bodyExporterOptions, ecData);
+
+                  IFCAnyHandle bodyRep = bodyData.RepresentationHnd;
+                  if (IFCAnyHandleUtil.IsNullOrHasNoValue(bodyRep))
+                  {
+                     ecData.ClearOpenings();
+                     ecData.Dispose();
+                     continue;
+                  }
+
+                  // create Boundary rep.
+                  List<IFCAnyHandle> reps = [bodyRep];
+
+                  if (!ExporterCacheManager.ExportOptionsCache.ExportAsCoordinationView2)
+                  {
+                     CreateWalkingLineAndFootprint(exporterIFC, landing, bodyData, categoryId, trf, ref reps);
+                  }
+
+                  Transform boundingBoxTrf = (bodyData.OffsetTransform == null) ? Transform.Identity : bodyData.OffsetTransform.Inverse;
+                  IFCAnyHandle boundingBoxRep = BoundingBoxExporter.ExportBoundingBox(exporterIFC, landingGeometryElement, boundingBoxTrf);
+                  reps.AddIfNotNull(boundingBoxRep);
+
+                  string landingGUID = GUIDUtil.CreateGUID(landing);
+                  string origLandingName = IFCAnyHandleUtil.GetStringAttribute(stairContainerHnd, "Name") + " Landing " + index;
+                  string landingName = NamingUtil.GetNameOverride(landing, origLandingName);
+                  IFCAnyHandle landingLocalPlacement = ecData.GetLocalPlacement();
+
+                  IFCAnyHandle representation = IFCInstanceExporter.CreateProductDefinitionShape(exporterIFC.GetFile(), null, null, reps);
+
+                  string landingPredefinedType = "LANDING";
+
+                  // Create type.
+                  IFCExportInfoPair landingExportType = new IFCExportInfoPair(IFCEntityType.IfcSlab, landingPredefinedType);
+                  IFCAnyHandle landingTypeHnd = ExporterUtil.CreateGenericTypeFromElement(landing, landingExportType, exporterIFC.GetFile(), productWrapper);
+
+                  // Create instance.
+                  IFCAnyHandle landingHnd = IFCInstanceExporter.CreateSlab(file, landing, landingTypeHnd, landingGUID, ownerHistory,
+                      landingLocalPlacement, representation, landingPredefinedType);
+                  IFCAnyHandleUtil.OverrideNameAttribute(landingHnd, landingName);
+
+                  ExporterCacheManager.TypeRelationsCache.Add(landingTypeHnd, landingHnd);
+
+                  componentHandles.Add(landingHnd);
+                  componentExtrusionData.Add(ecData);
+
+                  if (nestStringers)
+                  {
+                     hostComponentIndices[landingId] = componentHandles.Count - 1;
+                     if (fallbackHostIndex < 0)
+                        fallbackHostIndex = componentHandles.Count - 1;
+                  }
+
+                  CategoryUtil.CreateMaterialAssociation(exporterIFC, landing, landingHnd, bodyData.MaterialIds);
+
+                  productWrapper.AddElement(landing, landingHnd, placementSetter.LevelInfo, ecData, false, landingExportType);
+                  ExporterCacheManager.HandleToElementCache.Register(landingHnd, landing.Id);
+
+                  if (ExporterCacheManager.ExportIFCBaseQuantities())
+                     PropertyUtil.CreateSlabBaseQuantities(exporterIFC, landingHnd, landing, ecData, null);
                }
 
                // Get List of supports to export their geometry.  Supports are not exposed to API, so export as generic Element.
@@ -1116,49 +1170,77 @@ namespace Revit.IFC.Export.Exporter
                   index++;
                   Element support = doc.GetElement(supportId);
 
-                  using (IFCExtrusionCreationData ecData = new IFCExtrusionCreationData())
+                  IFCExportBodyParams ecData = new IFCExportBodyParams();
+                  ecData.SetLocalPlacement(ExporterUtil.CreateLocalPlacement(file, placementSetter.LocalPlacement, null));
+                  ecData.ReuseLocalPlacement = true;
+                  ecData.IFCCADLayerOverride = ifcCADLayer;
+
+                  GeometryElement supportGeometryElement = support.get_Geometry(geomOptions);
+                  BodyData bodyData;
+                  BodyExporterOptions bodyExporterOptions = new BodyExporterOptions(true, ExportOptionsCache.ExportTessellationLevel.ExtraLow);
+                  IFCAnyHandle representation = RepresentationUtil.CreateAppropriateProductDefinitionShape(exporterIFC,
+                      support, categoryId, supportGeometryElement, bodyExporterOptions, null, ecData, out bodyData, instanceGeometry: true);
+
+                  if (IFCAnyHandleUtil.IsNullOrHasNoValue(representation))
                   {
-                     ecData.SetLocalPlacement(ExporterUtil.CreateLocalPlacement(file, placementSetter.LocalPlacement, null));
-                     ecData.ReuseLocalPlacement = true;
-
-                     GeometryElement supportGeometryElement = support.get_Geometry(geomOptions);
-                     BodyData bodyData;
-                     BodyExporterOptions bodyExporterOptions = new BodyExporterOptions(true, ExportOptionsCache.ExportTessellationLevel.ExtraLow);
-                     IFCAnyHandle representation = RepresentationUtil.CreateAppropriateProductDefinitionShape(exporterIFC,
-                         support, categoryId, supportGeometryElement, bodyExporterOptions, null, ecData, out bodyData);
-
-                     if (IFCAnyHandleUtil.IsNullOrHasNoValue(representation))
-                     {
-                        ecData.ClearOpenings();
-                        continue;
-                     }
-
-                     string supportGUID = GUIDUtil.CreateGUID(support);
-                     string origSupportName = IFCAnyHandleUtil.GetStringAttribute(stairContainerHnd, "Name") + " Stringer " + index;
-                     string supportName = NamingUtil.GetNameOverride(support, origSupportName);
-                     IFCAnyHandle supportLocalPlacement = ecData.GetLocalPlacement();
-
-                     IFCAnyHandle type = GetMemberTypeHandle(exporterIFC, support);
-
-                     IFCAnyHandle supportHnd = IFCInstanceExporter.CreateMember(exporterIFC, support, supportGUID, ownerHistory,
-                         supportLocalPlacement, representation, "STRINGER");
-                     IFCAnyHandleUtil.OverrideNameAttribute(supportHnd, supportName);
-                     componentHandles.Add(supportHnd);
-                     componentExtrusionData.Add(ecData);
-
-                     CategoryUtil.CreateMaterialAssociation(exporterIFC, supportHnd, bodyData.MaterialIds);
-
-                     productWrapper.AddElement(support, supportHnd, placementSetter.LevelInfo, ecData, false, exportType);
-
-                     ExporterCacheManager.TypeRelationsCache.Add(type, supportHnd);
+                     ecData.ClearOpenings();
+                     ecData.Dispose();
+                     continue;
                   }
+
+                  string supportGUID = GUIDUtil.CreateGUID(support);
+                  string origSupportName = IFCAnyHandleUtil.GetStringAttribute(stairContainerHnd, "Name") + " Stringer " + index;
+                  string supportName = NamingUtil.GetNameOverride(support, origSupportName);
+                  IFCAnyHandle supportLocalPlacement = ecData.GetLocalPlacement();
+
+                  string stringerPredefType = "STRINGER";
+                  IFCExportInfoPair stringerExportInfo = new IFCExportInfoPair(IFCEntityType.IfcMember, stringerPredefType);
+                  IFCAnyHandle type = GetMemberTypeHandle(exporterIFC, support, productWrapper, stringerExportInfo);
+
+                  IFCAnyHandle supportHnd = IFCInstanceExporter.CreateMember(file, support, type, supportGUID, ownerHistory,
+                      supportLocalPlacement, representation, stringerPredefType);
+                  IFCAnyHandleUtil.OverrideNameAttribute(supportHnd, supportName);
+                  componentHandles.Add(supportHnd);
+                  componentExtrusionData.Add(ecData);
+
+                  // Nest this stringer under the run/landing that hosts it rather than under the
+                  // stair.  Fall back to the first flight/landing if the host can't be resolved.
+                  if (nestStringers)
+                  {
+                     int hostIndex = -1;
+                     if (supportToHostId.TryGetValue(supportId, out ElementId hostElementId) &&
+                         hostComponentIndices.TryGetValue(hostElementId, out int resolvedHostIndex))
+                        hostIndex = resolvedHostIndex;
+                     else
+                        hostIndex = fallbackHostIndex;
+
+                     if (hostIndex >= 0)
+                        componentParentIndices[componentHandles.Count - 1] = hostIndex;
+                  }
+
+                  CategoryUtil.CreateMaterialAssociation(exporterIFC, support, supportHnd, bodyData.MaterialIds);
+
+                  productWrapper.AddElement(support, supportHnd, placementSetter.LevelInfo, ecData, false, stringerExportInfo);
+
+                  ExporterCacheManager.HandleToElementCache.Register(supportHnd, support.Id);
+                  ExporterCacheManager.TypeRelationsCache.Add(type, supportHnd);
                }
 
                StairRampContainerInfo stairRampInfo = new StairRampContainerInfo(stairContainerHnd, componentHandles, stairLocalPlacement);
+
+               // Record the stringer -> host nesting for the base storey, translating the positional
+               // parent map into the actual component handles.
+               if (componentParentIndices.Count > 0)
+               {
+                  Dictionary<IFCAnyHandle, IFCAnyHandle> nesting = stairRampInfo.ComponentNesting[0];
+                  foreach (KeyValuePair<int, int> childToParent in componentParentIndices)
+                     nesting[componentHandles[childToParent.Key]] = componentHandles[childToParent.Value];
+               }
+
                ExporterCacheManager.StairRampContainerInfoCache.AddStairRampContainerInfo(stair.Id, stairRampInfo);
 
                ExportMultistoryStair(exporterIFC, stair, flightOffsets, stairContainerHnd, componentHandles, componentExtrusionData,
-                   placementSetter, productWrapper);
+                   placementSetter, productWrapper, componentParentIndices);
             }
             tr.Commit();
          }
@@ -1180,11 +1262,7 @@ namespace Revit.IFC.Export.Exporter
 
          using (IFCTransaction tr = new IFCTransaction(file))
          {
-            // Check for containment override
-            IFCAnyHandle overrideContainerHnd = null;
-            ElementId overrideContainerId = ParameterUtil.OverrideContainmentParameter(exporterIFC, legacyStair, out overrideContainerHnd);
-
-            using (PlacementSetter placementSetter = PlacementSetter.Create(exporterIFC, legacyStair, null, null, overrideContainerId, overrideContainerHnd))
+            using (PlacementSetter placementSetter = PlacementSetter.Create(exporterIFC, legacyStair, null))
             {
                IFCLegacyStairOrRamp legacyStairOrRamp = null;
                try
@@ -1201,24 +1279,20 @@ namespace Revit.IFC.Export.Exporter
 
                bool isRamp = legacyStairOrRamp.IsRamp;
 
-               using (IFCExtrusionCreationData ifcECData = new IFCExtrusionCreationData())
+               using (IFCExportBodyParams ifcECData = new IFCExportBodyParams())
                {
-                  ifcECData.SetLocalPlacement(placementSetter.LocalPlacement);
-
                   double defaultHeight = GetDefaultHeightForLegacyStair(legacyStair.Document);
-                  double stairHeight = GetStairsHeightForLegacyStair(exporterIFC, legacyStair, defaultHeight);
-                  int numFlights = GetNumFlightsForLegacyStair(exporterIFC, legacyStair, defaultHeight);
+                  double stairHeight = GetStairsHeightForLegacyStair(legacyStair, defaultHeight);
+                  int numFlights = GetNumFlightsForLegacyStair(legacyStair, defaultHeight);
 
                   List<IFCLevelInfo> localLevelInfoForFlights = new List<IFCLevelInfo>();
                   List<IFCAnyHandle> localPlacementForFlights = new List<IFCAnyHandle>();
-                  List<List<IFCAnyHandle>> components = new List<List<IFCAnyHandle>>();
-
-                  components.Add(new List<IFCAnyHandle>());
+                  List<List<IFCAnyHandle>> components = [ new List<IFCAnyHandle>() ];
 
                   if (numFlights > 1)
                   {
-                     XYZ zDir = new XYZ(0.0, 0.0, 1.0);
-                     XYZ xDir = new XYZ(1.0, 0.0, 0.0);
+                     XYZ zDir = XYZ.BasisZ;
+                     XYZ xDir = XYZ.BasisX;
                      for (int ii = 1; ii < numFlights; ii++)
                      {
                         components.Add(new List<IFCAnyHandle>());
@@ -1255,19 +1329,27 @@ namespace Revit.IFC.Export.Exporter
 
                      IList<GeometryObject> geometriesOfARun = geometriesOfRuns[ii];
                      BodyData bodyData = BodyExporter.ExportBody(exporterIFC, legacyStair, categoryId, ElementId.InvalidElementId, geometriesOfARun,
-                         bodyExporterOptions, null);
+                         bodyExporterOptions, ifcECData);
 
                      IFCAnyHandle bodyRep = bodyData.RepresentationHnd;
                      if (IFCAnyHandleUtil.IsNullOrHasNoValue(bodyRep))
+                     {
+                        if (ii < walkingLineCount)
+                           ExporterCacheManager.HandleToDeleteCache.Add(walkingLineReps[ii]);
+
+                        if (ii < boundaryRepCount)
+                           ExporterCacheManager.HandleToDeleteCache.Add(boundaryReps[ii]);
+
                         continue;
+                     }
 
                      HashSet<IFCAnyHandle> flightHnds = new HashSet<IFCAnyHandle>();
                      List<IFCAnyHandle> representations = new List<IFCAnyHandle>();
-                     if ((ii < walkingLineCount) && !IFCAnyHandleUtil.IsNullOrHasNoValue(walkingLineReps[ii]))
-                        representations.Add(walkingLineReps[ii]);
+                     if (ii < walkingLineCount)
+                        representations.AddIfNotNull(walkingLineReps[ii]);
 
-                     if ((ii < boundaryRepCount) && !IFCAnyHandleUtil.IsNullOrHasNoValue(boundaryReps[ii]))
-                        representations.Add(boundaryReps[ii]);
+                     if (ii < boundaryRepCount)
+                        representations.AddIfNotNull(boundaryReps[ii]);
 
                      representations.Add(bodyRep);
 
@@ -1280,57 +1362,74 @@ namespace Revit.IFC.Export.Exporter
 
                      IFCAnyHandle flightHnd;
                      string stairName = NamingUtil.GetNameOverride(legacyStair, NamingUtil.GetIFCNamePlusIndex(legacyStair, ii + 1));
+                     string ifcType = "NOTDEFINED";
+                     IFCExportInfoPair exportTypePair = ExporterUtil.GetProductExportType(legacyStair, out ifcType);
+                     if (string.IsNullOrEmpty(ifcEnumType))
+                        ifcEnumType = ifcType;
 
+                     string uniqueFlightIndex = "Flight:0" + "Run:" + ii.ToString();
+                     string flightGUID = GUIDUtil.GenerateIFCGuidFrom(
+                        GUIDUtil.CreateGUIDString(legacyStair, uniqueFlightIndex));
                      if (isRamp)
                      {
-                        flightHnd = IFCInstanceExporter.CreateRampFlight(exporterIFC, legacyStair, GUIDUtil.CreateGUID(), ExporterCacheManager.OwnerHistoryHandle,
-                            flightLocalPlacement, flightRep, "NOTDEFINED");
+                        flightHnd = IFCInstanceExporter.CreateRampFlight(file, legacyStair, null, flightGUID, ExporterCacheManager.OwnerHistoryHandle,
+                            flightLocalPlacement, flightRep, ifcType);
                         flightHnds.Add(flightHnd);
-                        productWrapper.AddElement(null, flightHnd, placementSetter.LevelInfo, null, false);
+                        IFCExportInfoPair exportInfo = new IFCExportInfoPair(IFCEntityType.IfcRampFlight, ifcType);
+                        productWrapper.AddElement(null, flightHnd, placementSetter.LevelInfo, ifcECData, false, exportInfo);
                      }
                      else
                      {
-                        flightHnd = IFCInstanceExporter.CreateStairFlight(exporterIFC, legacyStair, GUIDUtil.CreateGUID(), ExporterCacheManager.OwnerHistoryHandle,
+                        flightHnd = IFCInstanceExporter.CreateStairFlight(file, legacyStair, null, flightGUID, ExporterCacheManager.OwnerHistoryHandle,
                             flightLocalPlacement, flightRep, numRisers[ii], numTreads[ii],
-                            riserHeight, treadsLength[ii], "NOTDEFINED");
+                            riserHeight, treadsLength[ii], ifcType);
                         flightHnds.Add(flightHnd);
-                        productWrapper.AddElement(null, flightHnd, placementSetter.LevelInfo, null, false);
+                        IFCExportInfoPair exportInfo = new IFCExportInfoPair(IFCEntityType.IfcStairFlight, ifcType);
+                        productWrapper.AddElement(null, flightHnd, placementSetter.LevelInfo, null, false, exportInfo);
                      }
                      IFCAnyHandleUtil.OverrideNameAttribute(flightHnd, stairName);
-                     CategoryUtil.CreateMaterialAssociation(exporterIFC, flightHnd, bodyData.MaterialIds);
+                     CategoryUtil.CreateMaterialAssociation(exporterIFC, legacyStair, flightHnd, bodyData.MaterialIds);
 
                      components[0].Add(flightHnd);
                      for (int compIdx = 1; compIdx < numFlights; compIdx++)
                      {
+                        IFCExportInfoPair exportInfo = new IFCExportInfoPair();
+                        uniqueFlightIndex = "Flight:" + compIdx.ToString() + "Run:" + ii.ToString();
+                        string flightCompGUID = GUIDUtil.GenerateIFCGuidFrom(
+                           GUIDUtil.CreateGUIDString(legacyStair, uniqueFlightIndex)); 
                         if (isRamp)
                         {
                            IFCAnyHandle newLocalPlacement = ExporterUtil.CreateLocalPlacement(file, localPlacementForFlights[compIdx - 1], null);
                            IFCAnyHandle newProdRep = ExporterUtil.CopyProductDefinitionShape(exporterIFC, legacyStair, categoryId, IFCAnyHandleUtil.GetRepresentation(flightHnd));
-                           flightHnd = IFCInstanceExporter.CreateRampFlight(exporterIFC, legacyStair, GUIDUtil.CreateGUID(), ExporterCacheManager.OwnerHistoryHandle,
-                               newLocalPlacement, newProdRep, "NOTDEFINED");
+                           flightHnd = IFCInstanceExporter.CreateRampFlight(file, legacyStair, null, flightCompGUID, ExporterCacheManager.OwnerHistoryHandle,
+                               newLocalPlacement, newProdRep, ifcType);
                            components[compIdx].Add(flightHnd);
+                           exportInfo.SetByTypeAndPredefinedType(IFCEntityType.IfcRampFlight, ifcType);
                         }
                         else
                         {
                            IFCAnyHandle newLocalPlacement = ExporterUtil.CreateLocalPlacement(file, localPlacementForFlights[compIdx - 1], null);
                            IFCAnyHandle newProdRep = ExporterUtil.CopyProductDefinitionShape(exporterIFC, legacyStair, categoryId, IFCAnyHandleUtil.GetRepresentation(flightHnd));
 
-                           flightHnd = IFCInstanceExporter.CreateStairFlight(exporterIFC, legacyStair, GUIDUtil.CreateGUID(), ExporterCacheManager.OwnerHistoryHandle,
-                               newLocalPlacement, newProdRep, numRisers[ii], numTreads[ii], riserHeight, treadsLength[ii], "NOTDEFINED");
+                           flightHnd = IFCInstanceExporter.CreateStairFlight(file, legacyStair, null, flightCompGUID, ExporterCacheManager.OwnerHistoryHandle,
+                               newLocalPlacement, newProdRep, numRisers[ii], numTreads[ii], riserHeight, treadsLength[ii], ifcType);
                            components[compIdx].Add(flightHnd);
+                           exportInfo.SetByTypeAndPredefinedType(IFCEntityType.IfcStairFlight, ifcType);
                         }
                         IFCAnyHandleUtil.OverrideNameAttribute(flightHnd, stairName);
 
-                        productWrapper.AddElement(null, flightHnd, placementSetter.LevelInfo, null, false);
-                        CategoryUtil.CreateMaterialAssociation(exporterIFC, flightHnd, bodyData.MaterialIds);
+                        productWrapper.AddElement(null, flightHnd, placementSetter.LevelInfo, null, false, exportInfo);
+                        CategoryUtil.CreateMaterialAssociation(exporterIFC, legacyStair, flightHnd, bodyData.MaterialIds);
                         flightHnds.Add(flightHnd);
                      }
                   }
 
+                  ifcECData.SetLocalPlacement(placementSetter.LocalPlacement);
+
                   IList<IList<GeometryObject>> geometriesOfLandings = legacyStairOrRamp.GetLandingGeometries();
                   for (int ii = 0; ii < geometriesOfLandings.Count; ii++)
                   {
-                     using (IFCExtrusionCreationData ecData = new IFCExtrusionCreationData())
+                     using (IFCExportBodyParams ecData = new IFCExportBodyParams())
                      {
                         BodyExporterOptions bodyExporterOptions = new BodyExporterOptions(true, ExportOptionsCache.ExportTessellationLevel.ExtraLow);
                         bodyExporterOptions.TessellationLevel = BodyExporterOptions.BodyTessellationLevel.Coarse;
@@ -1342,15 +1441,21 @@ namespace Revit.IFC.Export.Exporter
                         if (IFCAnyHandleUtil.IsNullOrHasNoValue(bodyRep))
                         {
                            ecData.ClearOpenings();
+                           if ((ii + runCount) < walkingLineCount)
+                              ExporterCacheManager.HandleToDeleteCache.Add(walkingLineReps[ii + runCount]);
+
+                           if ((ii + runCount) < boundaryRepCount)
+                              ExporterCacheManager.HandleToDeleteCache.Add(boundaryReps[ii + runCount]);
+
                            continue;
                         }
 
                         List<IFCAnyHandle> representations = new List<IFCAnyHandle>();
-                        if (((ii + runCount) < walkingLineCount) && !IFCAnyHandleUtil.IsNullOrHasNoValue(walkingLineReps[ii + runCount]))
-                           representations.Add(walkingLineReps[ii + runCount]);
+                        if ((ii + runCount) < walkingLineCount)
+                           representations.AddIfNotNull(walkingLineReps[ii + runCount]);
 
-                        if (((ii + runCount) < boundaryRepCount) && !IFCAnyHandleUtil.IsNullOrHasNoValue(boundaryReps[ii + runCount]))
-                           representations.Add(boundaryReps[ii + runCount]);
+                        if ((ii + runCount) < boundaryRepCount)
+                           representations.AddIfNotNull(boundaryReps[ii + runCount]);
 
                         representations.Add(bodyRep);
 
@@ -1361,25 +1466,35 @@ namespace Revit.IFC.Export.Exporter
                         IFCAnyHandle shapeHnd = IFCInstanceExporter.CreateProductDefinitionShape(file, null, null, representations);
                         IFCAnyHandle landingLocalPlacement = ExporterUtil.CreateLocalPlacement(file, placementSetter.LocalPlacement, null);
                         string stairName = NamingUtil.GetIFCNamePlusIndex(legacyStair, ii + 1);
+                        string uniqueLandingIndex = "Flight:0" + "Landing:" + ii.ToString();
+                        string landingGUID = GUIDUtil.GenerateIFCGuidFrom(
+                           GUIDUtil.CreateGUIDString(legacyStair, uniqueLandingIndex));
 
-                        IFCAnyHandle slabHnd = IFCInstanceExporter.CreateSlab(exporterIFC, legacyStair, GUIDUtil.CreateGUID(), ExporterCacheManager.OwnerHistoryHandle,
-                            landingLocalPlacement, shapeHnd, "LANDING");
+                        string ifcType = "LANDING";
+                        IFCAnyHandle slabHnd = IFCInstanceExporter.CreateSlab(file, legacyStair, null, landingGUID, ExporterCacheManager.OwnerHistoryHandle,
+                            landingLocalPlacement, shapeHnd, ifcType);
                         IFCAnyHandleUtil.OverrideNameAttribute(slabHnd, stairName);
-                        productWrapper.AddElement(null, slabHnd, placementSetter.LevelInfo, ecData, false);
-                        CategoryUtil.CreateMaterialAssociation(exporterIFC, slabHnd, bodyData.MaterialIds);
+                        IFCExportInfoPair exportInfo = new IFCExportInfoPair(IFCEntityType.IfcSlab, ifcType);
+                        productWrapper.AddElement(null, slabHnd, placementSetter.LevelInfo, ecData, false, exportInfo);
+                        CategoryUtil.CreateMaterialAssociation(exporterIFC, legacyStair, slabHnd, bodyData.MaterialIds);
 
                         components[0].Add(slabHnd);
                         for (int compIdx = 1; compIdx < numFlights; compIdx++)
                         {
+                           uniqueLandingIndex = "Flight:" + compIdx.ToString() + "Landing:" + ii.ToString();
+                           landingGUID = GUIDUtil.GenerateIFCGuidFrom(
+                              GUIDUtil.CreateGUIDString(legacyStair, uniqueLandingIndex));
+
                            IFCAnyHandle newLocalPlacement = ExporterUtil.CreateLocalPlacement(file, localPlacementForFlights[compIdx - 1], null);
                            IFCAnyHandle newProdRep = ExporterUtil.CopyProductDefinitionShape(exporterIFC, legacyStair, categoryId, IFCAnyHandleUtil.GetRepresentation(slabHnd));
 
-                           IFCAnyHandle newSlabHnd = IFCInstanceExporter.CreateSlab(exporterIFC, legacyStair, GUIDUtil.CreateGUID(), ExporterCacheManager.OwnerHistoryHandle,
-                               newLocalPlacement, newProdRep, "LANDING");
+                           IFCAnyHandle newSlabHnd = IFCInstanceExporter.CreateSlab(file, legacyStair, null, landingGUID, ExporterCacheManager.OwnerHistoryHandle,
+                               newLocalPlacement, newProdRep, ifcType);
                            IFCAnyHandleUtil.OverrideNameAttribute(newSlabHnd, stairName);
-                           CategoryUtil.CreateMaterialAssociation(exporterIFC, slabHnd, bodyData.MaterialIds);
+                           CategoryUtil.CreateMaterialAssociation(exporterIFC, legacyStair, newSlabHnd, bodyData.MaterialIds);
                            components[compIdx].Add(newSlabHnd);
-                           productWrapper.AddElement(null, newSlabHnd, placementSetter.LevelInfo, ecData, false);
+                           IFCExportInfoPair compExportInfo = new IFCExportInfoPair(IFCEntityType.IfcSlab, ifcType);
+                           productWrapper.AddElement(null, newSlabHnd, placementSetter.LevelInfo, ecData, false, compExportInfo);
                         }
                      }
                   }
@@ -1387,7 +1502,7 @@ namespace Revit.IFC.Export.Exporter
                   IList<GeometryObject> geometriesOfStringer = legacyStairOrRamp.GetStringerGeometries();
                   for (int ii = 0; ii < geometriesOfStringer.Count; ii++)
                   {
-                     using (IFCExtrusionCreationData ecData = new IFCExtrusionCreationData())
+                     using (IFCExportBodyParams ecData = new IFCExportBodyParams())
                      {
                         BodyExporterOptions bodyExporterOptions = new BodyExporterOptions(true, ExportOptionsCache.ExportTessellationLevel.ExtraLow);
                         bodyExporterOptions.TessellationLevel = BodyExporterOptions.BodyTessellationLevel.Coarse;
@@ -1412,50 +1527,71 @@ namespace Revit.IFC.Export.Exporter
                         IFCAnyHandle stringerRepHnd = IFCInstanceExporter.CreateProductDefinitionShape(file, null, null, representations);
                         IFCAnyHandle stringerLocalPlacement = ExporterUtil.CreateLocalPlacement(file, placementSetter.LocalPlacement, null);
                         string stairName = NamingUtil.GetIFCNamePlusIndex(legacyStair, ii + 1);
-
-                        IFCAnyHandle memberHnd = IFCInstanceExporter.CreateMember(exporterIFC, legacyStair, GUIDUtil.CreateGUID(), ExporterCacheManager.OwnerHistoryHandle,
-                            stringerLocalPlacement, stringerRepHnd, "STRINGER");
+                        string uniqueStringerIndex = "Flight:0" + "Stringer:" + ii.ToString();
+                        string stringerGuid = GUIDUtil.GenerateIFCGuidFrom(
+                           GUIDUtil.CreateGUIDString(legacyStair, uniqueStringerIndex));
+                        string ifcType = "STRINGER";
+                        IFCAnyHandle memberHnd = IFCInstanceExporter.CreateMember(file, 
+                           legacyStair, null, stringerGuid, ExporterCacheManager.OwnerHistoryHandle,
+                           stringerLocalPlacement, stringerRepHnd, ifcType);
                         IFCAnyHandleUtil.OverrideNameAttribute(memberHnd, stairName);
-
-                        productWrapper.AddElement(null, memberHnd, placementSetter.LevelInfo, ecData, false);
+                        IFCExportInfoPair exportInfo = new IFCExportInfoPair(IFCEntityType.IfcMember, ifcType);
+                        productWrapper.AddElement(null, memberHnd, placementSetter.LevelInfo, ecData, false, exportInfo);
                         PropertyUtil.CreateBeamColumnMemberBaseQuantities(exporterIFC, memberHnd, null, ecData);
-                        CategoryUtil.CreateMaterialAssociation(exporterIFC, memberHnd, bodyData.MaterialIds);
+                        CategoryUtil.CreateMaterialAssociation(exporterIFC, legacyStair, memberHnd, bodyData.MaterialIds);
 
                         components[0].Add(memberHnd);
                         for (int compIdx = 1; compIdx < numFlights; compIdx++)
                         {
+                           uniqueStringerIndex = "Flight:" + compIdx.ToString() + "Stringer:" + ii.ToString();
+                           stringerGuid = GUIDUtil.GenerateIFCGuidFrom(
+                              GUIDUtil.CreateGUIDString(legacyStair, uniqueStringerIndex));
+
                            IFCAnyHandle newLocalPlacement = ExporterUtil.CreateLocalPlacement(file, localPlacementForFlights[compIdx - 1], null);
                            IFCAnyHandle newProdRep = ExporterUtil.CopyProductDefinitionShape(exporterIFC, legacyStair, categoryId, IFCAnyHandleUtil.GetRepresentation(memberHnd));
 
-                           IFCAnyHandle newMemberHnd = IFCInstanceExporter.CreateMember(exporterIFC, legacyStair, GUIDUtil.CreateGUID(), ExporterCacheManager.OwnerHistoryHandle,
-                               newLocalPlacement, newProdRep, "STRINGER");
+                           IFCAnyHandle newMemberHnd = IFCInstanceExporter.CreateMember(file, legacyStair, null,
+                              stringerGuid, ExporterCacheManager.OwnerHistoryHandle, newLocalPlacement, newProdRep,ifcType);
                            IFCAnyHandleUtil.OverrideNameAttribute(newMemberHnd, stairName);
-                           CategoryUtil.CreateMaterialAssociation(exporterIFC, memberHnd, bodyData.MaterialIds);
+                           CategoryUtil.CreateMaterialAssociation(exporterIFC, legacyStair, newMemberHnd, bodyData.MaterialIds);
                            components[compIdx].Add(newMemberHnd);
-                           productWrapper.AddElement(null, newMemberHnd, placementSetter.LevelInfo, ecData, true);
+                           IFCExportInfoPair compExportInfo = new IFCExportInfoPair(IFCEntityType.IfcMember, ifcType);
+                           productWrapper.AddElement(null, newMemberHnd, placementSetter.LevelInfo, ecData, false, compExportInfo);
                         }
                      }
                   }
 
                   List<IFCAnyHandle> createdStairs = new List<IFCAnyHandle>();
+                  if (!string.IsNullOrEmpty(ifcEnumType))
+                  {
+                     IFCExportInfoPair exportTypePair = ExporterUtil.GetProductExportType(legacyStair, out ifcEnumType);
+                  }
                   if (isRamp)
                   {
                      string rampType = RampExporter.GetIFCRampType(ifcEnumType);
-                     string stairName = NamingUtil.GetIFCName(legacyStair);
-                     IFCAnyHandle containedRampHnd = IFCInstanceExporter.CreateRamp(exporterIFC, legacyStair, GUIDUtil.CreateGUID(legacyStair), ExporterCacheManager.OwnerHistoryHandle,
+                     IFCExportInfoPair exportInfo = new IFCExportInfoPair(IFCEntityType.IfcRamp, rampType);
+                     IFCAnyHandle typeHnd = ExporterUtil.CreateGenericTypeFromElement(legacyStair, exportInfo, file, productWrapper);
+                     
+                     string rampName = NamingUtil.GetIFCName(legacyStair);
+                     IFCAnyHandle containedRampHnd = IFCInstanceExporter.CreateRamp(file, legacyStair, null, GUIDUtil.CreateGUID(legacyStair), ExporterCacheManager.OwnerHistoryHandle,
                          placementSetter.LocalPlacement, null, rampType);
-                     IFCAnyHandleUtil.OverrideNameAttribute(containedRampHnd, stairName);
-                     productWrapper.AddElement(legacyStair, containedRampHnd, placementSetter.LevelInfo, ifcECData, true);
+                     IFCAnyHandleUtil.OverrideNameAttribute(containedRampHnd, rampName);
+                     ExporterCacheManager.TypeRelationsCache.Add(typeHnd, containedRampHnd);
+                     productWrapper.AddElement(legacyStair, containedRampHnd, placementSetter.LevelInfo, ifcECData, true, exportInfo);
                      createdStairs.Add(containedRampHnd);
                   }
                   else
                   {
                      string stairType = GetIFCStairType(ifcEnumType);
+                     IFCExportInfoPair exportInfo = new IFCExportInfoPair(IFCEntityType.IfcStair, stairType);
+                     IFCAnyHandle typeHnd = ExporterUtil.CreateGenericTypeFromElement(legacyStair, exportInfo, file, productWrapper);
+                     
                      string stairName = NamingUtil.GetIFCName(legacyStair);
-                     IFCAnyHandle containedStairHnd = IFCInstanceExporter.CreateStair(exporterIFC, legacyStair, GUIDUtil.CreateGUID(legacyStair), ExporterCacheManager.OwnerHistoryHandle,
+                     IFCAnyHandle containedStairHnd = IFCInstanceExporter.CreateStair(file, legacyStair, null, GUIDUtil.CreateGUID(legacyStair), ExporterCacheManager.OwnerHistoryHandle,
                          placementSetter.LocalPlacement, null, stairType);
                      IFCAnyHandleUtil.OverrideNameAttribute(containedStairHnd, stairName);
-                     productWrapper.AddElement(legacyStair, containedStairHnd, placementSetter.LevelInfo, ifcECData, true);
+                     ExporterCacheManager.TypeRelationsCache.Add(typeHnd, containedStairHnd);
+                     productWrapper.AddElement(legacyStair, containedStairHnd, placementSetter.LevelInfo, ifcECData, true, exportInfo);
                      createdStairs.Add(containedStairHnd);
                   }
 
@@ -1501,25 +1637,30 @@ namespace Revit.IFC.Export.Exporter
                            IFCAnyHandleUtil.SetAttribute(relPlacement2, "Location", locPt);
                         }
 
+                        string guid = GUIDUtil.GenerateIFCGuidFrom(
+                           GUIDUtil.CreateGUIDString(legacyStair, "Main Flight:" + ii.ToString()));
                         if (isRamp)
                         {
                            string rampType = RampExporter.GetIFCRampType(ifcEnumType);
                            string stairName = NamingUtil.GetIFCName(legacyStair);
-                           IFCAnyHandle containedRampHnd = IFCInstanceExporter.CreateRamp(exporterIFC, legacyStair, GUIDUtil.CreateGUID(legacyStair), ExporterCacheManager.OwnerHistoryHandle,
-                               localPlacement, null, rampType);
+                           IFCAnyHandle containedRampHnd = IFCInstanceExporter.CreateRamp(file, 
+                              legacyStair, null, guid, ExporterCacheManager.OwnerHistoryHandle,
+                              localPlacement, null, rampType);
                            IFCAnyHandleUtil.OverrideNameAttribute(containedRampHnd, stairName);
-
-                           productWrapper.AddElement(legacyStair, containedRampHnd, levelInfo, ifcECData, true);
-                           //createdStairs.Add(containedRampHnd) ???????????????????????
+                           IFCExportInfoPair exportInfo = new IFCExportInfoPair(IFCEntityType.IfcRamp, rampType);
+                           productWrapper.AddElement(legacyStair, containedRampHnd, levelInfo, ifcECData, true, exportInfo);
+                           createdStairs.Add(containedRampHnd);
                         }
                         else
                         {
                            string stairType = GetIFCStairType(ifcEnumType);
                            string stairName = NamingUtil.GetIFCName(legacyStair);
-                           IFCAnyHandle containedStairHnd = IFCInstanceExporter.CreateStair(exporterIFC, legacyStair, GUIDUtil.CreateGUID(legacyStair), ExporterCacheManager.OwnerHistoryHandle,
-                               localPlacement, null, stairType);
+                           IFCAnyHandle containedStairHnd = IFCInstanceExporter.CreateStair(file, 
+                              legacyStair, null,guid, ExporterCacheManager.OwnerHistoryHandle,
+                              localPlacement, null, stairType);
                            IFCAnyHandleUtil.OverrideNameAttribute(containedStairHnd, stairName);
-                           productWrapper.AddElement(legacyStair, containedStairHnd, levelInfo, ifcECData, true);
+                           IFCExportInfoPair exportInfo = new IFCExportInfoPair(IFCEntityType.IfcStair, stairType);
+                           productWrapper.AddElement(legacyStair, containedStairHnd, levelInfo, ifcECData, true, exportInfo);
                            createdStairs.Add(containedStairHnd);
                         }
                      }
@@ -1528,6 +1669,48 @@ namespace Revit.IFC.Export.Exporter
                   localPlacementForFlights.Insert(0, placementSetter.LocalPlacement);
 
                   StairRampContainerInfo stairRampInfo = new StairRampContainerInfo(createdStairs, components, localPlacementForFlights);
+
+                  // For IfcStair, stringers (IfcMember) cannot be a direct decomposition of the stair
+                  // from IFC4 onward (BLT003).  Unlike modern stairs, the legacy stair API does not
+                  // expose which flight hosts each stringer, so as a best effort nest every stringer
+                  // under a host component of the same storey.  Prefer the first stair flight; if the
+                  // storey has no flight (e.g. its run geometry failed to export) fall back to the
+                  // first landing slab, mirroring the host resolution used for modern stairs, so the
+                  // stringers are never left as a direct decomposition of the stair.
+                  if (!isRamp && !ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4)
+                  {
+                     for (int storeyIdx = 0; storeyIdx < components.Count; storeyIdx++)
+                     {
+                        IFCAnyHandle hostHnd = null;
+                        IFCAnyHandle firstLandingHnd = null;
+                        foreach (IFCAnyHandle comp in components[storeyIdx])
+                        {
+                           if (IFCAnyHandleUtil.IsSubTypeOf(comp, IFCEntityType.IfcStairFlight))
+                           {
+                              hostHnd = comp;
+                              break;
+                           }
+
+                           if (IFCAnyHandleUtil.IsNullOrHasNoValue(firstLandingHnd) &&
+                               IFCAnyHandleUtil.IsSubTypeOf(comp, IFCEntityType.IfcSlab))
+                              firstLandingHnd = comp;
+                        }
+
+                        if (IFCAnyHandleUtil.IsNullOrHasNoValue(hostHnd))
+                           hostHnd = firstLandingHnd;
+
+                        if (IFCAnyHandleUtil.IsNullOrHasNoValue(hostHnd))
+                           continue;
+
+                        Dictionary<IFCAnyHandle, IFCAnyHandle> nesting = stairRampInfo.ComponentNesting[storeyIdx];
+                        foreach (IFCAnyHandle comp in components[storeyIdx])
+                        {
+                           if (IFCAnyHandleUtil.IsSubTypeOf(comp, IFCEntityType.IfcMember))
+                              nesting[comp] = hostHnd;
+                        }
+                     }
+                  }
+
                   ExporterCacheManager.StairRampContainerInfoCache.AddStairRampContainerInfo(legacyStair.Id, stairRampInfo);
                }
             }
@@ -1546,11 +1729,11 @@ namespace Revit.IFC.Export.Exporter
       public static void Export(ExporterIFC exporterIFC, Element element, GeometryElement geometryElement, ProductWrapper productWrapper)
       {
          // Check the intended IFC entity or type name is in the exclude list specified in the UI
-         Common.Enums.IFCEntityType elementClassTypeEnum = Common.Enums.IFCEntityType.IfcStair;
-         if (ExporterCacheManager.ExportOptionsCache.IsElementInExcludeList(elementClassTypeEnum))
+         if (ExporterCacheManager.ExportOptionsCache.IsElementInExcludeList(IFCEntityType.IfcStair))
             return;
 
-         string ifcEnumType = ExporterUtil.GetIFCTypeFromExportTable(exporterIFC, element);
+         IFCExportInfoPair exportType = ExporterUtil.GetProductExportType(element, out _);
+         string ifcEnumType = exportType.GetPredefinedTypeOrDefault();
          IFCFile file = exporterIFC.GetFile();
 
          using (IFCTransaction tr = new IFCTransaction(file))
@@ -1558,10 +1741,10 @@ namespace Revit.IFC.Export.Exporter
             if (element is Stairs)
             {
                Stairs stair = element as Stairs;
-               List<double> flightOffsets = GetFlightsOffsetList(exporterIFC, stair);
+               List<double> flightOffsets = GetFlightsOffsetList(stair);
                if (flightOffsets.Count > 0)
                {
-                  ExportStairsAsContainer(exporterIFC, ifcEnumType, stair, geometryElement, flightOffsets, productWrapper);
+                  ExportStairsAsContainer(exporterIFC, exportType.PredefinedType, stair, geometryElement, flightOffsets, productWrapper);
                   if (IFCAnyHandleUtil.IsNullOrHasNoValue(productWrapper.GetAnElement()))
                      ExportStairAsSingleGeometry(exporterIFC, ifcEnumType, element, geometryElement, flightOffsets, productWrapper);
                }
@@ -1573,9 +1756,9 @@ namespace Revit.IFC.Export.Exporter
                if (IFCAnyHandleUtil.IsNullOrHasNoValue(productWrapper.GetAnElement()))
                {
                   double defaultHeight = GetDefaultHeightForLegacyStair(element.Document);
-                  int numFlights = GetNumFlightsForLegacyStair(exporterIFC, element, defaultHeight);
+                  int numFlights = GetNumFlightsForLegacyStair(element, defaultHeight);
                   List<double> flightOffsets = new List<double>();
-                  double heightNonScaled = GetStairsHeight(exporterIFC, element);
+                  double heightNonScaled = GetStairsHeight(element);
                   for (int ii = 0; ii < numFlights; ii++)
                   {
                      flightOffsets.Add(heightNonScaled * ii);
@@ -1598,12 +1781,12 @@ namespace Revit.IFC.Export.Exporter
       /// <returns>Boundary line representations.</returns>
       static IList<IFCAnyHandle> CreateBoundaryLineReps(ExporterIFC exporterIFC, IFCLegacyStairOrRamp legacyStair, Element legacyStairElem)
       {
-         IFCAnyHandle contextOfItemsBoundary = exporterIFC.Get3DContextHandle("FootPrint");
-
+         IFCAnyHandle contextOfItemsBoundary = ExporterCacheManager.Get3DContextHandle(IFCRepresentationIdentifier.FootPrint);
+         
          IList<IFCAnyHandle> boundaryLineReps = new List<IFCAnyHandle>();
 
          IFCFile file = exporterIFC.GetFile();
-         ElementId cateId = CategoryUtil.GetSafeCategoryId(legacyStairElem);
+         ElementId catId = CategoryUtil.GetSafeCategoryId(legacyStairElem);
 
          HashSet<IFCAnyHandle> curveSet = new HashSet<IFCAnyHandle>();
          IList<CurveLoop> boundaryLines = legacyStair.GetBoundaryLines();
@@ -1612,21 +1795,9 @@ namespace Revit.IFC.Export.Exporter
             Transform lcs = Transform.Identity;
             foreach (Curve curve in curveLoop)
             {
-               if (ExporterCacheManager.ExportOptionsCache.ExportAs4ReferenceView)
+               if (ExporterCacheManager.ExportOptionsCache.ExportAsReferenceView)
                {
-                  IFCAnyHandle curveHnd = GeometryUtil.CreatePolyCurveFromCurve(exporterIFC, curve);
-                  //IList<int> segmentIndex = null;
-                  //IList<IList<double>> pointList = GeometryUtil.PointListFromCurve(exporterIFC, curve, null, null, out segmentIndex);
-
-                  //// For now because of no support in creating IfcLineIndex and IfcArcIndex yet, it is set to null
-                  ////IList<IList<int>> segmentIndexList = new List<IList<int>>();
-                  ////segmentIndexList.Add(segmentIndex);
-                  //IList<IList<int>> segmentIndexList = null;
-
-                  //IFCAnyHandle pointListHnd = IFCInstanceExporter.CreateCartesianPointList3D(file, pointList);
-                  //IFCAnyHandle curveHnd = IFCInstanceExporter.CreateIndexedPolyCurve(file, pointListHnd, segmentIndexList, false);
-                  if (!IFCAnyHandleUtil.IsNullOrHasNoValue(curveHnd))
-                     curveSet.Add(curveHnd);
+                  curveSet.AddIfNotNull(GeometryUtil.CreatePolyCurveFromCurve(exporterIFC, curve));
                }
                else
                {
@@ -1634,19 +1805,19 @@ namespace Revit.IFC.Export.Exporter
                   ExporterIFCUtils.CollectGeometryInfo(exporterIFC, info, curve, XYZ.Zero, false);
                   IList<IFCAnyHandle> curves = info.GetCurves();
 
-                  if (curves.Count == 1 && !IFCAnyHandleUtil.IsNullOrHasNoValue(curves[0]))
+                  if (curves.Count == 1)
                   {
-                     curveSet.Add(curves[0]);
+                     curveSet.AddIfNotNull(curves[0]);
                   }
                }
             }
             IFCAnyHandle curveRepresentationItem = IFCInstanceExporter.CreateGeometricSet(file, curveSet);
-            HashSet<IFCAnyHandle> bodyItems = new HashSet<IFCAnyHandle>();
-            bodyItems.Add(curveRepresentationItem);
-            IFCAnyHandle boundaryLineRep = RepresentationUtil.CreateGeometricSetRep(exporterIFC, legacyStairElem, cateId, "FootPrint",
+            HashSet<IFCAnyHandle> bodyItems = new() { curveRepresentationItem };
+            IFCAnyHandle boundaryLineRep = RepresentationUtil.CreateGeometricSetRep(exporterIFC, legacyStairElem, catId, "FootPrint",
                contextOfItemsBoundary, bodyItems);
             boundaryLineReps.Add(boundaryLineRep);
          }
+
          return boundaryLineReps;
       }
 
@@ -1657,36 +1828,28 @@ namespace Revit.IFC.Export.Exporter
       /// <param name="legacyStair">The stair.</param>
       /// <param name="legacyStairElem">The stair element.</param>
       /// <returns>The walk line representation handles.  Some of them may be null.</returns>
-      static IList<IFCAnyHandle> CreateWalkLineReps(ExporterIFC exporterIFC, IFCLegacyStairOrRamp legacyStair, Element legacyStairElem)
+      static IList<IFCAnyHandle> CreateWalkLineReps(ExporterIFC exporterIFC, IFCLegacyStairOrRamp legacyStair, 
+         Element legacyStairElem)
       {
-         IList<IFCAnyHandle> walkLineReps = new List<IFCAnyHandle>();
-         IFCAnyHandle contextOfItemsWalkLine = exporterIFC.Get3DContextHandle("Axis");
+         List<IFCAnyHandle> walkLineReps = [];
 
-         ElementId cateId = CategoryUtil.GetSafeCategoryId(legacyStairElem);
-         Transform lcs = Transform.Identity;
-         XYZ projDir = XYZ.BasisZ;
+         ElementId catId = CategoryUtil.GetSafeCategoryId(legacyStairElem);
 
          IList<IList<Curve>> curvesArr = legacyStair.GetWalkLines();
          foreach (IList<Curve> curves in curvesArr)
          {
-            IFCAnyHandle curve = GeometryUtil.CreateIFCCurveFromCurves(exporterIFC, curves, lcs, projDir);
-            if (!IFCAnyHandleUtil.IsNullOrHasNoValue(curve))
-            {
-               HashSet<IFCAnyHandle> bodyItems = new HashSet<IFCAnyHandle>();
-               bodyItems.Add(curve);
-               walkLineReps.Add(RepresentationUtil.CreateShapeRepresentation(exporterIFC, legacyStairElem, cateId,
-                   contextOfItemsWalkLine, "Axis", "Curve2D", bodyItems));
-            }
-            else
-               walkLineReps.Add(null);
+            IFCAnyHandle walkingLineRep = RepresentationUtil.CreateAxisShapeRepresentation(exporterIFC, 
+               legacyStairElem, catId, curves);
+            walkLineReps.Add(walkingLineRep);
          }
          return walkLineReps;
       }
 
-      private static void CreateWalkingLineAndFootprint(ExporterIFC exporterIFC, Element element, BodyData bodyData, ElementId categoryId, Transform trf, ref IList<IFCAnyHandle> reps)
+      private static void CreateWalkingLineAndFootprint(ExporterIFC exporterIFC, Element element, BodyData bodyData, 
+         ElementId categoryId, Transform trf, ref List<IFCAnyHandle> reps)
       {
          // Only for StairsRun or StairsLanding
-         bool isStairRun = false;
+         bool isStairRun;
          if (element is StairsRun)
             isStairRun = true;
          else if (element is StairsLanding)
@@ -1695,55 +1858,45 @@ namespace Revit.IFC.Export.Exporter
             return;
 
          IFCFile file = exporterIFC.GetFile();
-         IFCAnyHandle contextOfItemsFootPrint = exporterIFC.Get3DContextHandle("FootPrint");
-         IFCAnyHandle contextOfItemsAxis = exporterIFC.Get3DContextHandle("Axis");
 
-         Transform trfFromBodyData = new Transform(bodyData.OffsetTransform);
-         trfFromBodyData.Origin = UnitUtil.UnscaleLength(bodyData.OffsetTransform.Origin);
-         Transform boundaryTrf = (bodyData.OffsetTransform == null) ? trf : trf.Multiply(trfFromBodyData);
+         Transform boundaryTrf;
+         if (bodyData.OffsetTransform == null)
+         {
+            boundaryTrf = trf;
+         }
+         else
+         {
+            Transform trfFromBodyData = new(bodyData.OffsetTransform);
+            trfFromBodyData.Origin = bodyData.OffsetTransform.Origin;
+            boundaryTrf = trf.Multiply(trfFromBodyData);
+         }
          XYZ runBoundaryProjDir = boundaryTrf.BasisZ;
 
-         CurveLoop boundary;
-         if (isStairRun)
-            boundary = (element as StairsRun).GetFootprintBoundary();
-         else
-            boundary = (element as StairsLanding).GetFootprintBoundary();
+         CurveLoop boundary = isStairRun ? (element as StairsRun).GetFootprintBoundary() : 
+            (element as StairsLanding).GetFootprintBoundary();
 
-         IFCAnyHandle boundaryHnd = GeometryUtil.CreateIFCCurveFromCurveLoop(exporterIFC, boundary,
-             boundaryTrf, runBoundaryProjDir);
-         if (!IFCAnyHandleUtil.IsNullOrHasNoValue(boundaryHnd))
-         {
-            HashSet<IFCAnyHandle> geomSelectSet = new HashSet<IFCAnyHandle>();
-            geomSelectSet.Add(boundaryHnd);
+         reps.AddIfNotNull(RepresentationUtil.CreateFootprintGeometricSetRep(exporterIFC, file, element, 
+            categoryId, boundary, boundaryTrf));
 
-            HashSet<IFCAnyHandle> boundaryItems = new HashSet<IFCAnyHandle>();
-            boundaryItems.Add(IFCInstanceExporter.CreateGeometricSet(file, geomSelectSet));
+         CurveLoop walkingLine = isStairRun? (element as StairsRun).GetStairsPath() : 
+            (element as StairsLanding).GetStairsPath();
 
-            IFCAnyHandle boundaryRep = RepresentationUtil.CreateGeometricSetRep(exporterIFC, element, categoryId, "FootPrint",
-                contextOfItemsFootPrint, boundaryItems);
-            reps.Add(boundaryRep);
-         }
+         reps.AddIfNotNull(RepresentationUtil.CreateAxisGeometricSetRep(exporterIFC, file, element,
+            categoryId, walkingLine, boundaryTrf));
+      }
 
-         CurveLoop walkingLine;
-         if (isStairRun)
-            walkingLine = (element as StairsRun).GetStairsPath();
-         else
-            walkingLine = (element as StairsLanding).GetStairsPath();
+      /// <summary>
+      /// Delete StairFlight data in case it is not needed anymore, to be collpased into a single IfcStair in case it is a single object
+      /// </summary>
+      /// <param name="flightHnd"></param>
+      public static void DeleteStairFlightData(IFCAnyHandle flightHnd)
+      {
+         // Clear references to the StairFlight in the Cache before deleting
+         ExporterCacheManager.HandleToElementCache.Delete(flightHnd);
 
-         IFCAnyHandle walkingLineHnd = GeometryUtil.CreateIFCCurveFromCurveLoop(exporterIFC, walkingLine,
-             boundaryTrf, runBoundaryProjDir);
-         if (!IFCAnyHandleUtil.IsNullOrHasNoValue(walkingLineHnd))
-         {
-            HashSet<IFCAnyHandle> geomSelectSet = new HashSet<IFCAnyHandle>();
-            geomSelectSet.Add(walkingLineHnd);
-
-            HashSet<IFCAnyHandle> walkingLineItems = new HashSet<IFCAnyHandle>();
-            walkingLineItems.Add(IFCInstanceExporter.CreateGeometricSet(file, geomSelectSet));
-
-            IFCAnyHandle walkingLineRep = RepresentationUtil.CreateGeometricSetRep(exporterIFC, element, categoryId, "Axis",
-                contextOfItemsAxis, walkingLineItems);
-            reps.Add(walkingLineRep);
-         }
+         // This cannot be deleted yet until all the necessary references in the cache can be removed. The actual delete will be done at the end of EndExport
+         //flightHnd.Delete();
+         ExporterCacheManager.HandleToDeleteCache.Add(flightHnd);
       }
    }
 }

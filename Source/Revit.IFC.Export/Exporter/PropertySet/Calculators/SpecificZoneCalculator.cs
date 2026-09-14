@@ -51,11 +51,11 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// Calculates specific zones for a space.
       /// </summary>
       /// <param name="exporterIFC">The ExporterIFC object.</param>
-      /// <param name="extrusionCreationData">The IFCExtrusionCreationData.</param>
+      /// <param name="extrusionCreationData">The IFCExportBodyParams.</param>
       /// <param name="element">The element to calculate the value.</param>
       /// <param name="elementType">The element type.</param>
       /// <returns>True if the operation succeed, false otherwise.</returns>
-      public override bool Calculate(ExporterIFC exporterIFC, IFCExtrusionCreationData extrusionCreationData, Element element, ElementType elementType)
+      public override bool Calculate(ExporterIFC exporterIFC, IFCAnyHandle handle, IFCExportBodyParams extrusionCreationData, Element element, ElementType elementType, EntryMap entryMap)
       {
          string basePropSpecZoneString = "Project Specific Zone";
          int val = 0;
@@ -67,9 +67,8 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
             else
                propSpecZoneString = basePropSpecZoneString + " " + val;
 
-            string value;
-            if ((ParameterUtil.GetStringValueFromElementOrSymbol(element, propSpecZoneString, out value) == null)
-                || string.IsNullOrEmpty(value))
+            (_, string value) = ParameterUtil.GetStringValueFromElementOrSymbol(element, null, false, propSpecZoneString);
+            if (string.IsNullOrEmpty(value))
                break;
 
             m_SpecificZones.Add(value);

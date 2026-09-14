@@ -17,16 +17,20 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 //
 
+using Autodesk.Revit.DB;
+using Autodesk.Revit.DB.IFC;
+using Autodesk.Revit.DB.Steel;
+using Autodesk.Revit.DB.Structure;
+using Autodesk.Revit.DB.Structure.StructuralSections;
+using Revit.IFC.Common.Enums;
+using Revit.IFC.Common.Utility;
+using Revit.IFC.Export.Exporter;
+using Revit.IFC.Export.Toolkit;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Autodesk.Revit.DB;
-using Autodesk.Revit.DB.IFC;
-using Revit.IFC.Export.Toolkit;
-using Revit.IFC.Common.Utility;
-using Revit.IFC.Export.Exporter;
-using Revit.IFC.Common.Enums;
-
+using System.Reflection;
+using System.Runtime.InteropServices;
 
 namespace Revit.IFC.Export.Utility
 {
@@ -36,19 +40,41 @@ namespace Revit.IFC.Export.Utility
    public class GeometryUtil
    {
       /// <summary>
+      /// An enum used by several geometric routines to determine the dimensionality
+      /// of created geometry.
+      /// </summary>
+
+      public enum Dimension
+      {
+         Dim2D,
+         Dim3D
+      };
+
+      /// <summary>
+      /// An enum used in CreateIFCCurveFromRevitCurve to determine how to create
+      /// the Revit curve in IFC entities.
+      /// </summary>
+      public enum TrimCurvePreference
+      {
+         BaseCurve,              // Do not trim the curve.
+         TrimmedCurve,           // Use a base curve and trim the curve
+         UsePolyLineOrTrim,      // Use a polyline for a bounded line, otherwise trim.
+         Use2DPolyLineOrTrim,    // Use a 2D polyline for a bounded line, otherwise trim a 2D curve.
+      }
+      /// <summary>
       /// The comparer for comparing XYZ.
       /// </summary>
       public struct XYZComparer : IComparer<XYZ>
       {
          /// <summary>
-         /// Check if 2 XYZ values are almost equal, such that for each component n of x and y, |x[n]-y[n]| < MathUtil.Eps().
+         /// Check if 2 XYZ values are almost equal, such that for each component n of x and y, |x[n]-y[n]| < MathUtil.Eps.
          /// </summary>
          /// <param name="x">The first XYZ value.</param>
          /// <param name="y">The second XYZ value.</param>
          /// <returns>-1 if x is less than y, 1 if x is greater than y, and 0 if x is almost equal to y.</returns>
          public int Compare(XYZ x, XYZ y)
          {
-            double eps = MathUtil.Eps();
+            double eps = MathUtil.Eps;
             if (x.X < y.X - eps)
                return -1;
             if (x.X > y.X + eps)
@@ -62,6 +88,290 @@ namespace Revit.IFC.Export.Utility
             if (x.Z > y.Z + eps)
                return 1;
             return 0;
+         }
+      }
+
+      /// <summary>
+      /// The EqualityComparer for comparing EdgeEndPoint.
+      /// </summary>
+      public class EdgeEndPointComparer : EqualityComparer<EdgeEndPoint>
+      {
+         /// <summary>
+         /// Check if two EdgeEndPoints are equal by checking that IDs of corresponding edges and indices of corresponding endpoints are equal.
+         /// </summary>
+         /// <param name="edgePnt1">The first EdgeEndPoint value.</param>
+         /// <param name="edgePnt2">The second EdgeEndPoint value.</param>
+         /// <returns>True if both EdgeEndPoint refer to the same Edge and the same endpoint of that Edge</returns>
+         public override bool Equals(EdgeEndPoint edgePnt1, EdgeEndPoint edgePnt2)
+         {
+            return edgePnt1.Edge.Id == edgePnt2.Edge.Id && edgePnt1.Index == edgePnt2.Index;
+         }
+
+         /// <summary>
+         /// Calculate hash code for EdgeEndPoint.
+         /// </summary>
+         /// <param name="edgePnt">The EdgeEndPoint for which the hash code will be calculated.</param>
+         /// <returns>Hash code of edgePnt as a combination of hash codes of its corresponding Edge ID and endpoint</returns>
+         public override int GetHashCode(EdgeEndPoint edgePnt)
+         {
+            return edgePnt.Edge.Id.GetHashCode() ^ edgePnt.Index.GetHashCode();
+         }
+      }
+
+      /// <summary>
+      /// Stores vertices list of geometry primitives.
+      /// Derived classes concretize the actual primitive type the vertices list belong to.
+      /// </summary>
+      private abstract class PrimVertices
+      {
+         public IFCAnyHandleUtil.IfcPointList PointList { get; protected set; } = new IFCAnyHandleUtil.IfcPointList();
+         public PointBase this[int key]
+         {
+            get => PointList[key];
+            set => PointList[key] = value;
+         }
+         public PointBase Last() { return PointList.Last(); }
+      }
+      private class PolyLineVertices : PrimVertices
+      {
+         public PolyLineVertices(UV beg, UV end)
+         {
+            PointList.AddPoints(beg, end);
+         }
+         public PolyLineVertices(XYZ beg, XYZ end)
+         {
+            PointList.AddPoints(beg, end);
+         }
+         public PolyLineVertices(List<XYZ> points)
+         {
+            if (points.Count < 2)
+               throw new ArgumentException("Number of points must be 2 or greater");
+
+            PointList.AddPoints(points);
+         }
+         public PolyLineVertices(List<UV> points)
+         {
+            if (points.Count < 2)
+               throw new ArgumentException("Number of points must be 2 or greater");
+
+            PointList.AddPoints(points);
+         }
+      }
+      private class ArcVertices : PrimVertices
+      {
+         public ArcVertices(UV start, UV mid, UV end)
+         {
+            PointList.AddPoints(start, mid, end);
+         }
+         public ArcVertices(XYZ start, XYZ mid, XYZ end)
+         {
+            PointList.AddPoints(start, mid, end);
+         }
+      }
+      /// <summary>
+      /// Stores indices list used to build geometry primitives.
+      /// Derived classes concretize the primitive type defined by indices.
+      /// </summary>
+      public abstract class SegmentIndices
+      {
+         public abstract int GetStart();
+         public abstract int GetEnd();
+         public abstract void SetEnd(int endIndex);
+         public abstract void CalcIndices(int startIdx);
+         public bool IsCalculated { get; protected set; } = false;
+         public virtual bool TryMerge(SegmentIndices segmentIndices)
+         {
+            return false;
+         }
+      }
+      public class PolyLineIndices : SegmentIndices
+      {
+         public PolyLineIndices(int lineCount)
+         { LineCount = lineCount; }
+         public List<int> Indices { get; protected set; }
+         public int m_lineCount = 0;
+         public int LineCount
+         {
+            get { return m_lineCount; }
+            //Indices are not valid because line count has been changed. So delete indince list.
+            set { m_lineCount = value; IsCalculated = false; }
+         }
+         public override int GetStart()
+         { return Indices[0]; }
+         public override int GetEnd()
+         { return Indices.Last(); }
+         public override void SetEnd(int endIndex)
+         { Indices[Indices.Count - 1] = endIndex; }
+         public override void CalcIndices(int startIdx)
+         {
+            Indices = new List<int> { startIdx };
+            Indices.AddRange(Enumerable.Range(startIdx, LineCount).Select(x => x + 1));
+            IsCalculated = true;
+         }
+         //Function assumes that input and this segmants are consecutive. End index of this segmant must be equal to start index of input segment.
+         public override bool TryMerge(SegmentIndices segmentIndices)
+         {
+            PolyLineIndices inputPolyLineIndices = segmentIndices as PolyLineIndices;
+            if (segmentIndices == this || inputPolyLineIndices == null)
+               return false;
+
+            //Indices array after merge must not contain duplicated indices.
+            //So remove either End index of this segment or Start index of input segment.
+            Indices.RemoveAt(Indices.Count - 1);
+            Indices.AddRange(inputPolyLineIndices.Indices);
+            return true;
+         }
+      }
+      public class ArcIndices : SegmentIndices
+      {
+         public int Start { get; protected set; }
+         public int Mid { get; protected set; }
+         public int End { get; protected set; }
+         public override int GetStart()
+         { return Start; }
+         public override int GetEnd()
+         { return End; }
+         public override void SetEnd(int endIndex)
+         { End = endIndex; }
+         public override void CalcIndices(int startIdx)
+         {
+            Start = startIdx;
+            Mid = startIdx + 1;
+            End = startIdx + 2;
+            IsCalculated = true;
+         }
+      }
+      /// <summary>
+      /// Accumulates vertices and calculates indices.
+      /// This class assumes that primitive vertices should be connected in the order they appear in the array.
+      /// Based on this assumption this class constructs indices array.
+      /// </summary>
+      private class PolyCurve
+      {
+         private List<PrimVertices> PrimVerticesList { get; set; } = new List<PrimVertices>();
+         public bool PolyLinesOnly { get; protected set; } = true;
+         //PointList and SegmentsIndices are built by BuildVerticesAndIndices()
+         public IFCAnyHandleUtil.IfcPointList PointList { get; protected set; } = new IFCAnyHandleUtil.IfcPointList();
+         public List<SegmentIndices> SegmentsIndices { get; protected set; } = null;
+
+         public PolyCurve(PrimVertices primVertices)
+         {
+            if (!AddPrimVertices(primVertices))
+               throw new ArgumentException("Error when constructing PolyCurve");
+         }
+
+         public void BuildVerticesAndIndices()
+         {
+            foreach (PrimVertices primVertices in PrimVerticesList)
+            {
+               const int MinIndexValue = 1;
+
+               //1. Build point list.
+               //Current poly curve's end point and start point of primitive curve are always equal.
+               //So remove one of them from point list.
+               if (PointList.Count != 0)
+                  PointList.Points.RemoveAt(PointList.Count - 1);
+               PointList.AddPointList(primVertices.PointList);
+
+               //2. Build indices. Do not do it if poly curve contains poly line segments only.
+               PointBase endPoint = PointList.Last();
+               bool startEndPointsAreEqual = CoordsAreWithinVertexTol(PointList[0], endPoint);
+               SegmentIndices segmentIndices = null;
+               if (PolyLinesOnly)
+               {
+                  // Kind of workaround to ensure that the first and last points, if they are supposed to be 
+                  // the same, are exactly the same.
+                  if (startEndPointsAreEqual)
+                     PointList[0] = endPoint;
+               }
+               else
+               {
+                  if (SegmentsIndices == null)
+                     SegmentsIndices = new List<SegmentIndices>();
+
+                  if (primVertices as PolyLineVertices != null)
+                  {
+                     segmentIndices = new PolyLineIndices(primVertices.PointList.Count - 1);
+                  }
+                  else if (primVertices as ArcVertices != null)
+                  {
+                     segmentIndices = new ArcIndices();
+                  }
+                  else
+                     throw new ArgumentException("Unknown PrimVertices object");
+
+                  segmentIndices.CalcIndices(SegmentsIndices.Count == 0 ? MinIndexValue : SegmentsIndices.Last().GetEnd());
+
+                  // if start and end points of poly curve are equal we should remove duplicated point from vertices array.
+                  // Indices array should be updated accordingly ( to access end point programmer should use start index).
+                  if (startEndPointsAreEqual)
+                  {
+                     PointList.Points.RemoveAt(PointList.Count - 1);
+                     segmentIndices.SetEnd(MinIndexValue);
+                  }
+
+                  //TryMerge is implemented for polylines because we can easily merge two consecutive polyline segments.
+                  if (SegmentsIndices.Count == 0 || !SegmentsIndices.Last().TryMerge(segmentIndices))
+                     SegmentsIndices.Add(segmentIndices);
+               }
+            }
+         }
+
+         public bool AddPrimVertices(PrimVertices primVertices)
+         {
+            if (primVertices == null)
+               return false;
+
+            //PrimVertices class guarantees that number of points is always >= 2.
+            var curvePoints = primVertices.PointList.Points;
+            var pointsCount = curvePoints.Count;
+
+            PointBase currentStartPoint = PrimVerticesList.Count != 0 ? PrimVerticesList[0][0] : null;
+            PointBase currentEndPoint = PrimVerticesList.Count != 0 ? PrimVerticesList.Last().Last() : null;
+            bool addAtEnd = true;
+            bool reverseCurve = false;
+
+            if (currentStartPoint != null && currentEndPoint != null)
+            {
+               // Need to check all possible connections between the current curve and the
+               // existing curve by checking start and endpoints.
+
+               // For options to attach the next curve to the existing curve below.
+               if (!CoordsAreWithinVertexTol(curvePoints[0], currentEndPoint))
+               {
+                  if (CoordsAreWithinVertexTol(curvePoints[pointsCount - 1], currentEndPoint))
+                  {
+                     reverseCurve = true;
+                  }
+                  else
+                  {
+                     addAtEnd = false;
+                     if (CoordsAreWithinVertexTol(curvePoints[0], currentStartPoint))
+                     {
+                        reverseCurve = true;
+                     }
+                     else
+                     {
+                        //Neither start nor end point of Input curve coincide with any of this polycurve's edge points.
+                        //In this case we do not know how to connect them, so return false.
+                        return false;
+                     }
+                  }
+               }
+            }
+
+            if (reverseCurve)
+               curvePoints.Reverse();
+
+            if (primVertices as PolyLineVertices == null)
+               PolyLinesOnly = false;
+
+            if (addAtEnd)
+               PrimVerticesList.Add(primVertices);
+            else
+               PrimVerticesList.Insert(0, primVertices);
+
+            return true;
          }
       }
 
@@ -217,11 +527,11 @@ namespace Revit.IFC.Export.Utility
          else
             return false;
 
-         List<double> realListX = ConvertVectorToLocalCoordinates(lcs, xVector);
-         List<double> realListY = ConvertVectorToLocalCoordinates(lcs, yVector);
+         UV realListX = ConvertVectorToLocalCoordinates(lcs, xVector);
+         UV realListY = ConvertVectorToLocalCoordinates(lcs, yVector);
 
-         double dot = realListY[0] * (-realListX[1]) + realListY[1] * (realListX[0]);
-         if (dot < -MathUtil.Eps())
+         double dot = realListY.U * (-realListX.V) + realListY.V * (realListX.U);
+         if (dot < -MathUtil.Eps)
             return true;
 
          return false;
@@ -242,53 +552,19 @@ namespace Revit.IFC.Export.Utility
       }
 
       /// <summary>
-      /// Converts vector from global coordinates to local coordinates.
+      /// Converts vector from global coordinates (X,Y,Z) to local coordinates (U,V).
       /// </summary>
-      /// <param name="lcs">The local coordinate system.</param>
+      /// <param name="lcs">The local coordinate system.  If not supplied, assumed to be identity.</param>
       /// <param name="vector">The vector in global coordinates.</param>
       /// <returns>The converted values.</returns>
-      public static List<double> ConvertVectorToLocalCoordinates(Transform lcs, XYZ vector)
+      public static UV ConvertVectorToLocalCoordinates(Transform lcs, XYZ vector)
       {
-         List<double> measures1 = ConvertPointToLocalCoordinatesCommon(lcs, XYZ.Zero);
-         List<double> measures2 = ConvertPointToLocalCoordinatesCommon(lcs, vector);
-
-         List<double> measures = new List<double>();
-         for (int ii = 0; ii < measures1.Count; ++ii)
-         {
-            measures.Add(measures2[ii] - measures1[ii]);
-         }
-         return measures;
-      }
-
-      /// <summary>
-      /// Converts point from global coordinates to local coordinates.
-      /// </summary>
-      /// <param name="lcs">The local coordinate system.</param>
-      /// <param name="point">The point in global coordinates.</param>
-      /// <returns>The converted values.</returns>
-      private static List<double> ConvertPointToLocalCoordinatesCommon(Transform lcs, XYZ point)
-      {
-         List<double> measures = new List<double>();
-
          if (lcs != null)
          {
-            XYZ xVector = lcs.BasisX;
-            XYZ yVector = lcs.BasisY;
-            XYZ origin = lcs.Origin;
-
-            XYZ diff = point - origin;
-
-            measures.Add(diff.DotProduct(xVector));
-            measures.Add(diff.DotProduct(yVector));
-         }
-         else
-         {
-            measures.Add(point.X);
-            measures.Add(point.Y);
-            measures.Add(point.Z);
+            return new UV(vector.DotProduct(lcs.BasisX), vector.DotProduct(lcs.BasisY));
          }
 
-         return measures;
+         return new UV(vector.X, vector.Y);
       }
 
       /// <summary>
@@ -349,12 +625,8 @@ namespace Revit.IFC.Export.Utility
       /// <summary>
       /// Reverses curve loop.
       /// </summary>
-      /// <param name="curveloop">
-      /// The curveloop.
-      /// </param>
-      /// <returns>
-      /// The reversed curve loop.
-      /// </returns>
+      /// <param name="curveloop">The curveloop.</param>
+      /// <returns>The reversed curve loop.</returns>
       public static CurveLoop ReverseOrientation(CurveLoop curveloop)
       {
          CurveLoop copyOfCurveLoop = CurveLoop.CreateViaCopy(curveloop);
@@ -365,18 +637,10 @@ namespace Revit.IFC.Export.Utility
       /// <summary>
       /// Gets origin, X direction and curve bound from a curve.
       /// </summary>
-      /// <param name="curve">
-      /// The curve.
-      /// </param>
-      /// <param name="curveBounds">
-      /// The output curve bounds.
-      /// </param>
-      /// <param name="xDirection">
-      /// The output X direction.
-      /// </param>
-      /// <param name="origin">
-      /// The output origin.
-      /// </param>
+      /// <param name="curve">The curve.</param>
+      /// <param name="curveBounds">The output curve bounds.</param>
+      /// <param name="xDirection">The output X direction.</param>
+      /// <param name="origin">The output origin.</param>
       public static void GetAxisAndRangeFromCurve(Curve curve,
          out IFCRange curveBounds, out XYZ xDirection, out XYZ origin)
       {
@@ -386,6 +650,11 @@ namespace Revit.IFC.Export.Utility
          {
             Arc arc = curve as Arc;
             xDirection = arc.XDirection;
+         }
+         else if (curve is Ellipse)
+         {
+            Ellipse ellipse = curve as Ellipse;
+            xDirection = ellipse.XDirection;
          }
          else
          {
@@ -400,12 +669,9 @@ namespace Revit.IFC.Export.Utility
       public static Options GetIFCExportGeometryOptions()
       {
          Options options = new Options();
-         if (ExporterCacheManager.ExportOptionsCache.FilterViewForExport != null)
-         {
-            options.DetailLevel = ExporterCacheManager.ExportOptionsCache.FilterViewForExport.DetailLevel;
-         }
-         else
-            options.DetailLevel = ViewDetailLevel.Fine;
+         options.DetailLevel =
+            ExporterCacheManager.ExportOptionsCache.FilterViewForExport?.DetailLevel ??
+            ViewDetailLevel.Fine;
          return options;
       }
 
@@ -420,13 +686,12 @@ namespace Revit.IFC.Export.Utility
       /// <returns>The collection of solids and meshes.</returns>
       public static SolidMeshGeometryInfo GetSolidMeshGeometry(GeometryElement geomElemToUse, Transform trf)
       {
-         if (geomElemToUse == null)
-         {
-            throw new ArgumentNullException("geomElemToUse");
-         }
          SolidMeshGeometryInfo geometryInfo = new SolidMeshGeometryInfo();
-         // call to recursive helper method to obtain all solid and mesh geometry within geomElemToUse
-         CollectSolidMeshGeometry(geomElemToUse, trf, geometryInfo);
+         if (geomElemToUse != null)
+         {
+            // call to recursive helper method to obtain all solid and mesh geometry within geomElemToUse
+            geometryInfo.CollectSolidMeshGeometry(geomElemToUse, ExporterCacheManager.AllocatedGeometryObjectCache);
+         }
          return geometryInfo;
       }
 
@@ -478,7 +743,7 @@ namespace Revit.IFC.Export.Utility
       public static SolidMeshGeometryInfo GetSplitSolidMeshGeometry(GeometryElement geomElemToUse, Transform trf)
       {
          SolidMeshGeometryInfo geometryInfo = GetSolidMeshGeometry(geomElemToUse, Transform.Identity);
-         geometryInfo.SplitSolidsList();
+         SplitSolids(geometryInfo);
          return geometryInfo;
       }
 
@@ -510,93 +775,89 @@ namespace Revit.IFC.Export.Utility
       /// <returns>The collection of solids and meshes.</returns>
       public static SolidMeshGeometryInfo GetSplitClippedSolidMeshGeometry(GeometryElement geomElemToUse, IFCRange range)
       {
+         if (range == null)
+            return GetSplitSolidMeshGeometry(geomElemToUse);
+
          SolidMeshGeometryInfo geometryInfo = GetClippedSolidMeshGeometry(geomElemToUse, range);
-         geometryInfo.SplitSolidsList();
+         SplitSolids(geometryInfo);
          return geometryInfo;
       }
 
       /// <summary>
-      /// Transforms a geometry by a given transform.
-      /// </summary>
-      /// <remarks>The geometry element created by "GetTransformed" is a copy which will have its own allocated
-      /// membership - this needs to be stored and disposed of (see AllocatedGeometryObjectCache
-      /// for details)</remarks>
-      /// <param name="geomElem">The geometry.</param>
-      /// <param name="trf">The transform.</param>
-      /// <returns>The transformed geometry.</returns>
-      public static GeometryElement GetTransformedGeometry(GeometryElement geomElem, Transform trf)
-      {
-         if (geomElem == null)
-            return null;
-
-         GeometryElement currGeomElem = geomElem.GetTransformed(trf);
-         ExporterCacheManager.AllocatedGeometryObjectCache.AddGeometryObject(currGeomElem);
-         return currGeomElem;
-      }
-
-      /// <summary>
-      /// Collects all solids and meshes within all nested levels of a given GeometryElement.
+      /// The maximum number of faces in a Solid before we decide not to split it.
+      /// Larger than this can cause sigificant performance issues.
       /// </summary>
       /// <remarks>
-      /// This is a private helper method for the GetSolidMeshGeometry type collection methods.
+      /// Internal tests show perfectly good behavior at 1044 faces, so setting
+      /// this value based on that.  This may be tweaked over time, or other
+      /// methods used instead.
       /// </remarks>
-      /// <param name="geomElem">The GeometryElement we are collecting solids and meshes from.</param>
-      /// <param name="trf">The initial Transform applied on the GeometryElement.</param>
-      /// <param name="solidMeshCapsule">The SolidMeshGeometryInfo object that contains the lists of collected solids and meshes.</param>
-      private static void CollectSolidMeshGeometry(GeometryElement geomElem, Transform trf, SolidMeshGeometryInfo solidMeshCapsule)
+      public static int MaxFaceCountForSplitVolumes = 2048;
+
+      /// <summary>
+      /// Splits a Solid into distinct volumes.
+      /// </summary>
+      /// <param name="solid">The initial solid.</param>
+      /// <returns>The list of volumes, all with valid volumes, or the original solid (regardless of volume).</returns>
+      /// <remarks>This calls the internal SolidUtils.SplitVolumes routine, but does additional cleanup work to properly dispose of stale data.</remarks>
+      public static IList<Solid> SplitVolumes(Solid solid)
       {
-         if (geomElem == null)
-            return;
-
-         GeometryElement currGeomElem = geomElem;
-         Transform localTrf = trf;
-         if (localTrf == null)
-            localTrf = Transform.Identity;
-         else if (!localTrf.IsIdentity)
-            currGeomElem = GetTransformedGeometry(geomElem, localTrf);
-
-         // iterate through the GeometryObjects contained in the GeometryElement
-         foreach (GeometryObject geomObj in currGeomElem)
+         IList<Solid> splitVolumes = null;
+         try
          {
-            Solid solid = geomObj as Solid;
-            if (solid != null && solid.Faces.Size > 0)
+            if (solid.Faces.Size < MaxFaceCountForSplitVolumes)
             {
-               try
-               {
-                  if (solid.Volume <= MathUtil.Eps() && solid.Faces.Size == 0)
-                     continue;
-               }
-               catch
-               {
-                  // solid.Volume can throw an exception.  In this case, we don't really care;
-                  // there is geometry there, and we will export it best we can.
-               }
+               splitVolumes = SolidUtils.SplitVolumes(solid) ?? [ solid ];
 
-               solidMeshCapsule.AddSolid(solid);
-            }
-            else
-            {
-               Mesh mesh = geomObj as Mesh;
-               if (mesh != null)
+               // Fall back to exporting just the original Solid if we got any Solids without volume
+               if (splitVolumes.Any(x => x.Volume < MathUtil.Eps))
                {
-                  solidMeshCapsule.AddMesh(mesh);
+                  splitVolumes = null;
                }
                else
                {
-                  // if the current geomObj is castable as a GeometryInstance, then we perform the same collection on its symbol geometry
-                  GeometryInstance inst = geomObj as GeometryInstance;
-                  if (inst != null)
+                  foreach (Solid currSolid in splitVolumes)
                   {
-                     GeometryElement instanceSymbol = inst.GetSymbolGeometry();
-                     if (instanceSymbol != null && instanceSymbol.Count() != 0)
-                     {
-                        Transform instanceTransform = localTrf.Multiply(inst.Transform);
-                        CollectSolidMeshGeometry(instanceSymbol, instanceTransform, solidMeshCapsule);
-                     }
+                     // The geometry element created by SplitVolumes is a copy which will have its own allocated
+                     // membership - this needs to be stored and disposed of (see AllocatedGeometryObjectCache
+                     // for details)
+                     ExporterCacheManager.AllocatedGeometryObjectCache.AddGeometryObject(currSolid);
                   }
                }
             }
          }
+         catch
+         {
+            splitVolumes = null;
+         }
+
+         splitVolumes ??= [];
+         if (splitVolumes.Count == 0)
+         {
+            splitVolumes.Add(solid);
+         }
+
+         return splitVolumes;
+      }
+
+      /// <summary>
+      /// Splits any solid volumes which consist of multiple closed bodies into individual solids (and updates the storage accordingly).
+      /// </summary>
+      public static void SplitSolids(SolidMeshGeometryInfo info)
+      {
+         IList<SolidInfo> splitSolidsList = new List<SolidInfo>();
+
+         foreach (SolidInfo solidInfo in info.SolidInfoList)
+         {
+            Element element = solidInfo.OwnerElement;
+            IList<Solid> splitSolids = GeometryUtil.SplitVolumes(solidInfo.Solid);
+            foreach (Solid splitSolid in splitSolids)
+            {
+               splitSolidsList.Add(new SolidInfo(splitSolid, element));
+            }
+         }
+
+         info.SolidInfoList = splitSolidsList;
       }
 
       /// <summary>
@@ -607,7 +868,7 @@ namespace Revit.IFC.Export.Utility
       public static bool BoundaryHasSameSense(IFCAnyHandle boundary)
       {
          bool? hasSameSense = IFCAnyHandleUtil.GetBooleanAttribute(boundary, "Orientation");
-         return hasSameSense != null ? (bool)hasSameSense : false;
+         return hasSameSense.HasValue && hasSameSense.Value;
       }
 
       /// <summary>
@@ -684,6 +945,8 @@ namespace Revit.IFC.Export.Utility
       /// <param name="newPlacementRelTo">The IfcObjectPlacement handle to use as the placement relative to.</param>
       public static void SetPlacementRelTo(IFCAnyHandle localPlacement, IFCAnyHandle newPlacementRelTo)
       {
+         if (IFCAnyHandleUtil.IsNullOrHasNoValue(localPlacement))
+            return;
          IFCAnyHandleUtil.SetAttribute(localPlacement, "PlacementRelTo", newPlacementRelTo);
       }
 
@@ -702,16 +965,16 @@ namespace Revit.IFC.Export.Utility
       /// </summary>
       /// <param name="geomElement">The original geometry.</param>
       /// <param name="numFlights">The number of stair flights, or 0 if unknown.  If there is exactly 1 flight, return the original geoemtry.</param>
-      /// <returns>The geometry element.</returns>
+      /// <returns>The geometry element with its symbol id.</returns>
       /// <remarks>This routine may not work properly for railings created before 2006.  If you get
       /// poor representations from such railings, please upgrade the railings if possible.</remarks>
-      public static GeometryElement GetOneLevelGeometryElement(GeometryElement geomElement, int numFlights)
+      public static (GeometryElement element, ElementId symbolId) GetOneLevelGeometryElement(GeometryElement geomElement, int numFlights)
       {
          if (geomElement == null)
-            return null;
+            return (null, null);
 
          if (numFlights == 1)
-            return geomElement;
+            return (geomElement, null);
 
          foreach (GeometryObject geomObject in geomElement)
          {
@@ -720,7 +983,7 @@ namespace Revit.IFC.Export.Utility
             GeometryInstance geomInstance = geomObject as GeometryInstance;
             if (!MathUtil.IsAlmostZero(geomInstance.Transform.Origin.Z))
                continue;
-            Element baseSymbol = geomInstance.Symbol;
+            Element baseSymbol = geomInstance.GetDocument()?.GetElement(geomInstance.GetSymbolGeometryId().SymbolId);
             if (!(baseSymbol is ElementType))
                continue;
             GeometryElement symbolGeomElement = geomInstance.GetSymbolGeometry();
@@ -730,16 +993,95 @@ namespace Revit.IFC.Export.Utility
             // representations.  If this is a concern, please upgrade the railings to any format since 2006.
             if (symbolGeomElement != null)
             {
+               ElementId oneLevelGeomSymbolId = geomInstance.GetSymbolGeometryId().SymbolId;
                Transform trf = geomInstance.Transform;
                if (trf != null && !trf.IsIdentity)
-                  return symbolGeomElement.GetTransformed(trf);
+                  return (symbolGeomElement.GetTransformed(trf), oneLevelGeomSymbolId);
                else
-                  return symbolGeomElement;
+                  return (symbolGeomElement, oneLevelGeomSymbolId);
             }
          }
-
-         return geomElement;
+         return (geomElement, null);
       }
+
+      /// <summary>
+      /// Get additional geometry of one level of a potentially multi-story stair, ramp, or railing that wasn't added in GetOneLevelGeometryElement
+      /// </summary>
+      /// <param name="allLevelsGeometry">The original geometry.</param>
+      /// <param name="mainGeometrySymbolId">The symbol id of the level main geometry.</param>
+      /// <returns>The geometry elements list.</returns>
+      public static List<GeometryElement> GetAdditionalOneLevelGeometry(GeometryElement allLevelsGeometry, ElementId mainGeometrySymbolId)
+      {
+         List<GeometryElement> additionalGeometry = new List<GeometryElement>();
+
+         if (allLevelsGeometry == null || mainGeometrySymbolId == null)
+            return additionalGeometry;
+
+         // Collect geometry and its Origin.Z grouped by symbols
+         Dictionary<ElementId, IList<Tuple<GeometryInstance, double>>> symbols = new Dictionary<ElementId, IList<Tuple<GeometryInstance, double>>>();
+         foreach (GeometryObject geomObject in allLevelsGeometry)
+         {
+            GeometryInstance instance = geomObject as GeometryInstance;
+            if (instance == null || instance.GetSymbolGeometryId() == null)
+               continue;
+
+            ElementId id = instance.GetSymbolGeometryId().SymbolId;
+
+            IList<Tuple<GeometryInstance, double>> geomInstances;
+            if (!symbols.TryGetValue(id, out geomInstances))
+            {
+               geomInstances = new List<Tuple<GeometryInstance, double>>();
+               symbols[id] = geomInstances;
+            }
+            geomInstances.Add(new Tuple<GeometryInstance, double>(instance, instance.Transform.Origin.Z));
+         }
+
+         // Define the number of flights as number of main instances
+         int numFlights = 0;
+         IList<Tuple<GeometryInstance, double>> instances;
+         if (symbols.TryGetValue(mainGeometrySymbolId, out instances))
+            numFlights = instances.Count;
+
+         if (numFlights < 1)
+            return additionalGeometry;
+
+         // Collect proper amount of instances of each geometry
+         List<GeometryInstance> instncesToAdd = new List<GeometryInstance>();
+         foreach (KeyValuePair<ElementId, IList<Tuple<GeometryInstance, double>>> symbol in symbols)
+         {
+            if (symbol.Key == mainGeometrySymbolId)
+               continue;
+
+            int numCurrInstances = symbol.Value.Count;
+            if (numCurrInstances == 0 || numCurrInstances % numFlights != 0)
+               continue;
+
+            // We take 'numCurrInstances/numFlights' instances with the lowest Origin.Z
+            // The oter instances are repeateble geometry of another level(flight)
+            int numInstancesToAdd = symbol.Value.Count / numFlights;
+            List<Tuple<GeometryInstance, double>> currInstances = symbol.Value.ToList();
+            instncesToAdd.AddRange(symbol.Value.OrderBy(x => x.Item2).Select(x => x.Item1).Take(numInstancesToAdd).ToList());
+         }
+
+         // Collect output geometry
+         foreach (GeometryInstance instance in instncesToAdd)
+         {
+            Element baseSymbol = instance.GetDocument()?.GetElement(instance.GetSymbolGeometryId().SymbolId);
+            if (!(baseSymbol is ElementType))
+               continue;
+            GeometryElement symbolGeomElement = instance.GetSymbolGeometry();
+            if (symbolGeomElement != null)
+            {
+               Transform trf = instance.Transform;
+               if (trf != null && !trf.IsIdentity)
+                  additionalGeometry.Add(symbolGeomElement.GetTransformed(trf));
+               else
+                  additionalGeometry.Add(symbolGeomElement);
+            }
+         }
+         return additionalGeometry;
+      }
+
 
       /// <summary>
       /// Projects a point to the closest point on the XY plane of a local coordinate system.
@@ -883,8 +1225,6 @@ namespace Revit.IFC.Export.Utility
             int numBoundaries = faceEdges.Size;
             if (numBoundaries == 0)
                continue;
-            if (numBoundaries > 1)
-               throw new Exception("Can't handle faces with interior boundaries.");
 
             // In some cases the native function throws an exception, skip this face if it occurs
             ICollection<ElementId> generatingElementIds;
@@ -894,7 +1234,7 @@ namespace Revit.IFC.Export.Utility
             }
             catch
             {
-               continue;
+               throw new ArgumentException(string.Format("Can't get generating element Ids for face: {0}", currFace.Key.Id));
             }
 
             if (generatingElementIds == null)
@@ -1015,7 +1355,7 @@ namespace Revit.IFC.Export.Utility
          return range;
       }
 
-      private static bool IsInRange(IFCRange range, CurveLoop loop, Transform lcs, XYZ extrusionDirection, out bool clipCompletely)
+      private static bool IsInRange(IFCRange range, Transform lcs, XYZ extrusionDirection, out bool clipCompletely)
       {
          clipCompletely = false;
          if (range != null)
@@ -1025,7 +1365,7 @@ namespace Revit.IFC.Export.Utility
             if (!MathUtil.IsAlmostEqual(Math.Abs(lcs.BasisZ.DotProduct(extrusionDirection)), 1.0))
                return true;
 
-            double eps = MathUtil.Eps();
+            double eps = MathUtil.Eps;
 
             double parameterValue = lcs.Origin.DotProduct(extrusionDirection);
 
@@ -1073,7 +1413,7 @@ namespace Revit.IFC.Export.Utility
          }
 
          bool clipCompletely;
-         if (!IsInRange(range, outerBoundary, boundaryLCS, extrusionDirection, out clipCompletely))
+         if (!IsInRange(range, boundaryLCS, extrusionDirection, out clipCompletely))
             return clipCompletely ? null : bodyItemHnd;
 
          if (MathUtil.IsAlmostZero(clippingSlant))
@@ -1141,7 +1481,7 @@ namespace Revit.IFC.Export.Utility
       {
          bool clipStart = false;
          bool clipEnd = false;
-         double eps = MathUtil.Eps();
+         double eps = MathUtil.Eps;
 
          foreach (CurveLoop curveLoop in curveLoopBoundaries)
          {
@@ -1202,13 +1542,6 @@ namespace Revit.IFC.Export.Utility
 
          int numFaces = clippingFaces.Count;
 
-         // Special case: one face is a clip plane.
-         if (numFaces == 1)
-         {
-            return ProcessClippingFace(exporterIFC, outerCurveLoops[0], outerCurveLoopLCS[0], extrusionBaseLCS,
-                extrusionDirection, range, false, origBodyRepHnd);
-         }
-
          KeyValuePair<bool, bool> clipsExtrusionEnds = CollectionClipsExtrusionEnds(outerCurveLoops, extrusionDirection, range);
          if (clipsExtrusionEnds.Key == true || clipsExtrusionEnds.Value == true)
          {
@@ -1265,6 +1598,13 @@ namespace Revit.IFC.Export.Utility
                      facesToSkip.Add(ii);
                   }
                }
+            }
+
+            // Special case: one face is a clip plane.
+            if (numFaces == 1)
+            {
+               return ProcessClippingFace(exporterIFC, outerCurveLoops[0], outerCurveLoopLCS[0], extrusionBaseLCS,
+                   extrusionDirection, range, false, origBodyRepHnd);
             }
 
             IFCAnyHandle newBodyRepHnd = origBodyRepHnd;
@@ -1801,7 +2141,7 @@ namespace Revit.IFC.Export.Utility
 
          double scaledPlanesDistance = UnitUtil.ScaleLength(planesDistance);
          Transform plane1LCS = GeometryUtil.CreateTransformFromPlane(plane1);
-         IFCAnyHandle extrusionHandle = ExtrusionExporter.CreateExtrudedSolidFromCurveLoop(exporterIFC, null, origCurveLoops, plane1LCS, extDir, scaledPlanesDistance, false);
+         IFCAnyHandle extrusionHandle = ExtrusionExporter.CreateExtrudedSolidFromCurveLoop(exporterIFC, null, origCurveLoops, plane1LCS, extDir, scaledPlanesDistance, false, out _);
 
          IFCAnyHandle booleanBodyItemHnd = IFCInstanceExporter.CreateBooleanResult(exporterIFC.GetFile(), IFCBooleanOperator.Difference,
              origBodyRepHnd, extrusionHandle);
@@ -1814,8 +2154,10 @@ namespace Revit.IFC.Export.Utility
       /// </summary>
       /// <param name="exporterIFC">The exporter.</param>
       /// <param name="points">The line points.</param>
+      /// <param name="dim">The dimensionality of the points, either 2 or 3.</param>
       /// <returns>The handle.</returns>
-      static IFCAnyHandle CreatePolyLineSegmentCommon(ExporterIFC exporterIFC, IList<XYZ> points)
+      static private IFCAnyHandle CreatePolyLineSegmentCommon(ExporterIFC exporterIFC, IList<XYZ> points, 
+         Dimension dim)
       {
          if (exporterIFC == null || points == null)
             throw new ArgumentNullException();
@@ -1836,7 +2178,9 @@ namespace Revit.IFC.Export.Utility
          for (int ii = 0; ii < count; ii++)
          {
             XYZ point = ExporterIFCUtils.TransformAndScalePoint(exporterIFC, points[ii]);
-            IFCAnyHandle pointHandle = ExporterUtil.CreateCartesianPoint(file, point);
+            IFCAnyHandle pointHandle = (dim == Dimension.Dim2D) ?
+               ExporterUtil.CreateCartesianPoint(file, new UV(point.X, point.Y)) :
+               ExporterUtil.CreateCartesianPoint(file, point); 
             polyLinePoints.Add(pointHandle);
          }
 
@@ -1847,17 +2191,16 @@ namespace Revit.IFC.Export.Utility
       }
 
       /// <summary>
-      /// Creates an IFC line segment for an IfcCompositeCurve from a Revit line object.
+      /// Creates a 2D or 3D IFC line segment for an IfcCompositeCurve from a Revit line object.
       /// </summary>
       /// <param name="exporterIFC">The exporter.</param>
       /// <param name="line">The line.</param>
+      /// <param name="dim">The dimensionality, which can be 2 or 3.</param>
       /// <returns>The line handle.</returns>
-      public static IFCAnyHandle CreateLineSegment(ExporterIFC exporterIFC, Line line)
+      public static IFCAnyHandle CreateLineSegment(ExporterIFC exporterIFC, Line line, Dimension dim)
       {
-         List<XYZ> points = new List<XYZ>();
-         points.Add(line.GetEndPoint(0));
-         points.Add(line.GetEndPoint(1));
-         return CreatePolyLineSegmentCommon(exporterIFC, points);
+         List<XYZ> points = [line.GetEndPoint(0), line.GetEndPoint(1)];
+         return CreatePolyLineSegmentCommon(exporterIFC, points, dim);
       }
 
       /// <summary>
@@ -1896,20 +2239,24 @@ namespace Revit.IFC.Export.Utility
       /// </summary>
       /// <param name="exporterIFC">The exporter.</param>
       /// <param name="arc">The arc.</param>
+      /// <param name="dim">The dimensionality of the points, either 2 or 3.</param>
       /// <returns>The arc handle.</returns>
-      public static IFCAnyHandle CreateArcSegment(ExporterIFC exporterIFC, Arc arc)
+      public static IFCAnyHandle CreateArcSegment(ExporterIFC exporterIFC, Arc arc, Dimension dim)
       {
+         double arcRadius = UnitUtil.ScaleLength(arc.Radius);
+         if (!IFCInstanceExporter.ValidateCircle(arcRadius))
+         {
+            return null;
+         }
+
          IFCFile file = exporterIFC.GetFile();
 
          XYZ centerPoint = ExporterIFCUtils.TransformAndScalePoint(exporterIFC, arc.Center);
 
-         IFCAnyHandle centerPointHandle = ExporterUtil.CreateCartesianPoint(file, centerPoint);
-
          XYZ xDirection = ExporterIFCUtils.TransformAndScaleVector(exporterIFC, arc.XDirection);
-         IFCAnyHandle axis = ExporterUtil.CreateAxis2Placement3D(file, centerPoint, arc.Normal, xDirection);
-
-         double arcRadius = UnitUtil.ScaleLength(arc.Radius);
-
+         IFCAnyHandle axis = (dim == Dimension.Dim2D) ?
+            ExporterUtil.CreateAxis2Placement2D(file, centerPoint, xDirection) :
+            ExporterUtil.CreateAxis2Placement3D(file, centerPoint, arc.Normal, xDirection);
          IFCAnyHandle circle = IFCInstanceExporter.CreateCircle(file, axis, arcRadius);
          return CreateBoundsIfNecessary(file, circle, arc);
       }
@@ -1919,21 +2266,26 @@ namespace Revit.IFC.Export.Utility
       /// </summary>
       /// <param name="exporterIFC">The exporter.</param>
       /// <param name="ellipticalArc">The elliptical arc.</param>
+      /// <param name="dim">The dimensionality of the points, either 2 or 3.</param>
       /// <returns>The ellipse handle.</returns>
-      public static IFCAnyHandle CreateEllipticalArcSegment(ExporterIFC exporterIFC, Ellipse ellipticalArc)
+      public static IFCAnyHandle CreateEllipticalArcSegment(ExporterIFC exporterIFC, Ellipse ellipticalArc,
+         Dimension dim)
       {
+         double ellipseRadiusX = UnitUtil.ScaleLength(ellipticalArc.RadiusX);
+         double ellipseRadiusY = UnitUtil.ScaleLength(ellipticalArc.RadiusY);
+         if (!IFCInstanceExporter.ValidateEllipse(ellipseRadiusX, ellipseRadiusY))
+         {
+            return null;
+         }
+
          IFCFile file = exporterIFC.GetFile();
 
          XYZ centerPoint = ExporterIFCUtils.TransformAndScalePoint(exporterIFC, ellipticalArc.Center);
 
-         IFCAnyHandle centerPointHandle = ExporterUtil.CreateCartesianPoint(file, centerPoint);
-
          XYZ xDirection = ExporterIFCUtils.TransformAndScaleVector(exporterIFC, ellipticalArc.XDirection);
-         IFCAnyHandle axis = ExporterUtil.CreateAxis2Placement3D(file, centerPoint, ellipticalArc.Normal, xDirection);
-
-         double ellipseRadiusX = UnitUtil.ScaleLength(ellipticalArc.RadiusX);
-         double ellipseRadiusY = UnitUtil.ScaleLength(ellipticalArc.RadiusY);
-
+         IFCAnyHandle axis = (dim == Dimension.Dim2D) ?
+           ExporterUtil.CreateAxis2Placement2D(file, centerPoint, xDirection) :
+           ExporterUtil.CreateAxis2Placement3D(file, centerPoint, ellipticalArc.Normal, xDirection);
          IFCAnyHandle ellipse = IFCInstanceExporter.CreateEllipse(file, axis, ellipseRadiusX, ellipseRadiusY);
          return CreateBoundsIfNecessary(file, ellipse, ellipticalArc);
       }
@@ -1943,9 +2295,10 @@ namespace Revit.IFC.Export.Utility
       /// </summary>
       /// <param name="exporterIFC">The exporter.</param>
       /// <param name="curves">The curves.</param>
+      /// <param name="dim">The dimensionality of the points, either 2 or 3.</param>
       /// <returns>The IfcCompositeCurve handle.</returns>
       /// <remarks>This function tessellates all curve types except lines, arcs, and ellipses.</remarks>
-      public static IFCAnyHandle CreateCompositeCurve(ExporterIFC exporterIFC, IList<Curve> curves)
+      private static IFCAnyHandle CreateCompositeCurve(ExporterIFC exporterIFC, IList<Curve> curves, Dimension dim)
       {
          IFCFile file = exporterIFC.GetFile();
          List<IFCAnyHandle> segments = new List<IFCAnyHandle>();
@@ -1955,22 +2308,22 @@ namespace Revit.IFC.Export.Utility
                continue;
 
             IFCAnyHandle curveHandle = null;
-            if (curve is Line)
+            if (curve is Line line)
             {
-               curveHandle = CreateLineSegment(exporterIFC, curve as Line);
+               curveHandle = CreateLineSegment(exporterIFC, line, dim);
             }
-            else if (curve is Arc)
+            else if (curve is Arc arc)
             {
-               curveHandle = CreateArcSegment(exporterIFC, curve as Arc);
+               curveHandle = CreateArcSegment(exporterIFC, arc, dim);
             }
-            else if (curve is Ellipse)
+            else if (curve is Ellipse ellipse)
             {
-               curveHandle = CreateEllipticalArcSegment(exporterIFC, curve as Ellipse);
+               curveHandle = CreateEllipticalArcSegment(exporterIFC, ellipse, dim);
             }
             else
             {
                IList<XYZ> points = curve.Tessellate();
-               curveHandle = CreatePolyLineSegmentCommon(exporterIFC, points);
+               curveHandle = CreatePolyLineSegmentCommon(exporterIFC, points, dim);
             }
 
             if (!IFCAnyHandleUtil.IsNullOrHasNoValue(curveHandle))
@@ -1988,6 +2341,31 @@ namespace Revit.IFC.Export.Utility
       }
 
       /// <summary>
+      /// Creates an IFC composite or indexed curve from an array of curves.
+      /// </summary>
+      /// <param name="exporterIFC">The exporter.</param>
+      /// <param name="curves">The list of curves.</param>
+      /// <param name="lcs">The local coordinate system whose XY plane the curves are projected on.</param>
+      /// <param name="projDir">The project direction.</param>
+      /// <returns>The created curve.</returns>
+      public static IFCAnyHandle CreateCompositeOrIndexedCurve(ExporterIFC exporterIFC, IList<Curve> curves, Transform lcs, XYZ projDir)
+      {
+         IFCAnyHandle compositeCurve;
+
+         if (ExporterCacheManager.ExportOptionsCache.ExportAsReferenceView)
+         {
+            compositeCurve = CreatePolyCurveFromCurveLoop(exporterIFC, curves, lcs, projDir);
+         }
+         else
+         {
+            Dimension dim = (lcs == null) ? Dimension.Dim3D : Dimension.Dim2D;
+            compositeCurve = CreateCompositeCurve(exporterIFC, curves, dim);
+         }
+
+         return compositeCurve;
+      }
+
+      /// <summary>
       /// Create an IfcSweptDiskSolid from a base curve.
       /// </summary>
       /// <param name="exporterIFC">The exporterIFC class.</param>
@@ -1998,7 +2376,7 @@ namespace Revit.IFC.Export.Utility
       /// <returns>The IfcSweptDiskSolid.</returns>
       public static IFCAnyHandle CreateSweptDiskSolid(ExporterIFC exporterIFC, IFCFile file, Curve centerCurve, double radius, double? innerRadius)
       {
-         if (centerCurve == null || radius < MathUtil.Eps() || (innerRadius.HasValue && innerRadius.Value > radius - MathUtil.Eps()))
+         if (centerCurve == null || radius < MathUtil.Eps || (innerRadius.HasValue && innerRadius.Value > radius - MathUtil.Eps))
             return null;
 
          IList<Curve> curves = new List<Curve>();
@@ -2014,8 +2392,63 @@ namespace Revit.IFC.Export.Utility
             endParam = 1.0;
          curves.Add(centerCurve);
 
-         IFCAnyHandle compositeCurve = GeometryUtil.CreateCompositeCurve(exporterIFC, curves);
+         IFCAnyHandle compositeCurve = GeometryUtil.CreateCompositeOrIndexedCurve(exporterIFC, curves, null, null);
          return IFCInstanceExporter.CreateSweptDiskSolid(file, compositeCurve, radius, innerRadius, 0, endParam);
+      }
+
+      private static Curve ApplyNonConformalTransformIfPossible(Curve baseCurve, Transform transform)
+      {
+         // This routine is intended mostly for rebar but could be used for anything.
+         if (!(baseCurve?.IsBound ?? false) || transform == null)
+            return null;
+
+         Line baseLine = baseCurve as Line;
+         if (baseLine != null)
+         {
+            XYZ newStartPoint = transform.OfPoint(baseLine.GetEndPoint(0));
+            XYZ newEndPoint = transform.OfPoint(baseLine.GetEndPoint(1));
+
+            return Line.CreateBound(newStartPoint, newEndPoint);
+         }
+
+         Arc baseArc = baseCurve as Arc;
+         if (baseArc != null)
+         {
+            // Strictly speaking, the non-conformal transform of an arc is an ellipse.
+            // However, this method is intended for very slightly non-conformal transforms,
+            // and an arc that is within a small tolerance of the "real" ellipse is more
+            // useful (and accurate to intent) than an ellipse.
+            XYZ newStartPoint = transform.OfPoint(baseArc.GetEndPoint(0));
+            XYZ newEndPoint = transform.OfPoint(baseArc.GetEndPoint(1));
+
+            double midParameter = (baseArc.GetEndParameter(0) + baseArc.GetEndParameter(1)) / 2.0;
+            XYZ newPointOnArc = transform.OfPoint(baseArc.Evaluate(midParameter, false));
+
+            return Arc.Create(newStartPoint, newEndPoint, newPointOnArc);
+         }
+
+         // At the moment, rebar segments can only be lines or arcs, so no need to worry
+         // about other cases.
+
+         return null;
+      }
+
+      /// <summary>
+      /// Create a transformed copy of a curve.
+      /// </summary>
+      /// <param name="originalCurve">The original curve.</param>
+      /// <param name="transform">The transform.</param>
+      /// <returns>The transformed copy.</returns>
+      public static Curve CreateTransformedCurve(Curve originalCurve, Transform transform)
+      {
+         if (transform.IsConformal)
+            return originalCurve.CreateTransformed(transform);
+
+         // There are cases where the Rebar API returns slightly non-conformal
+         // transforms that cause an exception in CreateTransformed above.  Until
+         // that API is improved, we will do our own non-conformal transformation
+         // if possible.
+         return ApplyNonConformalTransformIfPossible(originalCurve, transform);
       }
 
 
@@ -2197,33 +2630,34 @@ namespace Revit.IFC.Export.Utility
       /// Checks if a CurveLoop is inside another CurveLoop.
       /// </summary>
       /// <param name="innerLoop">The inner loop.</param>
-      /// <param name="outterLoop">The outter loop.</param>
+      /// <param name="outerLoop">The outer loop.</param>
       /// <returns>True if the CurveLoop is inside the other CurveLoop.</returns>
-      public static bool CurveLoopsInside(CurveLoop innerLoop, CurveLoop outterLoop)
+      public static bool CurveLoopsInside(CurveLoop innerLoop, CurveLoop outerLoop)
       {
-         if (innerLoop == null || outterLoop == null)
+         if (innerLoop == null || outerLoop == null)
             return false;
 
-         if (!innerLoop.HasPlane() || !outterLoop.HasPlane() || outterLoop.IsOpen())
+         if (!innerLoop.HasPlane() || !outerLoop.HasPlane() || outerLoop.IsOpen())
             return false;
 
-         XYZ outterOrigin = outterLoop.GetPlane().Origin;
-         XYZ outterNormal = outterLoop.GetPlane().Normal;
+         XYZ outerOrigin = outerLoop.GetPlane().Origin;
+         XYZ outerNormal = outerLoop.GetPlane().Normal;
 
          foreach (Curve innerCurve in innerLoop)
          {
             XYZ innerCurveEnd0 = innerCurve.GetEndPoint(0);
 
-            XYZ outterOriginToEnd0 = innerCurveEnd0 - outterOrigin;
-            if (!MathUtil.VectorsAreOrthogonal(outterOriginToEnd0, outterNormal))
+            XYZ outerOriginToEnd0 = innerCurveEnd0 - outerOrigin;
+            if (!MathUtil.VectorsAreOrthogonal(outerOriginToEnd0, outerNormal))
                return false;
 
-            Line line0 = Line.CreateBound(innerCurveEnd0, outterOrigin);
-            foreach (Curve outterCurve in outterLoop)
+            Line line0 = Line.CreateBound(innerCurveEnd0, outerOrigin);
+            foreach (Curve outerCurve in outerLoop)
             {
-               SetComparisonResult result = line0.Intersect(outterCurve);
-               if (result == SetComparisonResult.Overlap)
+               if (SetComparisonResult.Overlap == line0.Intersect(outerCurve, CurveIntersectResultOption.Simple)?.Result)
+               {
                   return false;
+               }
             }
          }
 
@@ -2245,9 +2679,10 @@ namespace Revit.IFC.Export.Utility
          {
             foreach (Curve curve2 in loop2)
             {
-               SetComparisonResult result = curve1.Intersect(curve2);
-               if (result != SetComparisonResult.Overlap)
+               if (SetComparisonResult.Overlap != curve1.Intersect(curve2, CurveIntersectResultOption.Simple)?.Result)
+               {
                   return true;
+               }
             }
          }
          return false;
@@ -2305,16 +2740,24 @@ namespace Revit.IFC.Export.Utility
       /// <param name="height">The height.</param>
       /// <param name="width">The width.</param>
       /// <returns>True if gets the values successfully.</returns>
-      public static bool ComputeHeightWidthOfCurveLoop(CurveLoop curveLoop, out double height, out double width)
+      public static bool ComputeHeightWidthOfCurveLoop(CurveLoop curveLoop, XYZ expectedWidthDir, out double height, out double width)
       {
+         bool result = false;
          height = width = 0;
 
          if (!curveLoop.HasPlane())
-            return false;
+            return result;
 
          Plane plane = curveLoop.GetPlane();
          Transform lcs = CreateTransformFromPlane(plane);
-         return ComputeHeightWidthOfCurveLoop(curveLoop, lcs, out height, out width);
+
+         result = ComputeHeightWidthOfCurveLoop(curveLoop, lcs, out height, out width);
+
+         // The plane might be flipped. Swap height and width in this case
+         if (expectedWidthDir != null && MathUtil.VectorsAreParallel(expectedWidthDir, plane.YVec))
+            (height, width) = (width, height);
+
+         return result;
       }
 
       /// <summary>
@@ -2342,52 +2785,20 @@ namespace Revit.IFC.Export.Utility
       }
 
       /// <summary>
-      /// The maximum number of faces in a Solid before we decide not to split it.
-      /// Larger than this can cause sigificant performance issues.
+      /// Gets the volume of a solid, if it is possible.
       /// </summary>
-      /// <remarks>
-      /// Internal tests show perfectly good behavior at 1044 faces, so setting
-      /// this value based on that.  This may be tweaked over time, or other
-      /// methods used instead.
-      /// </remarks>
-      public static int MaxFaceCountForSplitVolumes = 2048;
-
-      /// <summary>
-      /// Splits a Solid into distinct volumes.
-      /// </summary>
-      /// <param name="solid">The initial solid.</param>
-      /// <returns>The list of volumes.</returns>
-      /// <remarks>This calls the internal SolidUtils.SplitVolumes routine, but does additional cleanup work to properly dispose of stale data.</remarks>
-      public static IList<Solid> SplitVolumes(Solid solid)
+      /// <param name="solid">The solid.</param>
+      /// <returns>The volume of the solid, or null if it can't be determined.</returns>
+      public static double? GetSafeVolume(Solid solid)
       {
-         IList<Solid> splitVolumes = null;
          try
          {
-            if (solid.Faces.Size < GeometryUtil.MaxFaceCountForSplitVolumes)
-            {
-               splitVolumes = SolidUtils.SplitVolumes(solid);
-               foreach (Solid currSolid in splitVolumes)
-               {
-                  // The geometry element created by SplitVolumes is a copy which will have its own allocated
-                  // membership - this needs to be stored and disposed of (see AllocatedGeometryObjectCache
-                  // for details)
-                  ExporterCacheManager.AllocatedGeometryObjectCache.AddGeometryObject(currSolid);
-               }
-            }
+            return solid?.Volume ?? null;
          }
          catch
          {
-            splitVolumes = null;
+            return null;
          }
-
-         if (splitVolumes == null)
-         {
-            // Split volumes can fail; in this case, we'll export the original solid.
-            splitVolumes = new List<Solid>();
-            splitVolumes.Add(solid);
-         }
-
-         return splitVolumes;
       }
 
       /// <summary>
@@ -2405,17 +2816,14 @@ namespace Revit.IFC.Export.Utility
          List<IFCAnyHandle> segments = new List<IFCAnyHandle>();
          List<UV> polylinePts = new List<UV>(); // for simple case
 
-         if (ExporterCacheManager.ExportOptionsCache.ExportAs4ReferenceView)
+         if (ExporterCacheManager.ExportOptionsCache.ExportAsReferenceView)
          {
-            IFCAnyHandle indexedPolyCurve;
-            CreatePolyCurveFromCurveLoop(exporterIFC, curveLoop, lcs, projDir, out indexedPolyCurve);
-            return indexedPolyCurve;
+            return CreatePolyCurveFromCurveLoop(exporterIFC, curveLoop.ToList(), lcs, projDir);
          }
          else
          {
-
             bool useSimpleBoundary = false;
-            if (!AllowComplexBoundary(lcs.BasisZ, projDir, curveLoop, null, exporterIFC.ExportAs2x2))
+            if (!AllowComplexBoundary(lcs.BasisZ, projDir, curveLoop, null))
                useSimpleBoundary = true;
 
             foreach (Curve curve in curveLoop)
@@ -2433,9 +2841,14 @@ namespace Revit.IFC.Export.Utility
                if (sz < 2)
                   return null;
 
+               // Original CurveLoop may have been is closed.
+               // Only remove the last point in polylinePoints if it really is the same as the first.
                if (!curveLoop.IsOpen())
                {
-                  polylinePts.RemoveAt(sz - 1);
+                  if (polylinePts[0].IsAlmostEqualTo(polylinePts[polylinePts.Count - 1]))
+                  {
+                     polylinePts.RemoveAt(sz - 1);
+                  }
                   needToClose = true;
                }
             }
@@ -2451,22 +2864,24 @@ namespace Revit.IFC.Export.Utility
       /// <param name="curves">The curves.</param>
       /// <param name="lcs">The local coordinate system whose XY plane the curves are projected on.</param>
       /// <param name="projDir">The project direction.</param>
+      /// <param name="isAxisCurve">True for open axis curves where winding direction is irrelevant.</param>
       /// <returns>The created curve.</returns>
-      public static IFCAnyHandle CreateIFCCurveFromCurves(ExporterIFC exporterIFC, IList<Curve> curves, Transform lcs, XYZ projDir)
+      public static IFCAnyHandle CreateIFCCurveFromCurves(ExporterIFC exporterIFC, IList<Curve> curves, Transform lcs, XYZ projDir,
+         bool isAxisCurve = false)
       {
          IFCFile file = exporterIFC.GetFile();
 
-         List<IFCAnyHandle> segments = new List<IFCAnyHandle>();
-         List<UV> polylinePts = new List<UV>(); // for simple case
-
          bool useSimpleBoundary = false;
-         if (!AllowComplexBoundary(lcs.BasisZ, projDir, null, curves, exporterIFC.ExportAs2x2))
+         if (!AllowComplexBoundary(lcs.BasisZ, projDir, null, curves))
             useSimpleBoundary = true;
+
+         List<IFCAnyHandle> segments = new List<IFCAnyHandle>();
+         List<UV> polylinePts = new List<UV>();
 
          foreach (Curve curve in curves)
          {
             bool success = ProcessCurve(exporterIFC, curve, lcs, projDir, useSimpleBoundary,
-             polylinePts, segments);
+             polylinePts, segments, isAxisCurve);
             if (!success)
                return null;
          }
@@ -2498,13 +2913,14 @@ namespace Revit.IFC.Export.Utility
       /// <param name="useSimpleBoundary">True if to create tessellated curve, false to create segments.</param>
       /// <param name="polylinePoints">The polyline points get from the curve.</param>
       /// <param name="curveSegments">The curve segments get from the curve.</param>
+      /// <param name="isAxisCurve">True for open axis curves where winding direction is irrelevant.</param>
       /// <returns>True if process successfully.</returns>
-      public static bool ProcessCurve(ExporterIFC exporterIFC, Curve curve, Transform lcs, XYZ projectDir, bool useSimpleBoundary,
-          List<UV> polylinePoints, List<IFCAnyHandle> curveSegments)
+      private static bool ProcessCurve(ExporterIFC exporterIFC, Curve curve, Transform lcs, XYZ projectDir, bool useSimpleBoundary,
+          List<UV> polylinePoints, List<IFCAnyHandle> curveSegments, bool isAxisCurve = false)
       {
          IFCFile file = exporterIFC.GetFile();
 
-         bool exportAs2x2 = exporterIFC.ExportAs2x2;
+         bool exportAs2x2 = ExporterCacheManager.ExportOptionsCache.ExportAs2x2;
 
          if (!useSimpleBoundary)
          {
@@ -2528,65 +2944,111 @@ namespace Revit.IFC.Export.Utility
                currPts.Add(UnitUtil.ScaleLength(projectPoint));
             }
 
-            if (polylinePoints.Count > 0)
+            // polylinePoints is accumulating projected points.
+            // currPts are the points from the current curve.
+            // If there are currently no points in polylinePoints --> just add all currPts to polylinePoints.
+            if (polylinePoints.Count == 0)
             {
-               if (currPts.Count > 1)
+               polylinePoints.AddRange(currPts);
+            }
+            else
+            {
+               // Otherwise look at both ends of both collections.
+               UV lastPolylinePoint = polylinePoints[polylinePoints.Count - 1];
+               UV firstPolylinePoint = polylinePoints[0];
+               UV lastCurrPt = currPts[currPts.Count - 1];
+               UV firstCurrPt = currPts[0];
+
+               if (lastPolylinePoint.IsAlmostEqualTo(firstCurrPt))
                {
                   currPts.RemoveAt(0);
+                  polylinePoints.AddRange(currPts);
+               }
+               else if (lastPolylinePoint.IsAlmostEqualTo(lastCurrPt))
+               {
+                  currPts.Reverse();
+                  currPts.RemoveAt(0);
+                  polylinePoints.AddRange(currPts);
+               }
+               else if (firstPolylinePoint.IsAlmostEqualTo(firstCurrPt))
+               {
+                  currPts.Reverse();
+                  polylinePoints.RemoveAt(0);
+                  polylinePoints.InsertRange(0, currPts);
+               }
+               else if (firstPolylinePoint.IsAlmostEqualTo(lastCurrPt))
+               {
+                  polylinePoints.RemoveAt(0);
+                  polylinePoints.InsertRange(0, currPts);
+               }
+               else
+               {
+                  // Default:  just add currPts to the end.
+                  polylinePoints.AddRange(currPts);
                }
             }
-            polylinePoints.AddRange(currPts);
          }
          else
          {
-            IFCGeometryInfo info = IFCGeometryInfo.CreateCurveGeometryInfo(exporterIFC, lcs, projectDir, false);
-            ExporterIFCUtils.CollectGeometryInfo(exporterIFC, info, curve, XYZ.Zero, false);
-            IList<IFCAnyHandle> curves = info.GetCurves();
-            if (curves.Count != 1 || !IFCAnyHandleUtil.IsSubTypeOf(curves[0], IFCEntityType.IfcBoundedCurve))
+            Curve transformedCurve = lcs == null ? curve : CreateTransformedCurve(curve, lcs.Inverse);
+
+            IFCAnyHandle boundedCurve = CreateIFCCurveFromRevitCurve(file, exporterIFC, transformedCurve, !useSimpleBoundary,
+               null, TrimCurvePreference.Use2DPolyLineOrTrim, useLocalCoordinates: true);
+            if (boundedCurve == null || !IFCAnyHandleUtil.IsSubTypeOf(boundedCurve, IFCEntityType.IfcBoundedCurve))
                return false;
 
-            IFCAnyHandle boundedCurve = curves[0];
-
-            bool mustFlip = MustFlipCurve(lcs, curve);
+            bool mustFlip = isAxisCurve ? false : MustFlipCurve(lcs, curve);
             curveSegments.Add(IFCInstanceExporter.CreateCompositeCurveSegment(file, IFCTransitionCode.Continuous, !mustFlip, boundedCurve));
          }
 
          return true;
       }
 
-      static IList<double> CartesianPointFromXYZ(IFCFile file, XYZ thePoint, Transform lcs, XYZ projectDir)
+      static UV ScaledUVListFromXYZ(XYZ thePoint, Transform lcs, XYZ projectDir)
       {
-         IList<double> ordinateList = new List<double>();
          UV projectPoint = GeometryUtil.ProjectPointToXYPlaneOfLCS(lcs, projectDir, thePoint);
-         projectPoint = UnitUtil.ScaleLength(projectPoint);
-         ordinateList.Add(projectPoint.U);
-         ordinateList.Add(projectPoint.V);
-         return ordinateList;
+         return UnitUtil.ScaleLength(projectPoint);
       }
 
-      private static bool CoordinatesAreAlmostEqual(IList<double> coord1, IList<double> coord2)
+      private static double DistanceSquaredBetweenVertices(XYZ coord1, XYZ coord2)
       {
-         bool isAlmostEqual = true;
-         if (coord1.Count != coord2.Count)
-            return false;     // Cannot compare lists of different number of members
+         var dX = coord1.X - coord2.X;
+         var dY = coord1.Y - coord2.Y;
+         var dZ = coord1.Z - coord2.Z;
 
-         for (int ii = 0; ii < coord1.Count; ++ii)
-         {
-            isAlmostEqual &= MathUtil.IsAlmostEqual(coord1[ii], coord2[ii]);
-         }
+         return dX * dX + dY * dY + dZ * dZ;
+      }
+      private static double DistanceSquaredBetweenVertices(UV coord1, UV coord2)
+      {
+         var dU = coord1.U - coord2.U;
+         var dV = coord1.V - coord2.V;
 
-         return isAlmostEqual;
+         return dU * dU + dV * dV;
       }
 
-      private static void SegmentIndexOffsetBy(ref IList<int> segmentIndex, int offsetIndex, bool reverse)
+      private static bool CoordsAreWithinVertexTol(PointBase coord1, PointBase coord2)
       {
-         if (reverse)
-            segmentIndex.Reverse();
+         double vertexTol = UnitUtil.ScaleLength(ExporterCacheManager.Document.Application.VertexTolerance);
+         Point3D coord13D = coord1 as Point3D;
+         Point3D coord23D = coord2 as Point3D;
+         if (coord13D != null && coord23D != null)
+            return (DistanceSquaredBetweenVertices(coord13D.coords, coord23D.coords) < vertexTol * vertexTol);
+         Point2D coord12D = coord1 as Point2D;
+         Point2D coord22D = coord2 as Point2D;
+         if (coord12D != null && coord22D != null)
+            return (DistanceSquaredBetweenVertices(coord12D.coords, coord22D.coords) < vertexTol * vertexTol);
 
-         for (int ii = 0; ii < segmentIndex.Count; ++ii)
-         {
-            segmentIndex[ii] = segmentIndex[ii] + offsetIndex;
-         }
+         throw new ArgumentException("Invalid Point type");
+      }
+      private static bool CoordsAreWithinVertexTol(XYZ coord1, XYZ coord2)
+      {
+         double vertexTol = UnitUtil.ScaleLength(ExporterCacheManager.Document.Application.VertexTolerance);
+         return (DistanceSquaredBetweenVertices(coord1, coord2) < vertexTol * vertexTol);
+      }
+      private static bool CoordsAreWithinVertexTol(UV coord1, UV coord2)
+      {
+         double vertexTol = UnitUtil.ScaleLength(ExporterCacheManager.Document.Application.VertexTolerance);
+         return (DistanceSquaredBetweenVertices(coord1, coord2) < vertexTol * vertexTol);
       }
 
       /// <summary>
@@ -2599,336 +3061,219 @@ namespace Revit.IFC.Export.Utility
       /// <returns>IFCAnyHandle for the created IfcIndexedPolyCurve</returns>
       public static IFCAnyHandle CreatePolyCurveFromCurve(ExporterIFC exporterIFC, Curve curve, Transform lcs = null, XYZ projectDir = null)
       {
-         IList<int> segmentIndex = null;
-         IList<IList<double>> pointList = GeometryUtil.PointListFromCurve(exporterIFC, curve, lcs, projectDir, out segmentIndex);
-
-         // For now because of no support in creating IfcLineIndex and IfcArcIndex yet, it is set to null
-         //IList<IList<int>> segmentIndexList = new List<IList<int>>();
-         //segmentIndexList.Add(segmentIndex);
-         IList<IList<int>> segmentIndexList = null;
-
          IFCFile file = exporterIFC.GetFile();
-         IFCAnyHandle pointListHnd;
-         if (Is2DPointList(ref pointList))
-            pointListHnd = IFCInstanceExporter.CreateCartesianPointList2D(file, pointList);
-         else
-            pointListHnd = IFCInstanceExporter.CreateCartesianPointList3D(file, pointList);
-         IFCAnyHandle curveHnd = IFCInstanceExporter.CreateIndexedPolyCurve(file, pointListHnd, segmentIndexList, false);
 
-         return curveHnd;
-      }
+         PrimVertices vertices = PointListFromCurve(exporterIFC, curve, lcs, projectDir);
+         // Points from the curve may have been merged after projection, so skip curves that
+         // won't add any new points.
+         if (vertices == null)
+            return null;
 
-      static bool Is2DPointList(ref IList<IList<double>> pointList)
-      {
-         bool contains2DPoint = false;
-         bool contains3DPoint = false;
+         PolyCurve polyCurve = new PolyCurve(vertices);
+         polyCurve.BuildVerticesAndIndices();
+         IList<SegmentIndices> segmentsIndices = polyCurve.SegmentsIndices;
 
-         foreach (IList<double> pointCoord in pointList)
-         {
-            if (pointCoord.Count == 2)
-               contains2DPoint |= true;
-            else if (pointCoord.Count == 3)
-               contains3DPoint |= true;
-            else
-               throw (new ArgumentOutOfRangeException("pointList", "Only 2D or 3D point coordinates are valid!"));
-         }
-         if (contains2DPoint && contains3DPoint)
-         {
-            // Something is not right because of a mix of 2D and 3D coordinates. It will normalize below and discard the 3rd ordinate of 3D coordinates to 2D
-            for (int ii = 0; ii < pointList.Count; ++ii)
-            {
-               if (pointList[ii].Count == 3)
-                  pointList[ii].RemoveAt(2);
-            }
-         }
-
-         return contains2DPoint;
+         IFCAnyHandle pointListHnd = IFCInstanceExporter.CreateCartesianPointList(file, polyCurve.PointList);
+         return IFCInstanceExporter.CreateIndexedPolyCurve(file, pointListHnd, segmentsIndices, false);
       }
 
       /// <summary>
-      /// Create IFC4 IfcIndexedPolyCurve from Revit CurveLoop
+      /// Create a IFC4 IfcIndexedPolyCurve from a Revit CurveLoop
       /// </summary>
-      /// <param name="exporterIFC">the exporterIFC</param>
-      /// <param name="curveLoop">Revit CurveLoop</param>
-      /// <param name="lcs">Transform for the LCS</param>
-      /// <param name="projectDir">Projection direction</param>
-      /// <param name="indexedPolyCurve">Output IFCAnyHandle for the IfcIndexedPolyCurve</param>
-      /// <returns>return true/false</returns>
-      public static bool CreatePolyCurveFromCurveLoop(ExporterIFC exporterIFC, CurveLoop curveLoop, Transform lcs, XYZ projectDir, out IFCAnyHandle indexedPolyCurve)
+      /// <param name="exporterIFC">The exporterIFC context.</param>
+      /// <param name="curves">Curves.</param>
+      /// <param name="lcs">The local coordinate system transform.</param>
+      /// <param name="projectDir">The projection direction.</param>
+      /// <returns>The IfcIndexedPolyCurve handle, or null if it couldn't be created.</returns>
+      public static IFCAnyHandle CreatePolyCurveFromCurveLoop(ExporterIFC exporterIFC, IList<Curve> curves,
+         Transform lcs, XYZ projectDir)
       {
-         if (curveLoop.Count() == 0)
-         {
-            indexedPolyCurve = null;
-            return false;
-         }
+         if (curves.Count() == 0)
+            return null;
 
          IFCFile file = exporterIFC.GetFile();
-         List<IList<double>> pointList = new List<IList<double>>();
-         //IList<IFCAnyHandle> segmentIndexList = new List<IFCAnyHandle>();
-         IList<IList<int>> segmentIndexList = new List<IList<int>>();
-         Curve prevCurve = null;
-         IList<double> lastEndPoint = new List<double>() { double.MaxValue, double.MaxValue };
-         List<int> segmentIdx = new List<int>();
-         int indexNo = 0;
-         foreach (Curve curve in curveLoop)
+
+         PolyCurve polyCurve = null;
+         foreach (Curve curve in curves)
          {
-            IList<int> curveSegmentIdx = null;
-            IList<IList<double>> curveCoords = PointListFromCurve(exporterIFC, curve, lcs, projectDir, out curveSegmentIdx);
+            PrimVertices vertices = PointListFromCurve(exporterIFC, curve, lcs, projectDir);
+            // Points from the curve may have been merged after projection, so skip curves that
+            // won't add any new points.
+            if (vertices == null)
+               continue;
 
-            if (curve is Line)
-            {
-               if (prevCurve != null && prevCurve is Line)
-               {
-                  // If it is a continous line, continue to add it into the same line segment
-                  if (CoordinatesAreAlmostEqual(curveCoords[0], lastEndPoint))
-                     lastEndPoint = curveCoords[curveCoords.Count - 1];
-                  else
-                     lastEndPoint = curveCoords[0];
-                  pointList.Add(lastEndPoint);
-                  segmentIdx.Add(indexNo++);
-               }
-               else
-               {
-                  // if there is a previous curve, the vertex will be shared and therefore the index needs to be rewind
-                  if (prevCurve != null)
-                     indexNo -= 1;
-
-                  // Add the start point only if there is no other curve before it (it shares the vertex with the previous curve)
-                  if (prevCurve == null)
-                     pointList.Add(curveCoords[0]);
-
-                  segmentIdx.Add(indexNo++);
-                  pointList.Add(curveCoords[1]);
-                  segmentIdx.Add(indexNo++);
-               }
-            }
-            else
-            {
-               if (prevCurve != null && prevCurve is Line)
-               {
-                  //IFCAnyHandle segment = IFCInstanceExporter.CreateLineIndexType(file, segmentIdx);
-                  //segmentIndexList.Add(segment);
-                  segmentIndexList.Add(segmentIdx);
-                  segmentIdx = new List<int>();
-               }
-
-               // if there is a previous curve, the vertex will be shared and therefore the index needs to be rewind
-               if (prevCurve != null)
-                  indexNo -= 1;
-
-               bool reverse = false;
-               if (prevCurve != null)
-                  reverse = !(CoordinatesAreAlmostEqual(curveCoords[0], lastEndPoint));
-
-               if (reverse)
-               {
-                  curveCoords.Reverse();
-                  curveSegmentIdx.Reverse();
-               }
-
-               if (CoordinatesAreAlmostEqual(curveCoords[0], lastEndPoint))
-               {
-                  curveCoords.RemoveAt(0);
-                  curveSegmentIdx.RemoveAt(0);
-               }
-
-               pointList.AddRange(curveCoords);
-               SegmentIndexOffsetBy(ref curveSegmentIdx, indexNo, false);
-               segmentIdx.AddRange(curveSegmentIdx);
-               segmentIndexList.Add(segmentIdx);
-
-               //IFCAnyHandle tessSegment = IFCInstanceExporter.CreateLineIndexType(file, segmentIdx);
-               //segmentIndexList.Add(tessSegment);
-               segmentIndexList.Add(segmentIdx);
-               segmentIdx = new List<int>();
-            }
-
-            lastEndPoint = pointList[pointList.Count - 1];
-            prevCurve = curve;
+            if (polyCurve == null)
+               polyCurve = new PolyCurve(vertices);
+            else if (!polyCurve.AddPrimVertices(vertices))
+               return null;
          }
 
-         // Kind of workaround to ensure that the first and last points, if they are supposed to be the same, is exactly the same
-         if (CoordinatesAreAlmostEqual(pointList[0], pointList[pointList.Count - 1]))
-            pointList[pointList.Count - 1] = pointList[0];
+         polyCurve.BuildVerticesAndIndices();
+         IList<SegmentIndices> segmentsIndices = polyCurve.SegmentsIndices;
 
-         // If at the end there is still segmentIdx unprocessed (the last linesegment type) add it when it is not the only segment
-         //if (segmentIdx.Count > 0 && segmentIndexList.Count > 0)
-         //{
-         //   //IFCAnyHandle lineSegment = IFCInstanceExporter.CreateLineIndexType(file, segmentIdx);
-         //   //segmentIndexList.Add(lineSegment);
-         //   segmentIndexList.Add(segmentIdx);
-         //}
-         //else
-         segmentIndexList = null;
-
-         IFCAnyHandle pointListHnd = IFCInstanceExporter.CreateCartesianPointList2D(file, pointList);
-         indexedPolyCurve = IFCInstanceExporter.CreateIndexedPolyCurve(file, pointListHnd, segmentIndexList, false);
-
-         return true;
+         IFCAnyHandle pointListHnd = IFCInstanceExporter.CreateCartesianPointList(file, polyCurve.PointList);
+         return IFCInstanceExporter.CreateIndexedPolyCurve(file, pointListHnd, segmentsIndices, false);
       }
 
-      /// <summary>
-      /// 
-      /// </summary>
-      /// <param name="file"></param>
-      /// <param name="curve"></param>
-      /// <param name="lcs"></param>
-      /// <param name="projectDir"></param>
-      /// <param name="pointList"></param>
-      /// <param name="segmentIndex"></param>
-      public static IList<IList<double>> PointListFromCurve(ExporterIFC exporterIFC, Curve curve, Transform lcs, XYZ projectDir, out IList<int> segmentIndex)
+      private static PrimVertices PointListFromCurve(ExporterIFC exporterIFC, Curve curve,
+         Transform lcs, XYZ projectDir)
       {
-         IFCFile file = exporterIFC.GetFile();
-         IList<IList<double>> pointList = new List<IList<double>>();
-         segmentIndex = null;
-
-         bool use3DPoint = false;
-         if (lcs == null || projectDir == null)
-            use3DPoint = true;
-
          if (curve == null)
             return null;
 
          if (curve is Line)
-         {
-            PointListFromLine(exporterIFC, curve as Line, lcs, projectDir, out pointList, out segmentIndex);
-         }
-         else if (curve is Arc)
-         {
-            PointListFromArc(exporterIFC, curve as Arc, lcs, projectDir, out pointList, out segmentIndex, useTessellation: true);
-         }
-         else
-         {
+            return PointListFromLine(exporterIFC, curve as Line, lcs, projectDir);
 
-            pointList = new List<IList<double>>();
-            segmentIndex = new List<int>();
-            IList<XYZ> tessellatedCurve = curve.Tessellate();
-            for (int ii = 0; ii < tessellatedCurve.Count; ++ii)
-            {
-               if (use3DPoint)
-                  pointList.Add(CoordListFromXYZ(exporterIFC, tessellatedCurve[ii]));
-               else
-                  pointList.Add(CartesianPointFromXYZ(file, tessellatedCurve[ii], lcs, projectDir));
-               segmentIndex.Add(ii);
-            }
-         }
-         if (pointList.Count >= 2)
-            return pointList;
-         else
-            return null;
+         if (curve is Arc)
+            return PointListFromArc(exporterIFC, curve as Arc, lcs, projectDir);
+
+         return PointListFromGenericCurve(exporterIFC, curve, lcs, projectDir);
       }
 
-      private static List<XYZ> CustomCurveTessellation(Curve curve, int intervalPercentage)
+      private static PolyLineVertices PointListFromLine(ExporterIFC exporterIFC, Line line,
+         Transform lcs, XYZ projectDir)
       {
-         List<XYZ> tessellatedCurve = new List<XYZ>();
-         if (curve.IsBound)
+         bool use3DPoint = (lcs == null || projectDir == null);
+
+         if (use3DPoint)
          {
-            tessellatedCurve.Add(curve.GetEndPoint(0));
-            // An integer value is used here to get an accurate interval the value ranges from 0 to 100 percent
-            for (int intv = intervalPercentage; intv < 100; intv += intervalPercentage)
-            {
-               tessellatedCurve.Add(curve.Evaluate(intv / 100.0, true));
-            }
-            tessellatedCurve.Add(curve.GetEndPoint(1));
+            XYZ startPoint = ExporterIFCUtils.TransformAndScalePoint(exporterIFC, line.GetEndPoint(0));
+            XYZ endPoint = ExporterIFCUtils.TransformAndScalePoint(exporterIFC, line.GetEndPoint(1));
+            // Avoid consecutive duplicates
+            if (CoordsAreWithinVertexTol(startPoint, endPoint))
+               return null;
+
+            return new PolyLineVertices(startPoint, endPoint);
          }
          else
          {
-            if (curve is Arc || curve is Ellipse)
+            var startPoint = ScaledUVListFromXYZ(line.GetEndPoint(0), lcs, projectDir);
+            var endPoint = ScaledUVListFromXYZ(line.GetEndPoint(1), lcs, projectDir);
+            // Avoid consecutive duplicates
+            if (CoordsAreWithinVertexTol(startPoint, endPoint))
+               return null;
+
+            return new PolyLineVertices(startPoint, endPoint);
+         }
+      }
+
+      private static PrimVertices PointListFromArc(ExporterIFC exporterIFC, Arc arc,
+         Transform lcs, XYZ projectDir)
+      {
+         bool use3DPoint = (lcs == null || projectDir == null);
+
+         if (use3DPoint && arc.IsBound)
+         {
+            XYZ startPoint = ExporterIFCUtils.TransformAndScalePoint(exporterIFC, arc.Evaluate(0, true));
+            XYZ midPoint = ExporterIFCUtils.TransformAndScalePoint(exporterIFC, arc.Evaluate(0.5, true));
+            XYZ endPoint = ExporterIFCUtils.TransformAndScalePoint(exporterIFC, arc.Evaluate(1, true));
+
+            return new ArcVertices(startPoint, midPoint, endPoint);
+         }
+         else
+         {
+            //If arc's normal is parallel to projection direction and Z axis of lcs then projected arc will be of correct shape.
+            //That is why it can be defined by 3 points: start, mid, end.
+            if (MathUtil.VectorsAreParallel(arc.Normal, projectDir) && MathUtil.VectorsAreParallel(lcs.BasisZ, projectDir) && arc.IsBound)
             {
-               for (int intv = 0; intv <= 360; intv += intervalPercentage)
+               var startPoint = ScaledUVListFromXYZ(arc.Evaluate(0, true), lcs, projectDir);
+               var midPoint = ScaledUVListFromXYZ(arc.Evaluate(0.5, true), lcs, projectDir);
+               var endPoint = ScaledUVListFromXYZ(arc.Evaluate(1, true), lcs, projectDir);
+
+               return new ArcVertices(startPoint, midPoint, endPoint);
+            }
+
+            //Handle cases when Arc is a circle (arc.IsBound == false) or projected arc is of incorrect shape
+            //and cannot be defined by 3 points. Tesselate it in this case.
+            List<XYZ> pointList3D = new List<XYZ>();
+            List<UV> pointList2D = new List<UV>();
+
+            // An integer value is used here to get an accurate interval the value ranges from
+            // 0 to 90 or 100 percent, depending on whether the arc is bound or not.
+            int normalizedEnd = arc.IsBound ? 10 : 9;
+            XYZ lastPoint3D = null;
+            UV lastPoint2D = null;
+            for (int ii = 0; ii <= normalizedEnd; ++ii)
+            {
+               XYZ tessellationPt = arc.Evaluate(ii / 10.0, arc.IsBound);
+               if (use3DPoint)
                {
-                  tessellatedCurve.Add(curve.Evaluate(2 * Math.PI * intv / 360.0, false));
+                  XYZ point = ExporterIFCUtils.TransformAndScalePoint(exporterIFC, tessellationPt);
+
+                  // Avoid consecutive duplicates
+                  if (lastPoint3D == null || !CoordsAreWithinVertexTol(point, lastPoint3D))
+                  {
+                     pointList3D.Add(point);
+                     lastPoint3D = point;
+                  }
+               }
+               else
+               {
+                  var point2D = ScaledUVListFromXYZ(tessellationPt, lcs, projectDir);
+
+                  // Avoid consecutive duplicates
+                  if (lastPoint2D == null || !CoordsAreWithinVertexTol(point2D, lastPoint2D))
+                  {
+                     pointList2D.Add(point2D);
+                     lastPoint2D = point2D;
+                  }
                }
             }
+
+            if (pointList3D != null && pointList3D.Count >= 2)
+               return new PolyLineVertices(pointList3D);
+            else if (pointList2D != null && pointList2D.Count >= 2)
+               return new PolyLineVertices(pointList2D);
          }
 
-         return tessellatedCurve;
+         return null;
       }
 
-      private static IList<double> CoordListFromXYZ(ExporterIFC exporterIFC, XYZ thePoint)
+      private static PolyLineVertices PointListFromGenericCurve(ExporterIFC exporterIFC,
+         Curve curve, Transform lcs, XYZ projectDir)
       {
-         IList<double> coordList = new List<double>();
-         IFCFile file = exporterIFC.GetFile();
+         bool use3DPoint = (lcs == null || projectDir == null);
 
-         XYZ vertexScaled = ExporterIFCUtils.TransformAndScalePoint(exporterIFC, thePoint);
-         coordList.Add(vertexScaled.X);
-         coordList.Add(vertexScaled.Y);
-         coordList.Add(vertexScaled.Z);
-         return coordList;
-      }
+         List<XYZ> listXYZ = new List<XYZ>();
+         List<UV> listUV = new List<UV>();
 
-      private static void PointListFromLine(ExporterIFC exporterIFC, Line line, Transform lcs, XYZ projectDir,
-            out IList<IList<double>> pointList, out IList<int> segmentIndex)
-      {
-         IFCFile file = exporterIFC.GetFile();
-         bool use3DPoint = false;
-         if (lcs == null || projectDir == null)
-            use3DPoint = true;
-
-         pointList = new List<IList<double>>();
-         segmentIndex = new List<int>();
-
-         if (use3DPoint)
-            pointList.Add(CoordListFromXYZ(exporterIFC, line.GetEndPoint(0)));
-         else
-            pointList.Add(CartesianPointFromXYZ(file, line.GetEndPoint(0), lcs, projectDir));
-         segmentIndex.Add(0);
-
-         if (use3DPoint)
-            pointList.Add(CoordListFromXYZ(exporterIFC, line.GetEndPoint(1)));
-         else
-            pointList.Add(CartesianPointFromXYZ(file, line.GetEndPoint(1), lcs, projectDir));
-         segmentIndex.Add(1);
-      }
-
-      private static void PointListFromArc(ExporterIFC exporterIFC, Arc arc, Transform lcs, XYZ projectDir,
-            out IList<IList<double>> pointList, out IList<int> segmentIndex,
-            bool useTessellation = true)
-      {
-         IFCFile file = exporterIFC.GetFile();
-         bool use3DPoint = false;
-         if (lcs == null || projectDir == null)
-            use3DPoint = true;
-
-         pointList = new List<IList<double>>();
-         segmentIndex = new List<int>();
-         if (useTessellation)
+         IList<XYZ> tessellatedCurve = curve.Tessellate();
+         var pointsCount = tessellatedCurve.Count;
+         for (int ii = 0; ii < pointsCount; ++ii)
          {
-            IList<XYZ> tessellatedCurve = CustomCurveTessellation(arc, 10);
-            for (int ii = 0; ii < tessellatedCurve.Count; ++ii)
+            if (use3DPoint)
             {
-               if (use3DPoint)
-                  pointList.Add(CoordListFromXYZ(exporterIFC, tessellatedCurve[ii]));
-               else
-                  pointList.Add(CartesianPointFromXYZ(file, tessellatedCurve[ii], lcs, projectDir));
-               segmentIndex.Add(ii);
+               var point = ExporterIFCUtils.TransformAndScalePoint(exporterIFC, tessellatedCurve[ii]);
+               // Avoid consecutive duplicates
+               if (listXYZ.Count == 0 || !CoordsAreWithinVertexTol(point, listXYZ.Last()))
+                  listXYZ.Add(point);
+            }
+            else
+            {
+               var point = ScaledUVListFromXYZ(tessellatedCurve[ii], lcs, projectDir);
+               // Avoid consecutive duplicates
+               if (listUV.Count == 0 || !CoordsAreWithinVertexTol(point, listUV.Last()))
+                  listUV.Add(point);
             }
          }
-         else
-         {
-            XYZ p1, p2, p3;
-            p1 = arc.GetEndPoint(0);
-            p3 = arc.GetEndPoint(1);
-            p2 = arc.Evaluate(0.5, true);
 
-            if (use3DPoint)
-               pointList.Add(CoordListFromXYZ(exporterIFC, p1));
-            else
-               pointList.Add(CartesianPointFromXYZ(file, p1, lcs, projectDir));
-            segmentIndex.Add(0);
+         if (listXYZ != null && listXYZ.Count >= 2)
+            return new PolyLineVertices(listXYZ);
+         else if (listUV != null && listUV.Count >= 2)
+            return new PolyLineVertices(listUV);
 
-            if (use3DPoint)
-               pointList.Add(CoordListFromXYZ(exporterIFC, p2));
-            else
-               pointList.Add(CartesianPointFromXYZ(file, p2, lcs, projectDir));
-            segmentIndex.Add(1);
+         return null;
+      }
 
-            if (use3DPoint)
-               pointList.Add(CoordListFromXYZ(exporterIFC, p3));
-            else
-               pointList.Add(CartesianPointFromXYZ(file, p3, lcs, projectDir));
-            segmentIndex.Add(2);
-         }
+      static private bool AllowedCurveForAllowComplexBoundary(Curve curve)
+      {
+         if (curve == null)
+            return false;
+
+         if (ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4)
+            return true;
+
+         return ((curve is Line) || (curve is Arc) || (curve is Ellipse));
       }
 
       /// <summary>
@@ -2938,22 +3283,20 @@ namespace Revit.IFC.Export.Utility
       /// <param name="projDir">The project direction.</param>
       /// <param name="curveLoop">The curve loop.</param>
       /// <param name="curves">The curve array.</param>
-      /// <param name="exportAs2x2">True to export as IFC2x2.</param>
       /// <returns>True if complex boundary is allowed.</returns>
-      static bool AllowComplexBoundary(XYZ zDir, XYZ projDir, CurveLoop curveLoop, IList<Curve> curves, bool exportAs2x2)
+      static bool AllowComplexBoundary(XYZ zDir, XYZ projDir, CurveLoop curveLoop, IList<Curve> curves)
       {
-         if (exportAs2x2 && !MathUtil.IsAlmostEqual(Math.Abs(zDir.DotProduct(projDir)), 1.0))
-         {
+         if (ExporterCacheManager.ExportOptionsCache.ExportAs2x2 && !MathUtil.IsAlmostEqual(Math.Abs(zDir.DotProduct(projDir)), 1.0))
             return false;
-         }
 
+         // Checks below are for IFC2x3 or earlier only.
          if (curveLoop != null)
          {
             bool allLines = true;
 
             foreach (Curve curve in curveLoop)
             {
-               if (!(curve is Line) && !(curve is Arc) && !(curve is Ellipse))
+               if (!AllowedCurveForAllowComplexBoundary(curve))
                   return false;
                if (!(curve is Line))
                   allLines = false;
@@ -2969,7 +3312,7 @@ namespace Revit.IFC.Export.Utility
 
             foreach (Curve curve in curves)
             {
-               if (!(curve is Line) && !(curve is Arc) && !(curve is Ellipse))
+               if (!AllowedCurveForAllowComplexBoundary(curve))
                   return false;
                if (!(curve is Line))
                   allLines = false;
@@ -2993,12 +3336,13 @@ namespace Revit.IFC.Export.Utility
       /// <param name="needToClose">True if the curve needs to be close.</param>
       /// <param name="pts">The polyline points.</param>
       /// <param name="segments">The curve segments.</param>
+      /// <param mame="filterDuplicates">Filter duplicate points.  Example use case:  curves projected </param>
       /// <returns>The created IFC curve.</returns>
       static IFCAnyHandle CreateCurveFromComponents(IFCFile file, bool useSimpleBoundary, bool needToClose, IList<UV> pts, IList<IFCAnyHandle> segments)
       {
          IFCAnyHandle profileCurve;
 
-         if (ExporterCacheManager.ExportOptionsCache.ExportAs4ReferenceView)
+         if (ExporterCacheManager.ExportOptionsCache.ExportAsReferenceView)
          {
             IList<IList<double>> coords = new List<IList<double>>();
             foreach (UV pt in pts)
@@ -3022,22 +3366,58 @@ namespace Revit.IFC.Export.Utility
             if (sz < 2)
                return null;
 
-
+            int uniqueUVFuzzyCompare(UV first, UV second)
             {
-               IList<IFCAnyHandle> polyLinePts = new List<IFCAnyHandle>();
-               foreach (UV pt in pts)
+               if (first == null)
                {
-                  polyLinePts.Add(ExporterUtil.CreateCartesianPoint(file, pt));
+                  return (second == null) ? 0 : -1;
                }
 
-               if (needToClose)
-                  polyLinePts.Add(polyLinePts[0]);
+               if (second == null)
+               {
+                  return 1;
+               }
 
-               if (polyLinePts.Count < 2)
-                  return null;
+               if (!first.IsAlmostEqualTo(second))
+               {
+                  double tolerance = ExporterCacheManager.LengthPrecision;
+                  for (int ii = 0; ii < 2; ii++)
+                  {
+                     double diff = first[ii] - second[ii];
+                     if (diff < -tolerance)
+                        return -1;
+                     if (diff > tolerance)
+                        return 1;
+                  }
+               }
 
-               profileCurve = IFCInstanceExporter.CreatePolyline(file, polyLinePts);
+               return 0;
             }
+
+            SortedSet<UV> uniqueSet = new(Comparer<UV>.Create(uniqueUVFuzzyCompare));
+            List<UV> uniquePoints = new();
+            foreach (UV pt in pts)
+            {
+               if (uniqueSet.Contains(pt))
+                  continue;
+
+               uniqueSet.Add(pt);
+               uniquePoints.Add(pt);
+            }
+
+            IList<IFCAnyHandle> polyLinePts = new List<IFCAnyHandle>();
+            foreach (UV pt in uniquePoints)
+            {
+               polyLinePts.Add(ExporterUtil.CreateCartesianPoint(file, pt));
+            }
+
+            if (needToClose)
+               polyLinePts.Add(polyLinePts[0]);
+
+            if (polyLinePts.Count < 2)
+               return null;
+
+            profileCurve = IFCInstanceExporter.CreatePolyline(file, polyLinePts);
          }
          else
          {
@@ -3046,62 +3426,103 @@ namespace Revit.IFC.Export.Utility
          return profileCurve;
       }
 
+      public class TriangleDictionaryComparer : IComparer<XYZ>
+      {
+         public int Compare(XYZ first, XYZ second)
+         {
+            const double tol = TriangleMergeUtil.Tolerance;
+
+            if (first == null)
+               return (second == null) ? 0 : -1;
+            if (second == null)
+               return 1;
+
+            for (int ii = 0; ii < 3; ii++)
+            {
+               double diff = first[ii] - second[ii];
+               if (diff < -tol)
+                  return -1;
+               if (diff > tol)
+                  return 1;
+            }
+            return 0;
+         }
+      }
+
+      public class TriangleDictionary
+      {
+         public SortedDictionary<XYZ, int> VertexMap { get; } = new SortedDictionary<XYZ, int>(new TriangleDictionaryComparer());
+      }
+
       /// <summary>
       /// Function to process list of triangles set into an indexed triangles format for Tessellated geometry
       /// </summary>
-      /// <param name="file">the IFC file</param>
-      /// <param name="triangleList">the list of triangles</param>
-      /// <returns>an IFC handle for IfcTriangulatedFaceSet Item</returns>
+      /// <param name="file">The IFC file.</param>
+      /// <param name="triangleList">The list of triangles.</param>
+      /// <returns>An IFC handle for an IfcTriangulatedFaceSet.</returns>
       public static IFCAnyHandle GetIndexedTriangles(IFCFile file, List<List<XYZ>> triangleList)
       {
-         List<XYZ> vertList = new List<XYZ>();
-         TriangleMergeUtil.vectorCompare vertComparer = new TriangleMergeUtil.vectorCompare();
-         IDictionary<XYZ, int> vertListIdxDict = new Dictionary<XYZ, int>(vertComparer);
-         IList<IList<double>> coordList = new List<IList<double>>();
-         IList<IList<int>> triIndex = new List<IList<int>>();
+         TriangleDictionary vertexMap = new();
+
+         IList<IList<int>> triangleIndices = new List<IList<int>>();
 
          if (triangleList.Count == 0)
             return null;
 
+         int count = 1;
          foreach (List<XYZ> triangle in triangleList)
          {
+            // This is probably overkill since we expect triangle to have 3 entries.
+            // However, noting actually ensures that, and this should be fast anyway.
+            ISet<int> usedIndices = new HashSet<int>(3);
+            bool addCurrent = true;
+
             // Create triangle index and insert the index list of 3 into the triangle index list
-            List<int> tri = new List<int>();
-
-            foreach (XYZ vert in triangle)
+            List<int> currentTriangleIndices = new List<int>();
+            foreach (XYZ vertex in triangle)
             {
-               int idx = -1;
-
-               //idx = vertList.FindIndex(x => x.IsAlmostEqualTo(vert));
-               //if (idx < 0)
-               if (!vertListIdxDict.TryGetValue(vert, out idx))
+               int index;
+               if (!vertexMap.VertexMap.TryGetValue(vertex, out index))
                {
                   // Point not found, insert the point into the list
-                  vertList.Add(vert);
-                  idx = vertList.Count - 1; // Since the item is added at the end of the list, the index will be the last item in the List
-                  vertListIdxDict.Add(vert, idx);
+                  vertexMap.VertexMap[vertex] = count;
+                  index = count++;
                }
 
-               tri.Add((idx) + 1); //!!! The index starts at 1 (and not 0) following X3D standard
+               if (usedIndices.Contains(index))
+               {
+                  // Triangle has a 0 length side, within tolerance.  Don't add.
+                  addCurrent = false;
+                  break;
+               }
+               usedIndices.Add(index);
+
+               //!!! The index starts at 1 (and not 0) following X3D standard
+               currentTriangleIndices.Add(index);
             }
-            triIndex.Add(tri);
+
+            if (addCurrent)
+               triangleIndices.Add(currentTriangleIndices);
          }
 
-         if (vertList.Count == 0)
+         // Didn't add anything.
+         int mapCount = vertexMap.VertexMap.Count;
+         if (mapCount == 0 || triangleIndices.Count == 0)
             return null;
 
-         foreach (XYZ vert in vertList)
-         {
-            List<double> coord = new List<double>();
-            coord.Add(vert.X);
-            coord.Add(vert.Y);
-            coord.Add(vert.Z);
-            coordList.Add(coord);
-         }
-         IFCAnyHandle coordPointLists = IFCAnyHandleUtil.CreateInstance(file, IFCEntityType.IfcCartesianPointList3D);
-         IFCAnyHandleUtil.SetAttribute(coordPointLists, "CoordList", coordList, 1, null, 3, 3);
+         List<IList<double>> coordList = new();
+         CollectionsMarshal.SetCount(coordList, mapCount);
 
-         IFCAnyHandle triangulatedItem = IFCInstanceExporter.CreateTriangulatedFaceSet(file, coordPointLists, null, null, triIndex, null);
+         foreach (KeyValuePair<XYZ, int> vertexAndIndex in vertexMap.VertexMap)
+         {
+            XYZ vertex = vertexAndIndex.Key;
+            int index = vertexAndIndex.Value - 1;
+            coordList[index] = new List<double> { vertex.X, vertex.Y, vertex.Z };
+         }
+
+         IFCAnyHandle coordPointLists = IFCInstanceExporter.CreateCartesianPointList3D(file, coordList);
+
+         IFCAnyHandle triangulatedItem = IFCInstanceExporter.CreateTriangulatedFaceSet(file, coordPointLists, null, null, triangleIndices, null);
 
          return triangulatedItem;
       }
@@ -3109,32 +3530,31 @@ namespace Revit.IFC.Export.Utility
       /// <summary>
       /// Check if two bounding boxes overlap. 
       /// </summary>
-      /// <param name="originalBox1">The first bounding box</param>
-      /// <param name="originalBox2">The second bounding box</param>
-      /// <returns>true if two bounding boxes overlap</returns>
-      /// <remarks>This method only works under the assumption that two bounding boxes are in the same coordinate system, 
-      ///          which means that their respective faces are parallel to each other. 
-      ///          If the given boxes are transformed, then this function will create two axes-aligned bounding boxes
-      ///          of these two boxes in the model coordinate system, 
-      ///          and then check if the two new bounding boxes overlap</remarks>
+      /// <param name="originalBox1">The first bounding box.</param>
+      /// <param name="originalBox2">The second bounding box.</param>
+      /// <returns>True if originalBox1 overlaps with originalBox2.</returns>
+      /// <remarks>
+      /// If the given bounding boxes are transformed, then this function will create two 
+      /// axes-aligned bounding boxes of these two boxes in the model coordinate system, 
+      /// and then check if the two new bounding boxes.  This could result in false-positive
+      /// results in some cases.
+      /// </remarks>
       public static bool BoundingBoxesOverlap(BoundingBoxXYZ originalBox1, BoundingBoxXYZ originalBox2)
       {
-         if ((originalBox1 != null && originalBox1.Enabled && originalBox2 != null && originalBox2.Enabled))
-         {
-            BoundingBoxXYZ bbox1 = BoundingBoxInModelCoordinate(originalBox1);
-            BoundingBoxXYZ bbox2 = BoundingBoxInModelCoordinate(originalBox2);
-
-            if (bbox1 == null || bbox2 == null)
-               return false;
-
-            return (bbox1.Max.X >= bbox2.Min.X) && (bbox1.Min.X <= bbox2.Max.X)
-                && (bbox1.Max.Y >= bbox2.Min.Y) && (bbox1.Min.Y <= bbox2.Max.Y)
-                && (bbox1.Max.Z >= bbox2.Min.Z) && (bbox1.Min.Z <= bbox2.Max.Z);
-         }
-         else
-         {
+         if ((originalBox1 == null || !originalBox1.Enabled || originalBox2 == null || !originalBox2.Enabled))
             return false;
-         }
+
+         BoundingBoxXYZ bbox1 = BoundingBoxInModelCoordinate(originalBox1);
+         BoundingBoxXYZ bbox2 = BoundingBoxInModelCoordinate(originalBox2);
+
+         if (bbox1 == null || bbox2 == null)
+            return false;
+
+         // We want bbox1 to be such that for all of X, Y and Z, either
+         // min or max is inside the bbox2 range.
+         return (bbox1.Max.X >= bbox2.Min.X) && (bbox1.Min.X <= bbox2.Max.X)
+             && (bbox1.Max.Y >= bbox2.Min.Y) && (bbox1.Min.Y <= bbox2.Max.Y)
+             && (bbox1.Max.Z >= bbox2.Min.Z) && (bbox1.Min.Z <= bbox2.Max.Z);
       }
 
       // return the bounding box in model coordinate of the given box
@@ -3180,255 +3600,73 @@ namespace Revit.IFC.Export.Utility
       }
 
       /// <summary>
-      /// Sort the edge loops in the given face
+      /// Organizes the edge loops of a face in groups of one outer loop and its corresponding inner loops.
       /// </summary>
-      /// <param name="edgeArrays">The list of loops</param>
-      /// <param name="face">The given face</param>
-      /// <returns>Returns a map that maps every outer loop to its corresponding inner loops</returns>
-      public static Dictionary<EdgeArray, IList<EdgeArray>> SortEdgeLoop(EdgeArrayArray edgeArrays, Face face)
+      /// <param name="face">The input face</param>
+      /// <returns></returns>
+      public static List<(EdgeArray outerLoop, List<EdgeArray>)> GetOuterLoopsWithInnerLoops(Face face)
       {
-         // we will sort these loops by tessellating every edgeArray on the given face to get the uv loop. 
-         // The connection between each edge array and its corresponding uv loop will be stored in the loopMap. 
-         // We will then sort the uv loops and store the result in the sortedTessellatedLoops. After we 
-         // finish sorting uv loops, we convert them back to edge arrays and return the result
-
-         Dictionary<EdgeArray, IList<EdgeArray>> sortedEdgeLoops = new Dictionary<EdgeArray, IList<EdgeArray>>();
-         Dictionary<IList<UV>, IList<IList<UV>>> sortedTessellatedLoops = new Dictionary<IList<UV>, IList<IList<UV>>>();
-         IDictionary<IList<UV>, EdgeArray> loopMap = new Dictionary<IList<UV>, EdgeArray>();
-
-         foreach (EdgeArray edgeArray in edgeArrays)
+         EdgeArrayArray edgeLoops = face.EdgeLoops;
+         int numLoops = edgeLoops?.Size ?? 0;
+         if (numLoops == 0)
          {
-            // We will tessellate edgeArray to get tessellatedLoop
-            List<UV> tessellatedLoop = new List<UV>();
-
-
-            // the number of already processed edges, we only use this to know if we are processing the last edge or not
-            int count = 0;
-
-            // Tessellate each edge to get a list of UV points and add them to tessellatedLoop
-            // we have to make sure that we don't add the same point twice to the list, since each point is shared by 2 edges in the loop
-            foreach (Edge edge in edgeArray)
-            {
-
-               bool lastEdge = (++count == edgeArray.Size);
-               List<UV> tessellatedEdge = edge.TessellateOnFace(face).ToList<UV>();
-
-               // For the first edge in the loop, we will add all of its tessellated points to the list
-               if (tessellatedLoop.Count == 0)
-               {
-                  tessellatedLoop.AddRange(tessellatedEdge);
-               }
-               else
-               {
-                  // For every other edge that is not the first one, one of its end point will already be in tessellatedLoop (if not then
-                  // we have a disconnected edge loop, in that case we will stop the process and throw an exception). 
-                  // However, because tessellateOnFace is not consistent in the direction that it tessellates an edge, we don't know how 
-                  // this edge connects to the existing loop. Thus we have to check 2 end points of this edge against 2 end points of the
-                  // loops to decide which 2 of them are equal. 
-
-                  // If this edge is the last edge in the loop, then both of its end point will already be in the loop, hence we need an extra
-                  // check to avoid adding redundant points.
-                  double distEndToStart = tessellatedEdge[tessellatedEdge.Count - 1].DistanceTo(tessellatedLoop[0]);
-                  double distStartToStart = tessellatedEdge[0].DistanceTo(tessellatedLoop[0]);
-                  double distEndToEnd = tessellatedEdge[tessellatedEdge.Count - 1].DistanceTo(tessellatedLoop[tessellatedLoop.Count - 1]);
-                  double distStartToEnd = tessellatedEdge[0].DistanceTo(tessellatedLoop[tessellatedLoop.Count - 1]);
-
-                  double minDist = Math.Min(Math.Min(distEndToStart, distStartToStart), Math.Min(distEndToEnd, distStartToEnd));
-                  double uvTol = ExporterCacheManager.Document.Application.VertexTolerance;
-                  if (minDist > uvTol)
-                     throw new InvalidOperationException("Disconnected edge loop");
-
-                  if (MathUtil.IsAlmostEqual(distEndToStart, minDist))
-                  {
-                     // if the last point of the edge is the first point of the loop, then remove that last point, and
-                     // append the loop to this edge
-                     tessellatedEdge.RemoveAt(tessellatedEdge.Count - 1);
-                     if (lastEdge)
-                     {
-                        tessellatedEdge.RemoveAt(0);
-                     }
-                     tessellatedEdge.AddRange(tessellatedLoop);
-                     tessellatedLoop = tessellatedEdge;
-                  }
-                  else if (MathUtil.IsAlmostEqual(distStartToStart, minDist))
-                  {
-                     // if the first point of the edge is the first point of the loop, we reverse the edge, remove the last point (which used to be 
-                     // the first one), and append the loop to this edge
-                     tessellatedEdge.Reverse();
-                     tessellatedEdge.RemoveAt(tessellatedEdge.Count - 1);
-                     if (lastEdge)
-                     {
-                        tessellatedEdge.RemoveAt(0);
-                     }
-                     tessellatedEdge.AddRange(tessellatedLoop);
-                     tessellatedLoop = tessellatedEdge;
-                  }
-                  else if (MathUtil.IsAlmostEqual(distEndToEnd, minDist))
-                  {
-                     // if the last point of the edge is the last point of the loop, we remove that point and append the reversed edge to the loop
-                     tessellatedEdge.Reverse();
-                     tessellatedEdge.RemoveAt(0);
-                     if (lastEdge)
-                     {
-                        tessellatedEdge.RemoveAt(tessellatedEdge.Count - 1);
-                     }
-                     tessellatedLoop.AddRange(tessellatedEdge);
-                  }
-                  else if (MathUtil.IsAlmostEqual(distStartToEnd, minDist))
-                  {
-                     // if the last point of the loop is the first point of the edge, then we remove that point and append the edge to the loop
-                     tessellatedEdge.RemoveAt(0);
-                     if (lastEdge)
-                     {
-                        tessellatedEdge.RemoveAt(tessellatedEdge.Count - 1);
-                     }
-                     tessellatedLoop.AddRange(tessellatedEdge);
-                  }
-                  else
-                  {
-                     throw new InvalidOperationException("Unexpected case.");
-                  }
-               }
-            }
-
-            // After finishing tessellating this loop, store a map from the tessellatedLoop to the edgeArray in the loopMap
-            loopMap.Add(tessellatedLoop, edgeArray);
-
-            bool created = false;
-            // After getting the tessellatedLoop, we will add it to the sortedTessellatedLoops by first checking if this loop is inside 
-            // any of the outer loops in the map (which are the keys in this map)
-            // 1. If this loop is inside one of them, says outerLoop, then we will have to check if this loop is inside or contains any of the outerLoop's inners:
-            //      - if it is inside one of the outerLoop's inners, then this loop will be an outer loop and we will just have to add it as a new key to the map
-            //      - if it contains some of the outerLoop's inners, then all of these inners will become outer loops
-            //      - if none of the above, then we will add this loop as an another inner loop of the outerLoop
-            // 2. If this loop is not inside any of the outer loops, then it will be an outer loop.
-            foreach (KeyValuePair<IList<UV>, IList<IList<UV>>> entry in sortedTessellatedLoops)
-            {
-               // first we check if tessellatedLoop is inside any of the loop in the sortedTessellatedEdges
-               if (PointInsidePolygon(tessellatedLoop[0], entry.Key))
-               {
-                  // now we need to check if each loop in entry.Value is inside this loop
-                  IList<IList<UV>> innerLoops = new List<IList<UV>>();
-                  if (IsInsideAnotherLoop(tessellatedLoop, entry.Value))
-                  {
-                     // if tessellateLoop is inside another loop, then it will become the outer loop
-                     sortedTessellatedLoops.Add(tessellatedLoop, new List<IList<UV>>());
-                  }
-                  else if (IsOutsideOtherLoops(tessellatedLoop, entry.Value, out innerLoops))
-                  {
-                     // if tessellatedLoop contains some other loops, then all of these loops become outer loop
-                     entry.Value.Add(tessellatedLoop);
-                     foreach (IList<UV> innerLoop in innerLoops)
-                     {
-                        entry.Value.Remove(innerLoop);
-                        sortedTessellatedLoops.Add(innerLoop, new List<IList<UV>>());
-                     }
-                  }
-                  else
-                  {
-                     entry.Value.Add(tessellatedLoop);
-                  }
-                  created = true;
-                  break;
-               }
-            }
-
-            if (!created)
-            {
-               // this means tessellatedLoop is not inside any of the outerloop in the sortedTessellatedLoop
-               sortedTessellatedLoops.Add(tessellatedLoop, new List<IList<UV>>());
-            }
+            return [];
          }
 
-         // convert IList<UV> back into EdgeArray and return the result;
-
-         foreach (KeyValuePair<IList<UV>, IList<IList<UV>>> entry in sortedTessellatedLoops)
+         if (numLoops == 1)
          {
-            IList<UV> key = entry.Key;
-            IList<EdgeArray> innerLoops = new List<EdgeArray>();
+            // If there is only one loop, return it as the outer loop with no inner loops.
+            return [(edgeLoops.get_Item(0), [])];
+         }
 
-            foreach (IList<UV> uvLoop in entry.Value)
+         IList<IList<int>> sortedLoops = ExporterIFCUtils.SortFaceEdges(face);
+         if (sortedLoops == null)
+         {
+            return [];
+         }
+
+         int numSortedLoops = 0;
+         foreach (IList<int> edgeIndices in sortedLoops)
+         {
+            numSortedLoops += edgeIndices.Count;
+         }
+         
+         if (numSortedLoops != numLoops)
+         {
+            // If the number of sorted loops does not match the number of edge loops, return an empty list.
+            return [];
+         }
+
+         List<(EdgeArray outerLoop, List<EdgeArray>)> sortedEdgeLoops = [];
+         foreach (IList<int> edgeIndices in sortedLoops)
+         {
+            EdgeArray outerEdgeArray = null;
+            List<EdgeArray> innerEdgeArrays = [];
+
+            foreach (int index in edgeIndices)
             {
-               innerLoops.Add(loopMap[uvLoop]);
+               EdgeArray edgeArray = edgeLoops.get_Item(index);
+               if (index < 0 || index >= numLoops)
+               {
+                  // If we have an invalid index or edge array, abort trying to sort the loops.
+                  return [];
+               }
+
+               if (outerEdgeArray == null)
+               {
+                  // The first edge array we encounter is the outer loop.
+                  outerEdgeArray = edgeArray;
+                  continue;
+               }
+
+               // Any subsequent edge arrays are inner loops.
+               innerEdgeArrays.Add(edgeArray);
             }
 
-            sortedEdgeLoops.Add(loopMap[key], innerLoops);
+            sortedEdgeLoops.Add((outerEdgeArray, innerEdgeArrays));
          }
 
          return sortedEdgeLoops;
-      }
-
-      /// <summary>
-      /// Check if the given loop (loopToCheck) is inside any of the loop in the given list of loops (listOfLoops). 
-      /// The loop that contains loopToCheck will be stored in outerLoop
-      /// Currently this method is only used in SortEdgeLoop, and we are sure that there is at most one loop that can contain
-      /// loopToCheck. If there is no such loop, then outerLoop will be an empty list
-      /// </summary>
-      /// <param name="loopToCheck">The given loop</param>
-      /// <param name="listOfLoops">The given list of loops</param>
-      /// <returns>true if the given loop is inside any of the loop in the given list of loops</returns>
-      private static bool IsInsideAnotherLoop(IList<UV> loopToCheck, IList<IList<UV>> listOfLoops)
-      {
-         foreach (IList<UV> loop in listOfLoops)
-         {
-            if (PointInsidePolygon(loopToCheck[0], loop))
-            {
-               return true;
-            }
-         }
-         return false;
-      }
-
-      /// <summary>
-      /// Check if the given loop (loopToCheck) is outside any of the loop in the given list of loops (listOfLoops).
-      /// Every loop that is inside loopToCheck will be collected and stored in resultedList
-      /// </summary>
-      /// <param name="loopToCheck">The given loop</param>
-      /// <param name="listOfLoops">The given list of loops</param>
-      /// <param name="resultedList">The list of loops that is inside loopToCheck</param>
-      /// <returns>true if loopToCheck is outside any loop in the given list of loops</returns>
-      private static bool IsOutsideOtherLoops(IList<UV> loopToCheck, IList<IList<UV>> listOfLoops, out IList<IList<UV>> resultedList)
-      {
-         resultedList = new List<IList<UV>>();
-         foreach (IList<UV> loop in listOfLoops)
-         {
-            if (PointInsidePolygon(loop[0], loopToCheck))
-            {
-               resultedList.Add(loop);
-            }
-         }
-
-         return resultedList.Count > 0;
-      }
-
-      /// <summary>
-      /// Checks if the given point is inside the given loop
-      /// </summary>
-      /// <param name="pnt">The given point</param>
-      /// <param name="polyNodes">The given loop</param>
-      /// <returns>true if the given point is inside the given loop</returns>
-      /// <remarks>This function returns an arbitrary result when the point is on the boundary of the polygon. The caller of this function should check
-      ///          if the point is on the boundary first</remarks>
-      private static bool PointInsidePolygon(UV pnt, IList<UV> polyNodes)
-      {
-         if (pnt == null || polyNodes == null || polyNodes.Count == 0)
-            return false;
-
-         int nNodes = polyNodes.Count;
-         // Find the number of intersections of the ray strting from the 'pnt'
-         // in the left direction, with the edges of the polygon.
-         int count = 0; // number of intersections
-         for (int iPrev = 0; iPrev < nNodes; iPrev++)
-         {
-            int iNext = (iPrev + 1) % nNodes;
-            if (polyNodes[iPrev].V >= pnt.V == polyNodes[iNext].V < pnt.V)
-            {
-               if ((pnt.V - polyNodes[iPrev].V) * (polyNodes[iPrev].U - polyNodes[iNext].U) /
-                  (polyNodes[iPrev].V - polyNodes[iNext].V) + polyNodes[iPrev].U < pnt.U)
-                  count++;
-            }
-         }
-         return (count % 2) != 0;
       }
 
       /// <summary>
@@ -3437,122 +3675,211 @@ namespace Revit.IFC.Export.Utility
       /// <param name="file">The file</param>
       /// <param name="exporterIFC">The exporter</param>
       /// <param name="curve">The curve that needs to convert to IFCCurve</param>
-      /// <param name="allowAdvancedCurve">indicates whether (TRUE) we want to convert "advanced" curve type 
-      ///                                  like Hermite or NURBS to IfcCurve or (FALSE) we want to tessellate them</param>
+      /// <param name="allowAdvancedCurve">If true, don't tessellate non-lines and non-arcs.</param>
       /// <param name="cartesianPoints">A map of already created cartesian points, to avoid duplication.</param>
+      /// <param name="trimCurvePreference">An indication of how to create the curve.</param>
+      /// <param name="useLocalCoordinates">If true, the curve is already in element-local coordinates.</param>
       /// <returns>The handle representing the IFCCurve</returns>
       /// <remarks>This cartesianPoints map caches certain 3D points computed by this function that are related to the 
       /// curve, such as the start point of a line and the center of an arc.  It uses the cached values when possible.</remarks>
-      public static IFCAnyHandle CreateIFCCurveFromRevitCurve(IFCFile file, ExporterIFC exporterIFC, Curve curve, bool allowAdvancedCurve,
-         IDictionary<IFCFuzzyXYZ, IFCAnyHandle> cartesianPoints, Transform additionalTrf = null)
+      public static IFCAnyHandle CreateIFCCurveFromRevitCurve(IFCFile file, 
+         ExporterIFC exporterIFC, Curve curve, bool allowAdvancedCurve,
+         IDictionary<IFCFuzzyXYZ, IFCAnyHandle> cartesianPoints,
+         TrimCurvePreference trimCurvePreference,
+         bool useLocalCoordinates = false)
       {
          IFCAnyHandle ifcCurve = null;
+         bool create2d = trimCurvePreference == TrimCurvePreference.Use2DPolyLineOrTrim;
+         Dimension dim = create2d ? Dimension.Dim2D : Dimension.Dim3D;
 
-         if (ExporterCacheManager.ExportOptionsCache.ExportAs4ReferenceView)
+         allowAdvancedCurve &= ExporterCacheManager.ExportOptionsCache.ExportAsDesignTransferView;
+
+         if (ExporterCacheManager.ExportOptionsCache.ExportAsReferenceView)
          {
-            IList<int> segmentIndex = null;
-            IList<IList<double>> pointList = GeometryUtil.PointListFromCurve(exporterIFC, curve, additionalTrf, null, out segmentIndex);
+            Transform lcs = create2d ? Transform.Identity : null;
+            PrimVertices vertices = PointListFromCurve(exporterIFC, curve, lcs, null);
+            // Points from the curve may have been merged after projection, so skip curves that
+            // won't add any new points.
+            if (vertices == null)
+               return null;
 
-            IList<IList<int>> segmentIndexList = new List<IList<int>>();
-            // Not using segment index for now because there is no API to create the appropriate type yet
-            //segmentIndexList.Add(segmentIndex);
-            segmentIndexList = null;
+            PolyCurve polyCurve = new PolyCurve(vertices);
+            polyCurve.BuildVerticesAndIndices();
+            IList<SegmentIndices> segmentsIndices = polyCurve.SegmentsIndices;
 
-            IFCAnyHandle pointListHnd = IFCInstanceExporter.CreateCartesianPointList3D(file, pointList);
-            ifcCurve = IFCInstanceExporter.CreateIndexedPolyCurve(file, pointListHnd, segmentIndexList, false);
-
-            return ifcCurve;
+            IFCAnyHandle pointListHnd = IFCInstanceExporter.CreateCartesianPointList(file, polyCurve.PointList);
+            return IFCInstanceExporter.CreateIndexedPolyCurve(file, pointListHnd, segmentsIndices, false);
          }
 
          // if the Curve is a line, do the following
          if (curve is Line)
          {
             // Unbounded line doesn't make sense, skip if somehow it is 
-            if (curve.IsBound)
+            if (!curve.IsBound)
+               return null;
+
+            Line curveLine = curve as Line;
+            switch (trimCurvePreference)
             {
-               Line curveLine = curve as Line;
-               //ifcCurve = CreateLineSegment(exporterIFC, curveLine);
+               case TrimCurvePreference.UsePolyLineOrTrim:
+               case TrimCurvePreference.Use2DPolyLineOrTrim:
+                  if (useLocalCoordinates)
+                  {
+                     IFCAnyHandle startPt = CreateScaledCartesianPoint(file, curveLine.GetEndPoint(0), dim);
+                     IFCAnyHandle endPt = CreateScaledCartesianPoint(file, curveLine.GetEndPoint(1), dim);
+                     ifcCurve = IFCInstanceExporter.CreatePolyline(file, new List<IFCAnyHandle> { startPt, endPt });
+                  }
+                  else
+                  {
+                     ifcCurve = CreateLineSegment(exporterIFC, curveLine, dim);
+                  }
+                  break;
+               default:
+                  // Create line based trimmed curve for Axis
+                  IFCAnyHandle curveOrigin = useLocalCoordinates
+                     ? CreateScaledCartesianPoint(file, curveLine.Origin, dim)
+                     : XYZtoIfcCartesianPoint(exporterIFC, curveLine.Origin, cartesianPoints, dim);
+                  XYZ dir = curveLine.Direction;
+                  IFCAnyHandle vector = useLocalCoordinates
+                     ? ExporterUtil.CreateDirection(file, dir, dim)
+                     : VectorToIfcVector(exporterIFC, dir);
+                  ifcCurve = IFCInstanceExporter.CreateLine(file, curveOrigin, vector);
 
-               // Create line based trimmed curve for Axis
-               IFCAnyHandle curveOrigin = XYZtoIfcCartesianPoint(exporterIFC, curveLine.Origin, cartesianPoints, additionalTrf);
-               XYZ dir = (additionalTrf == null) ? curveLine.Direction : additionalTrf.OfVector(curveLine.Direction);
-               IFCAnyHandle vector = VectorToIfcVector(exporterIFC, curveLine.Direction);
-               IFCAnyHandle line = IFCInstanceExporter.CreateLine(file, curveOrigin, vector);
+                  if (trimCurvePreference == TrimCurvePreference.TrimmedCurve)
+                  {
+                     IFCAnyHandle startPoint = useLocalCoordinates
+                        ? CreateScaledCartesianPoint(file, curveLine.GetEndPoint(0), dim)
+                        : XYZtoIfcCartesianPoint(exporterIFC, curveLine.GetEndPoint(0), cartesianPoints, dim);
+                     HashSet<IFCData> trim1 = new HashSet<IFCData>() { IFCData.CreateIFCAnyHandle(startPoint) };
+                     IFCAnyHandle endPoint = useLocalCoordinates
+                        ? CreateScaledCartesianPoint(file, curveLine.GetEndPoint(1), dim)
+                        : XYZtoIfcCartesianPoint(exporterIFC, curveLine.GetEndPoint(1), cartesianPoints, dim);
+                     HashSet<IFCData> trim2 = new HashSet<IFCData>() { IFCData.CreateIFCAnyHandle(endPoint) };
 
-               IFCAnyHandle startPoint = XYZtoIfcCartesianPoint(exporterIFC, curveLine.GetEndPoint(0), cartesianPoints, additionalTrf);
-               HashSet<IFCData> trim1 = new HashSet<IFCData>();
-               trim1.Add(IFCData.CreateIFCAnyHandle(startPoint));
-               IFCAnyHandle endPoint = XYZtoIfcCartesianPoint(exporterIFC, curveLine.GetEndPoint(1), cartesianPoints, additionalTrf);
-               HashSet<IFCData> trim2 = new HashSet<IFCData>();
-               trim2.Add(IFCData.CreateIFCAnyHandle(endPoint));
-               ifcCurve = IFCInstanceExporter.CreateTrimmedCurve(file, line, trim1, trim2, true, IFCTrimmingPreference.Cartesian);
+                     ifcCurve = IFCInstanceExporter.CreateTrimmedCurve(file, ifcCurve, trim1, trim2, true, IFCTrimmingPreference.Cartesian);
+                  }
+                  break;
             }
          }
          // if the Curve is an Arc do following
          else if (curve is Arc)
          {
             Arc curveArc = curve as Arc;
-            XYZ curveArcCenter = (additionalTrf == null) ? curveArc.Center : additionalTrf.OfPoint(curveArc.Center);
-            XYZ curveArcNormal = (additionalTrf == null) ? curveArc.Normal : additionalTrf.OfVector(curveArc.Normal);
-            XYZ curveArcXDirection = (additionalTrf == null) ? curveArc.XDirection : additionalTrf.OfVector(curveArc.XDirection);
+            double radius = UnitUtil.ScaleLength(curveArc.Radius);
+            if (!IFCInstanceExporter.ValidateCircle(radius))
+            {
+               return null;
+            }
+
+            XYZ curveArcNormal = useLocalCoordinates
+               ? curveArc.Normal
+               : ExporterIFCUtils.TransformAndScaleVector(exporterIFC, curveArc.Normal);
+            XYZ curveArcXDirection = useLocalCoordinates
+               ? curveArc.XDirection
+               : ExporterIFCUtils.TransformAndScaleVector(exporterIFC, curveArc.XDirection);
+
+            XYZ curveArcCenter = curveArc.Center;
 
             if (curveArcCenter == null || curveArcNormal == null || curveArcXDirection == null)
             {
                // encounter invalid curve, return null
                return null;
             }
-            IFCAnyHandle location3D = XYZtoIfcCartesianPoint(exporterIFC, curveArcCenter, cartesianPoints);
 
-            // Create the z-direction
-            IFCAnyHandle axis = VectorToIfcDirection(exporterIFC, curveArcNormal);
+            // When lcs.Inverse flips the arc normal to -Z, the Revit parameterization
+            // is CW but IFC 2D circles are always CCW. Normalize here; the trim
+            // parameter correction is applied in TrimPeriodicCurve.
+            bool arcNormalFlipped = create2d && curveArcNormal.Z < 0;
+            if (arcNormalFlipped)
+               curveArcNormal = curveArcNormal.Negate();
+
+            if (create2d && !MathUtil.IsAlmostEqual(curveArcNormal.Z, 1.0))
+            {
+               return null;
+            }
+
+            IFCAnyHandle origin = useLocalCoordinates
+               ? CreateScaledCartesianPoint(file, curveArcCenter, dim)
+               : XYZtoIfcCartesianPoint(exporterIFC, curveArcCenter, cartesianPoints, dim);
 
             // Create the x-direction
-            IFCAnyHandle refDirection = VectorToIfcDirection(exporterIFC, curveArcXDirection);
+            // No need to transform to IFC coordinates anymore
+            IFCAnyHandle refDirection = ExporterUtil.CreateDirection(file, curveArcXDirection, dim);
 
-            IFCAnyHandle position3D = IFCInstanceExporter.CreateAxis2Placement3D(file, location3D, axis, refDirection);
-            IFCAnyHandle circle = IFCInstanceExporter.CreateCircle(file, position3D, UnitUtil.ScaleLength(curveArc.Radius));
+            // Create the z-direction
+            // No need to transform to IFC coordinates anymore
+            IFCAnyHandle axis = create2d ? null : ExporterUtil.CreateDirection(file, curveArcNormal, dim);
 
-            IFCAnyHandle startPoint = XYZtoIfcCartesianPoint(exporterIFC, curveArc.GetEndPoint(0), cartesianPoints, additionalTrf);
-            HashSet<IFCData> trim1 = new HashSet<IFCData>();
-            trim1.Add(IFCData.CreateIFCAnyHandle(startPoint));
+            IFCAnyHandle position3D = create2d ? 
+               IFCInstanceExporter.CreateAxis2Placement2D(file, origin, refDirection) :
+               IFCInstanceExporter.CreateAxis2Placement3D(file, origin, axis, refDirection);
 
-            IFCAnyHandle endPoint = XYZtoIfcCartesianPoint(exporterIFC, curveArc.GetEndPoint(1), cartesianPoints, additionalTrf);
-            HashSet<IFCData> trim2 = new HashSet<IFCData>();
-            trim2.Add(IFCData.CreateIFCAnyHandle(endPoint));
+            ifcCurve = IFCInstanceExporter.CreateCircle(file, position3D, radius);
 
-            ifcCurve = IFCInstanceExporter.CreateTrimmedCurve(file, circle, trim1, trim2, true, IFCTrimmingPreference.Cartesian);
+            if (trimCurvePreference != TrimCurvePreference.BaseCurve && curve.IsBound)
+            {
+               ifcCurve = TrimPeriodicCurve(file, exporterIFC, ifcCurve, curveArc,
+                  useLocalCoordinates, cartesianPoints, dim, arcNormalFlipped);
+            }
          }
          // If curve is an ellipse or elliptical Arc type
          else if (curve is Ellipse)
          {
             Ellipse curveEllipse = curve as Ellipse;
-            IList<double> direction = new List<double>();
-            XYZ ellipseNormal = (additionalTrf == null) ? curveEllipse.Normal : additionalTrf.OfVector(curveEllipse.Normal);
-            XYZ ellipseXDirection = (additionalTrf == null) ? curveEllipse.XDirection : additionalTrf.OfVector(curveEllipse.XDirection);
+            double semiAxis1 = UnitUtil.ScaleLength(curveEllipse.RadiusX);
+            double semiAxis2 = UnitUtil.ScaleLength(curveEllipse.RadiusY);
+            if (!IFCInstanceExporter.ValidateEllipse(semiAxis1, semiAxis2))
+            {
+               return null;
+            }
 
-            IFCAnyHandle location3D = XYZtoIfcCartesianPoint(exporterIFC, curveEllipse.Center, cartesianPoints, additionalTrf);
+            XYZ ellipseNormal = useLocalCoordinates
+               ? curveEllipse.Normal
+               : ExporterIFCUtils.TransformAndScaleVector(exporterIFC, curveEllipse.Normal);
+            XYZ ellipseXDirection = useLocalCoordinates
+               ? curveEllipse.XDirection
+               : ExporterIFCUtils.TransformAndScaleVector(exporterIFC, curveEllipse.XDirection);
 
-            IFCAnyHandle axis = VectorToIfcDirection(exporterIFC, ellipseNormal);
+            bool ellipseNormalFlipped = create2d && ellipseNormal.Z < 0;
+            if (ellipseNormalFlipped)
+               ellipseNormal = ellipseNormal.Negate();
+
+            if (create2d && !MathUtil.IsAlmostEqual(ellipseNormal.Z, 1.0))
+            {
+               return null;
+            }
+
+            IFCAnyHandle location = useLocalCoordinates
+               ? CreateScaledCartesianPoint(file, curveEllipse.Center, dim)
+               : XYZtoIfcCartesianPoint(exporterIFC, curveEllipse.Center, cartesianPoints, dim);
+
+            // No need to transform to IFC coordinates anymore
+            IFCAnyHandle axis = create2d ? null : ExporterUtil.CreateDirection(file, ellipseNormal, dim);
 
             // Create the x-direction
-            IFCAnyHandle refDirection = VectorToIfcDirection(exporterIFC, ellipseXDirection);
+            // No need to transform to IFC coordinates anymore
+            IFCAnyHandle refDirection = ExporterUtil.CreateDirection(file, ellipseXDirection, dim);
 
-            IFCAnyHandle position = IFCInstanceExporter.CreateAxis2Placement3D(file, location3D, axis, refDirection);
+            IFCAnyHandle position = create2d ?
+               IFCInstanceExporter.CreateAxis2Placement2D(file, location, refDirection) :
+               IFCInstanceExporter.CreateAxis2Placement3D(file, location, axis, refDirection);
 
-            IFCAnyHandle ellipse = IFCInstanceExporter.CreateEllipse(file, position, UnitUtil.ScaleLength(curveEllipse.RadiusX), UnitUtil.ScaleLength(curveEllipse.RadiusY));
+            ifcCurve = IFCInstanceExporter.CreateEllipse(file, position, semiAxis1, semiAxis2);
 
-            IFCAnyHandle startPoint = XYZtoIfcCartesianPoint(exporterIFC, curveEllipse.GetEndPoint(0), cartesianPoints, additionalTrf);
-            HashSet<IFCData> trim1 = new HashSet<IFCData>();
-            trim1.Add(IFCData.CreateIFCAnyHandle(startPoint));
-
-            IFCAnyHandle endPoint = XYZtoIfcCartesianPoint(exporterIFC, curveEllipse.GetEndPoint(1), cartesianPoints, additionalTrf);
-            HashSet<IFCData> trim2 = new HashSet<IFCData>();
-            trim2.Add(IFCData.CreateIFCAnyHandle(endPoint));
-
-            ifcCurve = IFCInstanceExporter.CreateTrimmedCurve(file, ellipse, trim1, trim2, true, IFCTrimmingPreference.Cartesian);
+            if (trimCurvePreference != TrimCurvePreference.BaseCurve && curve.IsBound)
+            {
+               ifcCurve = TrimPeriodicCurve(file, exporterIFC, ifcCurve, curveEllipse,
+                  useLocalCoordinates, cartesianPoints, dim, ellipseNormalFlipped);
+            }
          }
          else if (allowAdvancedCurve && (curve is HermiteSpline || curve is NurbSpline))
          {
+            if (create2d)
+            {
+               // HermiteSpline and NurbSpline not supported.
+               return null;
+            }
+
             NurbSpline nurbSpline = null;
             if (curve is HermiteSpline)
             {
@@ -3572,13 +3899,15 @@ namespace Revit.IFC.Export.Utility
             IList<IFCAnyHandle> controlPointsInIfc = new List<IFCAnyHandle>();
             foreach (XYZ xyz in controlPoints)
             {
-               controlPointsInIfc.Add(XYZtoIfcCartesianPoint(exporterIFC, xyz, cartesianPoints, additionalTrf));
+               controlPointsInIfc.Add(useLocalCoordinates
+                  ? CreateScaledCartesianPoint(file, xyz, dim)
+                  : XYZtoIfcCartesianPoint(exporterIFC, xyz, cartesianPoints, dim));
             }
 
             // Based on IFC4 specification, curveForm is for information only, leave it as UNSPECIFIED for now.
-            Revit.IFC.Export.Toolkit.IFC4.IFCBSplineCurveForm curveForm = Toolkit.IFC4.IFCBSplineCurveForm.UNSPECIFIED;
+            Toolkit.IFC4.IFCBSplineCurveForm curveForm = Toolkit.IFC4.IFCBSplineCurveForm.UNSPECIFIED;
 
-            IFCLogical closedCurve = nurbSpline.isClosed ? IFCLogical.True : IFCLogical.False;
+            IFCLogical closedCurve = nurbSpline.IsClosed ? IFCLogical.True : IFCLogical.False;
 
             // Based on IFC4 specification, selfIntersect is for information only, leave it as Unknown for now
             IFCLogical selfIntersect = IFCLogical.Unknown;
@@ -3614,7 +3943,7 @@ namespace Revit.IFC.Export.Utility
             else
             {
                DoubleArray revitWeights = nurbSpline.Weights;
-               IList<double> ifcWeights = new List<double>();
+               List<double> ifcWeights = [];
 
                foreach (double weight in revitWeights)
                {
@@ -3622,7 +3951,8 @@ namespace Revit.IFC.Export.Utility
                }
 
                ifcCurve = IFCInstanceExporter.CreateRationalBSplineCurveWithKnots
-                   (file, degree, controlPointsInIfc, curveForm, closedCurve, selfIntersect, knotMultiplitices, ifcKnots, knotSpec, ifcWeights);
+                   (file, degree, controlPointsInIfc, curveForm, closedCurve, selfIntersect, knotMultiplitices,
+                   ifcKnots, knotSpec, ifcWeights);
             }
          }
          // if the Curve is of any other type, tessellate it and use polyline to represent it
@@ -3633,11 +3963,14 @@ namespace Revit.IFC.Export.Utility
             IList<IFCAnyHandle> polylineVertices = new List<IFCAnyHandle>();
             foreach (XYZ vertex in tessCurve)
             {
-               IFCAnyHandle ifcVert = XYZtoIfcCartesianPoint(exporterIFC, vertex, cartesianPoints);
+               IFCAnyHandle ifcVert = useLocalCoordinates
+                  ? CreateScaledCartesianPoint(file, vertex, dim)
+                  : XYZtoIfcCartesianPoint(exporterIFC, vertex, cartesianPoints, dim);
                polylineVertices.Add(ifcVert);
             }
             ifcCurve = IFCInstanceExporter.CreatePolyline(file, polylineVertices);
          }
+
          return ifcCurve;
       }
 
@@ -3647,25 +3980,98 @@ namespace Revit.IFC.Export.Utility
       /// <param name="exporterIFC">The exporter</param>
       /// <param name="thePoint">The point</param>
       /// <param name="cartesianPoints">A map of already created IfcCartesianPoints.  This argument may be null.</param>
+      /// <param name="dim">The dimensionality of the points, either 2 or 3.</param>
       /// <returns>The handle representing IfcCartesianPoint</returns>
-      public static IFCAnyHandle XYZtoIfcCartesianPoint(ExporterIFC exporterIFC, XYZ thePoint, IDictionary<IFCFuzzyXYZ, IFCAnyHandle> cartesianPoints, Transform additionalTrf = null)
+      private static IFCAnyHandle XYZtoIfcCartesianPointCommon(ExporterIFC exporterIFC, XYZ thePoint,
+         IDictionary<IFCFuzzyXYZ, IFCAnyHandle> cartesianPoints, Dimension dim)
       {
          IFCFile file = exporterIFC.GetFile();
          XYZ vertexScaled = ExporterIFCUtils.TransformAndScalePoint(exporterIFC, thePoint);
 
-         if (additionalTrf != null)
-            vertexScaled = additionalTrf.OfPoint(vertexScaled);
          IFCFuzzyXYZ fuzzyVertexScaled = (cartesianPoints != null) ? new IFCFuzzyXYZ(vertexScaled) : null;
 
          IFCAnyHandle cartesianPoint = null;
          if (fuzzyVertexScaled != null && cartesianPoints.TryGetValue(fuzzyVertexScaled, out cartesianPoint))
             return cartesianPoint;
 
-         cartesianPoint = ExporterUtil.CreateCartesianPoint(file, vertexScaled);
+         cartesianPoint = (dim == Dimension.Dim3D) ? ExporterUtil.CreateCartesianPoint(file, vertexScaled) :
+            ExporterUtil.CreateCartesianPoint(file, new UV(vertexScaled.X, vertexScaled.Y));
          if (fuzzyVertexScaled != null)
             cartesianPoints[fuzzyVertexScaled] = cartesianPoint;
 
          return cartesianPoint;
+      }
+
+      /// <summary>
+      /// Converts the given XYZ point to IfcCartesianPoint3D
+      /// </summary>
+      /// <param name="exporterIFC">The exporter</param>
+      /// <param name="thePoint">The point</param>
+      /// <param name="cartesianPoints">A map of already created IfcCartesianPoints.  This argument may be null.</param>
+      /// <returns>The handle representing IfcCartesianPoint</returns>
+      public static IFCAnyHandle XYZtoIfcCartesianPoint(ExporterIFC exporterIFC, XYZ thePoint,
+         IDictionary<IFCFuzzyXYZ, IFCAnyHandle> cartesianPoints, Dimension dim)
+      {
+         return XYZtoIfcCartesianPointCommon(exporterIFC, thePoint, cartesianPoints, dim);
+      }
+
+      /// <summary>
+      /// Creates an IfcCartesianPoint by applying only unit scaling (no exporter transform).
+      /// Used when the curve has already been transformed to local coordinates.
+      /// </summary>
+      private static IFCAnyHandle CreateScaledCartesianPoint(IFCFile file, XYZ point, Dimension dim)
+      {
+         XYZ scaled = UnitUtil.ScaleLength(point);
+         return (dim == Dimension.Dim3D) ?
+            ExporterUtil.CreateCartesianPoint(file, scaled) :
+            ExporterUtil.CreateCartesianPoint(file, new UV(scaled.X, scaled.Y));
+      }
+
+      /// <summary>
+      /// Trims a periodic curve (arc/ellipse) using either PARAMETER or CARTESIAN preference.
+      /// When useParameterTrimming is true, uses angle-based PARAMETER trimming.
+      /// Otherwise, uses Cartesian point-based trimming with the exporter's world-to-IFC transform.
+      /// </summary>
+      private static IFCAnyHandle TrimPeriodicCurve(IFCFile file, ExporterIFC exporterIFC,
+         IFCAnyHandle curveHandle, Curve curve, bool useParameterTrimming,
+         IDictionary<IFCFuzzyXYZ, IFCAnyHandle> cartesianPoints, Dimension dim,
+         bool normalFlipped = false)
+      {
+         HashSet<IFCData> trim1, trim2;
+         IFCTrimmingPreference preference;
+
+         if (useParameterTrimming)
+         {
+            double startParam = curve.GetEndParameter(0);
+            double endParam = curve.GetEndParameter(1);
+
+            // When the caller detected a flipped normal (-Z → +Z), the Revit
+            // parameters are in CW convention but IFC 2D expects CCW.
+            // Negate and swap: (s, e) → (-e, -s).
+            if (normalFlipped)
+            {
+               double temp = -startParam;
+               startParam = -endParam;
+               endParam = temp;
+            }
+
+            trim1 = new() { IFCDataUtil.CreateAsParameterValue(
+               UnitUtil.ScaleAngle(MathUtil.PutInRange(startParam, Math.PI, 2 * Math.PI))) };
+            trim2 = new() { IFCDataUtil.CreateAsParameterValue(
+               UnitUtil.ScaleAngle(MathUtil.PutInRange(endParam, Math.PI, 2 * Math.PI))) };
+            preference = IFCTrimmingPreference.Parameter;
+         }
+         else
+         {
+            IFCAnyHandle startPoint = XYZtoIfcCartesianPoint(exporterIFC, curve.GetEndPoint(0), cartesianPoints, dim);
+            IFCAnyHandle endPoint = XYZtoIfcCartesianPoint(exporterIFC, curve.GetEndPoint(1), cartesianPoints, dim);
+
+            trim1 = new() { IFCData.CreateIFCAnyHandle(startPoint) };
+            trim2 = new() { IFCData.CreateIFCAnyHandle(endPoint) };
+            preference = IFCTrimmingPreference.Cartesian;
+         }
+
+         return IFCInstanceExporter.CreateTrimmedCurve(file, curveHandle, trim1, trim2, true, preference);
       }
 
       /// <summary>
@@ -3679,7 +4085,7 @@ namespace Revit.IFC.Export.Utility
          IFCFile file = exporterIFC.GetFile();
          XYZ vectorScaled = ExporterIFCUtils.TransformAndScaleVector(exporterIFC, theVector);
 
-         IFCAnyHandle direction = ExporterUtil.CreateDirection(file, vectorScaled);
+         IFCAnyHandle direction = ExporterUtil.CreateDirection(file, vectorScaled, GeometryUtil.Dimension.Dim3D);
          return direction;
       }
 
@@ -3701,8 +4107,108 @@ namespace Revit.IFC.Export.Utility
       }
 
       /// <summary>
+      /// Try to create valid extrusion and extract its end faces.
+      /// </summary>
+      /// <param name="solid">the solid geometry</param>
+      /// <param name="basePlane">base plane of the profile</param>
+      /// <param name="planeOrigin">the plane origin</param>
+      /// <param name="tryNonPerpendicularExtrusion">option to try non perpendicular extrusion</param>
+      /// <param name="checkOrdinarity">option to accept only ordinarity extrusion</param>
+      /// <param name="extrusionEndFaces">output extrusion end faces</param>
+      /// <param name="faceBoundaries">output face boundaries</param>
+      /// <returns>trues if valid extrusion can be created</returns>
+      public static bool TryGetExtrusionEndFaces(Solid solid, Plane basePlane, XYZ planeOrigin, bool tryNonPerpendicularExtrusion,
+         bool checkOrdinarity, out IList<Face> extrusionEndFaces, out IList<CurveLoop> faceBoundaries)
+      {
+         extrusionEndFaces = new List<Face>();
+         faceBoundaries = new List<CurveLoop>();
+
+         Plane extrusionAnalyzerPlane = CreatePlaneByXYVectorsContainingPoint(basePlane.XVec, basePlane.YVec, planeOrigin);
+         ExtrusionAnalyzer elementAnalyzer = ExtrusionAnalyzer.Create(solid, extrusionAnalyzerPlane, basePlane.Normal);
+
+         XYZ baseLoopOffset = null;
+
+         if (!MathUtil.IsAlmostZero(elementAnalyzer.StartParameter))
+            baseLoopOffset = elementAnalyzer.StartParameter * basePlane.Normal;
+
+         Face extrusionBase = elementAnalyzer.GetExtrusionBase();
+
+         // Ensure there are only 2 unaligned faces and all the rest must be fully aligned
+         IDictionary<Face, ExtrusionAnalyzerFaceAlignment> allFaces = elementAnalyzer.CalculateFaceAlignment();
+         IList<Face> fullyAlignedFaces = new List<Face>();
+         IList<Face> candidateEndFaces = new List<Face>();
+         foreach (KeyValuePair<Face, ExtrusionAnalyzerFaceAlignment> item in allFaces)
+         {
+            if (item.Value == ExtrusionAnalyzerFaceAlignment.FullyAligned)
+            {
+               // For ordinary extrusion, there will be no unaligned faces. The end faces of extrusion should be fully aligned. 
+               //   The idetification will be based on their normal = the extrusion base plane normal
+               if (!tryNonPerpendicularExtrusion
+                  && (item.Key.ComputeNormal(UV.Zero).IsAlmostEqualTo(basePlane.Normal) || item.Key.ComputeNormal(UV.Zero).IsAlmostEqualTo(basePlane.Normal.Negate())))
+                  candidateEndFaces.Add(item.Key);
+               else
+                  fullyAlignedFaces.Add(item.Key);
+            }
+            else if (tryNonPerpendicularExtrusion && item.Value == ExtrusionAnalyzerFaceAlignment.Unaligned)
+               candidateEndFaces.Add(item.Key);
+         }
+
+         if (candidateEndFaces.Count != 2)
+            return false;
+
+         if (checkOrdinarity && (allFaces.Count - fullyAlignedFaces.Count - candidateEndFaces.Count > 0))
+            return false;
+
+         if (!MathUtil.IsAlmostEqual(candidateEndFaces[0].Area, candidateEndFaces[1].Area))
+            return false;
+
+         // All faces will be planar at this time
+         XYZ f1Normal = candidateEndFaces[0].ComputeNormal(new UV(0, 0));
+         XYZ f2Normal = candidateEndFaces[1].ComputeNormal(new UV(0, 0));
+         if (!f1Normal.IsAlmostEqualTo(f2Normal) && !f1Normal.IsAlmostEqualTo(f2Normal.Negate()))
+            return false;
+
+         HashSet<Face> adjoiningFaces = new HashSet<Face>();
+         EdgeArray faceOuterBoundary = candidateEndFaces[0].EdgeLoops.get_Item(0);
+         double f1Perimeter = 0;
+         foreach (Edge edge in faceOuterBoundary)
+         {
+            Face adjoiningFace = edge.GetFace(1);
+            if (adjoiningFace.Equals(candidateEndFaces[0]))
+               adjoiningFace = edge.GetFace(0);
+            adjoiningFaces.Add(adjoiningFace);
+            f1Perimeter += edge.AsCurve().Length;
+         }
+
+         faceOuterBoundary = candidateEndFaces[1].EdgeLoops.get_Item(0);
+         double f2Perimeter = 0;
+         foreach (Edge edge in faceOuterBoundary)
+         {
+            Face adjoiningFace = edge.GetFace(1);
+            if (adjoiningFace.Equals(candidateEndFaces[0]))
+               adjoiningFace = edge.GetFace(0);
+            if (adjoiningFaces.Contains(adjoiningFace))
+               adjoiningFaces.Remove(adjoiningFace);
+            f2Perimeter += edge.AsCurve().Length;
+         }
+
+         if (!MathUtil.IsAlmostEqual(f1Perimeter, f2Perimeter) && adjoiningFaces.Count > 0)
+            return false;
+
+         IList<FaceBoundaryType> faceBoundaryTypes;
+         faceBoundaries = GetFaceBoundaries(candidateEndFaces[0], XYZ.Zero, out faceBoundaryTypes);
+         if (ExporterCacheManager.ExportOptionsCache.ExportAsReferenceView && faceBoundaryTypes.Contains(FaceBoundaryType.Complex))
+            return false;
+
+         extrusionEndFaces.Add(candidateEndFaces[0]);
+         extrusionEndFaces.Add(candidateEndFaces[1]);
+
+         return true;
+      }
+
+      /// <summary>
       /// Function to get ExtrusionBase profile. It is used especially in IFC4 Reference View because of limitation of geometry in RV. When a structural member
-      ///   object is exported as tessellated geometry, profile information is still needed for a valid IfcMaterialProfile. This function does it 
+      /// object is exported as tessellated geometry, profile information is still needed for a valid IfcMaterialProfile. This function does it 
       /// </summary>
       /// <param name="exporterIFC">exporterIFC</param>
       /// <param name="solid">the solid geometry</param>
@@ -3716,97 +4222,16 @@ namespace Revit.IFC.Export.Utility
          out IList<Face> extrusionEndFaces, bool tryNonPerpendicularExtrusion = false)
       {
          IFCAnyHandle extrudedAreaProfile = null;
-         extrusionEndFaces = new List<Face>();
+         IList<CurveLoop> faceBoundaries = null;
+
+         if (!TryGetExtrusionEndFaces(solid, basePlane, planeOrigin, tryNonPerpendicularExtrusion,
+            checkOrdinarity: false, out extrusionEndFaces, out faceBoundaries))
+            return extrudedAreaProfile;
 
          try
          {
-            Plane extrusionAnalyzerPlane = GeometryUtil.CreatePlaneByXYVectorsContainingPoint(basePlane.XVec, basePlane.YVec, planeOrigin);
-            ExtrusionAnalyzer elementAnalyzer = ExtrusionAnalyzer.Create(solid, extrusionAnalyzerPlane, basePlane.Normal);
-
-            XYZ baseLoopOffset = null;
-
-            if (!MathUtil.IsAlmostZero(elementAnalyzer.StartParameter))
-               baseLoopOffset = elementAnalyzer.StartParameter * basePlane.Normal;
-
-            Face extrusionBase = elementAnalyzer.GetExtrusionBase();
-
-            // 1. Ensure there are only 2 unaligned faces and all the rest must be fully aligned
-            IDictionary<Face, ExtrusionAnalyzerFaceAlignment> allFaces = elementAnalyzer.CalculateFaceAlignment();
-            IList<Face> fullyAlignedFaces = new List<Face>();
-            IList<Face> candidateEndFaces = new List<Face>();
-            foreach (KeyValuePair<Face, ExtrusionAnalyzerFaceAlignment> item in allFaces)
-            {
-               if (item.Value == ExtrusionAnalyzerFaceAlignment.FullyAligned)
-               {
-                  // For ordinary extrusion, there will be no unaligned faces. The end faces of extrusion should be fully aligned. 
-                  //   The idetification will be based on their normal = the extrusion base plane normal
-                  if (!tryNonPerpendicularExtrusion
-                     && (item.Key.ComputeNormal(UV.Zero).IsAlmostEqualTo(basePlane.Normal) || item.Key.ComputeNormal(UV.Zero).IsAlmostEqualTo(basePlane.Normal.Negate())))
-                     candidateEndFaces.Add(item.Key);
-                  else
-                     fullyAlignedFaces.Add(item.Key);
-               }
-               else if (tryNonPerpendicularExtrusion && item.Value == ExtrusionAnalyzerFaceAlignment.Unaligned)
-                  candidateEndFaces.Add(item.Key);
-            }
-
-            if (candidateEndFaces.Count != 2)
-               return extrudedAreaProfile;
-
-            //if (allFaces.Count - fullyAlignedFaces.Count - candidateEndFaces.Count > 0)
-            //   return extrudedAreaProfile;
-
-            if (!MathUtil.IsAlmostEqual(candidateEndFaces[0].Area, candidateEndFaces[1].Area))
-               return extrudedAreaProfile;
-
-            // All faces will be planar at this time
-            XYZ f1Normal = candidateEndFaces[0].ComputeNormal(new UV(0, 0));
-            XYZ f2Normal = candidateEndFaces[1].ComputeNormal(new UV(0, 0));
-            if (!f1Normal.IsAlmostEqualTo(f2Normal) && !f1Normal.IsAlmostEqualTo(f2Normal.Negate()))
-               return extrudedAreaProfile;
-
-            HashSet<Face> adjoiningFaces = new HashSet<Face>();
-            EdgeArray faceOuterBoundary = candidateEndFaces[0].EdgeLoops.get_Item(0);
-            double f1Perimeter = 0;
-            foreach (Edge edge in faceOuterBoundary)
-            {
-               Face adjoiningFace = edge.GetFace(1);
-               if (adjoiningFace.Equals(candidateEndFaces[0]))
-                  adjoiningFace = edge.GetFace(0);
-               adjoiningFaces.Add(adjoiningFace);
-               f1Perimeter += edge.AsCurve().Length;
-            }
-
-            faceOuterBoundary = candidateEndFaces[1].EdgeLoops.get_Item(0);
-            double f2Perimeter = 0;
-            foreach (Edge edge in faceOuterBoundary)
-            {
-               Face adjoiningFace = edge.GetFace(1);
-               if (adjoiningFace.Equals(candidateEndFaces[0]))
-                  adjoiningFace = edge.GetFace(0);
-               if (adjoiningFaces.Contains(adjoiningFace))
-                  adjoiningFaces.Remove(adjoiningFace);
-               f2Perimeter += edge.AsCurve().Length;
-            }
-
-            if (!MathUtil.IsAlmostEqual(f1Perimeter, f2Perimeter) && adjoiningFaces.Count > 0)
-               return extrudedAreaProfile;
-
-            IList<FaceBoundaryType> faceBoundaryTypes;
-            IList<CurveLoop> faceBoundaries = GetFaceBoundaries(candidateEndFaces[0], XYZ.Zero, out faceBoundaryTypes);
-            if (ExporterCacheManager.ExportOptionsCache.ExportAs4ReferenceView && faceBoundaryTypes.Contains(FaceBoundaryType.Complex))
-               return extrudedAreaProfile;
-
-            extrusionEndFaces.Add(candidateEndFaces[0]);
-            extrusionEndFaces.Add(candidateEndFaces[1]);
-
-            // For IFC4 RV, only IfcIndexedPolyCurve can be created, use CreateIFCCurveFromCurveLoop to create the IFC curve and use the default/identity transform for it
-            IFCAnyHandle curveHandle = null;
-            if (ExporterCacheManager.ExportOptionsCache.ExportAs4ReferenceView)
-               curveHandle = GeometryUtil.CreateIFCCurveFromCurveLoop(exporterIFC, faceBoundaries[0], Transform.Identity, faceBoundaries[0].GetPlane().Normal);
-            else
-               curveHandle = CreateCompositeCurve(exporterIFC, faceBoundaries[0].ToList());
-
+            // For Reference View, only IfcIndexedPolyCurve can be created, use CreateIFCCurveFromCurveLoop to create the IFC curve and use the default/identity transform for it
+            IFCAnyHandle curveHandle = GeometryUtil.CreateCompositeOrIndexedCurve(exporterIFC, faceBoundaries[0].ToList(), Transform.Identity, faceBoundaries[0].GetPlane().Normal);
             if (faceBoundaries.Count == 1)
             {
                extrudedAreaProfile = IFCInstanceExporter.CreateArbitraryClosedProfileDef(exporterIFC.GetFile(), IFCProfileType.Curve, profileName, curveHandle);
@@ -3816,15 +4241,10 @@ namespace Revit.IFC.Export.Utility
                HashSet<IFCAnyHandle> innerCurves = new HashSet<IFCAnyHandle>();
                for (int ii = 1; ii < faceBoundaries.Count; ++ii)
                {
-                  IFCAnyHandle innerCurveHandle = null;
-                  if (ExporterCacheManager.ExportOptionsCache.ExportAs4ReferenceView)
-                     innerCurveHandle = GeometryUtil.CreateIFCCurveFromCurveLoop(exporterIFC, faceBoundaries[ii], Transform.Identity, faceBoundaries[ii].GetPlane().Normal);
-                  else
-                     innerCurveHandle = CreateCompositeCurve(exporterIFC, faceBoundaries[ii].ToList());
-
+                  IFCAnyHandle innerCurveHandle = GeometryUtil.CreateCompositeOrIndexedCurve(exporterIFC, faceBoundaries[ii].ToList(), Transform.Identity, faceBoundaries[ii].GetPlane().Normal);
                   innerCurves.Add(innerCurveHandle);
                }
-               extrudedAreaProfile = IFCInstanceExporter.CreateArbitraryProfileDefWithVoids(exporterIFC.GetFile(), IFCProfileType.Curve, profileName, curveHandle,
+               extrudedAreaProfile = IFCInstanceExporter.CreateArbitraryProfileDefWithVoids(exporterIFC.GetFile(), IFCProfileType.Area, profileName, curveHandle,
                   innerCurves);
             }
 
@@ -3836,7 +4256,16 @@ namespace Revit.IFC.Export.Utility
          }
       }
 
-      public static MaterialAndProfile GetProfileAndMaterial(ExporterIFC exporterIFC, Element element, Plane basePlane, XYZ basePlaneOrigin)
+      /// <summary>
+      /// Attempt to get profile and simple material information from a FamilyInstance element.
+      /// </summary>
+      /// <param name="exporterIFC">The exporterIFC that contains state information for the export.</param>
+      /// <param name="element">The element, expected to be a FamilyInstance.</param>
+      /// <param name="basePlaneNormal">The normal used to try to find the profile.</param>
+      /// <param name="basePlaneOrigin">The original for the profile.</param>
+      /// <returns></returns>
+      public static MaterialAndProfile GetProfileAndMaterial(ExporterIFC exporterIFC,
+         Element element, XYZ basePlaneNormal, XYZ basePlaneOrigin)
       {
          MaterialAndProfile materialAndProfile = new MaterialAndProfile();
 
@@ -3857,18 +4286,19 @@ namespace Revit.IFC.Export.Utility
                profileCurves.Add(curv);
 
             // What if there are multiple materials or multiple profiles in the family??
-            IFCAnyHandle compCurveHandle = null;
-            if (ExporterCacheManager.ExportOptionsCache.ExportAs4ReferenceView)
+            XYZ projDir = XYZ.BasisZ;
+            try
             {
                CurveLoop curveloop = CurveLoop.Create(profileCurves);
-               XYZ projDir = XYZ.BasisZ;
                if (curveloop.HasPlane())
                   projDir = curveloop.GetPlane().Normal;
-
-               compCurveHandle = GeometryUtil.CreateIFCCurveFromCurveLoop(exporterIFC, curveloop, Transform.Identity, projDir);
             }
-            else
-               compCurveHandle = GeometryUtil.CreateCompositeCurve(exporterIFC, profileCurves);
+            catch
+            {
+               projDir = null;
+            }
+
+            IFCAnyHandle compCurveHandle = GeometryUtil.CreateCompositeOrIndexedCurve(exporterIFC, profileCurves, Transform.Identity, projDir);
 
             IFCAnyHandle profileDef = IFCInstanceExporter.CreateArbitraryClosedProfileDef(exporterIFC.GetFile(), IFCProfileType.Curve, profileName, compCurveHandle);
 
@@ -3881,8 +4311,14 @@ namespace Revit.IFC.Export.Utility
          {
             // Do nothing, will go to the next step
          }
+
          // If no Sweep, handle for Extrusion using the OriginalSymbol
+         // TODO: We probably shouldn't be re-getting this information - it is already probably
+         // already at the caller level.  Also, if this is a view specific export, then
+         // the material information may be incorrect, since the view may have overriden
+         // materials.
          {
+            Plane basePlane = GeometryUtil.CreatePlaneByNormalAtOrigin(basePlaneNormal);
             Element exportGeometryElement = (Element)originalFamilySymbol;
             GeometryElement exportGeometry = exportGeometryElement.get_Geometry(new Options());
             foreach (GeometryObject geomObject in exportGeometry)
@@ -3894,7 +4330,7 @@ namespace Revit.IFC.Export.Utility
                   if (solid == null || solid.Faces.IsEmpty || solid.Edges.IsEmpty)
                      continue;
 
-                  ElementId materialId = BodyExporter.GetBestMaterialIdFromGeometryOrParameter(solid, exporterIFC, familyInstance);
+                  ElementId materialId = BodyExporter.GetBestMaterialIdFromGeometryOrParameter(solid, familyInstance);
                   IFCAnyHandle profileDef = GetExtrusionBaseProfile(exporterIFC, solid, profileName, basePlane, basePlaneOrigin, out extrusionEndFaces);
                   if (!IFCAnyHandleUtil.IsNullOrHasNoValue(profileDef))
                      materialAndProfile.Add(materialId, profileDef);
@@ -3968,7 +4404,7 @@ namespace Revit.IFC.Export.Utility
             return false;              // Supports only a planar based curve
 
          // Get the plane where the curve lies
-         Plane planeOfCurve = planarPlaneOf(curve);
+         Plane planeOfCurve = PlanarPlaneOf(curve);
          if (plane.Normal.IsAlmostEqualTo(planeOfCurve.Normal))
             return false;                 // THe planes are parallel to each other, no intersection
 
@@ -3978,15 +4414,17 @@ namespace Revit.IFC.Export.Utility
             return false;
 
          // Intersect the curve with the plane intersection line
-         IntersectionResultArray intResult;
          try
          {
-            if (curve.Intersect(intLine, out intResult) == SetComparisonResult.Disjoint)
-               return false;
-
-            for (int ii = 0; ii < intResult.Size; ++ii)
+            CurveIntersectResult result = curve.Intersect(intLine, CurveIntersectResultOption.Detailed);
+            if (null == result || result.Result == SetComparisonResult.Disjoint)
             {
-               intersectingPoints.Add(intResult.get_Item(ii).XYZPoint);
+               return false;
+            }
+
+            foreach (CurveOverlapPoint point in result.GetOverlaps().Where(e => CurveOverlapPointType.Intersection == e?.Type))
+            {
+               intersectingPoints.Add(point.Point);
             }
          }
          catch
@@ -3996,7 +4434,7 @@ namespace Revit.IFC.Export.Utility
          return true;
       }
 
-      public static Plane planarPlaneOf(Curve curve)
+      public static Plane PlanarPlaneOf(Curve curve)
       {
          // We will only try up to six different parameters to find the 3rd point on the curve.
          IList<double> parToTry = new List<double>() { 0.15, 0.3, 0.45, 0.6, 0.75, 0.9 };
@@ -4130,46 +4568,56 @@ namespace Revit.IFC.Export.Utility
       {
          IList<Curve> curveList = new List<Curve>();
          // If all curve option is set, set all flags to true
+         if (!allCurveType && !(inclArc || inclLine || inclEllipse || inclSpline)) if (allCurveType)
+               return curveList;       // Nothing is marked included, return empty list
+
+         IList<Curve> curveListCache;
+         if (!ExporterCacheManager.Object2DCurvesCache.TryGetValue(element.Symbol.Id, out curveListCache))
+         {
+            Document doc = element.Document;
+            if (MathUtil.IsInvalidElementId(element.LevelId))
+               return curveList;
+
+            Level level = element.Document.GetElement(element.LevelId) as Level;
+            if (MathUtil.IsInvalidElementId(level.FindAssociatedPlanViewId()))
+               return curveList;
+
+            ViewPlan planView = doc.GetElement(level.FindAssociatedPlanViewId()) as ViewPlan;
+
+            Options defaultOptions = GetIFCExportGeometryOptions();
+            Options currentOptions = new Options();
+            currentOptions.View = planView;
+            currentOptions.ComputeReferences = defaultOptions.ComputeReferences;
+            currentOptions.IncludeNonVisibleObjects = defaultOptions.IncludeNonVisibleObjects;
+
+            curveListCache = new List<Curve>();
+
+            GeometryElement geoms = element.Symbol.get_Geometry(currentOptions);
+            foreach (GeometryObject geomObj in geoms)
+            {
+               if (geomObj is Curve)
+                  curveListCache.Add(geomObj as Curve);
+            }
+
+            // Add into the cache to reduce repeated efforts to get the 2D geometries for the same Symbol
+            ExporterCacheManager.Object2DCurvesCache.Add(element.Symbol.Id, curveListCache);
+         }
+
          if (allCurveType)
          {
-            inclArc = true;
-            inclLine = true;
-            inclEllipse = true;
-            inclSpline = true;
+            return curveListCache;
          }
-         else if (!allCurveType && !(inclArc || inclLine || inclEllipse || inclSpline))
-            return curveList;       // Nothing is marked included, return empty list
 
-         Document doc = element.Document;
-         if (element.LevelId == ElementId.InvalidElementId)
-            return curveList;
-
-         Level level = element.Document.GetElement(element.LevelId) as Level;
-         if (level.FindAssociatedPlanViewId() == ElementId.InvalidElementId)
-            return curveList;
-
-         ViewPlan planView = doc.GetElement(level.FindAssociatedPlanViewId()) as ViewPlan;
-
-         Options options = GeometryUtil.GetIFCExportGeometryOptions();
-         Options opt = new Options();
-         opt.View = planView;
-         opt.ComputeReferences = options.ComputeReferences;
-         opt.IncludeNonVisibleObjects = options.IncludeNonVisibleObjects;
-
-         GeometryElement geoms = element.Symbol.get_Geometry(opt);
-         foreach (GeometryObject geomObj in geoms)
+         foreach (Curve curve in curveListCache)
          {
-            if (inclArc && geomObj is Arc)
-               curveList.Add(geomObj as Arc);
-
-            if (inclLine && geomObj is Line)
-               curveList.Add(geomObj as Line);
-
-            if (inclEllipse && geomObj is Ellipse)
-               curveList.Add(geomObj as Ellipse);
-
-            if (inclSpline && (geomObj is HermiteSpline || geomObj is NurbSpline))
-               curveList.Add(geomObj as Curve);
+            if (inclArc && curve is Arc)
+               curveList.Add(curve);
+            else if (inclLine && curve is Line)
+               curveList.Add(curve);
+            else if (inclEllipse && curve is Ellipse)
+               curveList.Add(curve);
+            else if (inclSpline && (curve is HermiteSpline || curve is NurbSpline))
+               curveList.Add(curve);
          }
 
          return curveList;
@@ -4183,6 +4631,12 @@ namespace Revit.IFC.Export.Utility
          UseNegX,
          UseNegY,
          UseNegZ
+      }
+
+      private static bool UseThisDirection(double dirComp, double normComp, double eps)
+      {
+         return (MathUtil.IsAlmostEqual(dirComp, 1.0) && normComp > eps) ||
+            (MathUtil.IsAlmostEqual(dirComp, -1.0) && normComp < eps);
       }
 
       /// <summary>
@@ -4203,26 +4657,15 @@ namespace Revit.IFC.Export.Utility
          if (geomSolid == null)
             return largestFace;
 
+         double eps = MathUtil.Eps;
          foreach (Face face in geomSolid.Faces)
          {
             // Identifying the largest area with normal pointing up
             XYZ faceNormal = face.ComputeNormal(new UV());
 
-            bool useThisFace = false;
-            if (MathUtil.IsAlmostEqual(normalDirection.X, 1.0) && faceNormal.X > 0)
-               useThisFace = true;
-            else if (MathUtil.IsAlmostEqual(normalDirection.Y, 1.0) && faceNormal.Y > 0)
-               useThisFace = true;
-            else if (MathUtil.IsAlmostEqual(normalDirection.Z, 1.0) && faceNormal.Z > 0)
-               useThisFace = true;
-            else if (MathUtil.IsAlmostEqual(normalDirection.X, -1.0) && faceNormal.X < 0)
-               useThisFace = true;
-            else if (MathUtil.IsAlmostEqual(normalDirection.Y, -1.0) && faceNormal.Y < 0)
-               useThisFace = true;
-            else if (MathUtil.IsAlmostEqual(normalDirection.Z, -1.0) && faceNormal.Z < 0)
-               useThisFace = true;
-
-            if (!useThisFace)
+            if (!UseThisDirection(normalDirection.X, faceNormal.X, eps) &&
+               !UseThisDirection(normalDirection.Y, faceNormal.Y, eps) &&
+               !UseThisDirection(normalDirection.Z, faceNormal.Z, eps))
                continue;
 
             if (face.Area > largestArea)
@@ -4248,7 +4691,7 @@ namespace Revit.IFC.Export.Utility
          // Compute normal at UV (0,0)
          XYZ faceNormal = face.ComputeNormal(new UV());
          projection = projection.Normalize();
-         double normalAngleToProjection = Math.Acos(faceNormal.DotProduct(projection));
+         double normalAngleToProjection = MathUtil.SafeAcos(faceNormal.DotProduct(projection));
          double slopeAngle = 0.5 * Math.PI - normalAngleToProjection;
          angle = UnitUtil.ScaleAngle(slopeAngle);
 
@@ -4263,7 +4706,7 @@ namespace Revit.IFC.Export.Utility
       public static List<Curve> GetCurvesFromGeometryElement(GeometryElement geomElem)
       {
          List<Curve> curveList = new List<Curve>();
-         foreach(GeometryObject geomObject in geomElem)
+         foreach (GeometryObject geomObject in geomElem)
          {
             if (geomObject is GeometryElement)
             {
@@ -4282,6 +4725,464 @@ namespace Revit.IFC.Export.Utility
          }
 
          return curveList;
+      }
+
+      /// <summary>
+      /// Compare 2 solids using the geometry signature taken from: Boundingbox (Min and Max coordinates), SurfaceArea, Volume, No. of Faces, No. of Edges
+      /// BEWARE that this is a quick compare and does not guarantee 100% equality (for example solid being mirrored will give false equality), but this is a very quick
+      /// compare function and will work well if we really need to compare solids coming from the same source geometry.
+      /// </summary>
+      /// <param name="solid1">solid 1</param>
+      /// <param name="solid2">solid 2</param>
+      /// <returns>whether the 2 solids are equal based on their signature only</returns>
+      public static bool SolidsQuickEqualityCompare(Solid solid1, Solid solid2)
+      {
+         // BEWARE that this is a quick compare and does not guarantee 100% equality (for example solid being mirrored will give false equality), but this is a very quick
+         // compare function and will work well if we really need to compare solids coming from the same source geometry.
+         if (solid1.Faces.Size != solid2.Faces.Size || solid1.Edges.Size != solid2.Edges.Size)
+            return false;
+
+         BoundingBoxXYZ bbox1 = solid1.GetBoundingBox();
+         BoundingBoxXYZ bbox2 = solid2.GetBoundingBox();
+
+         if (!bbox1.Min.IsAlmostEqualTo(bbox2.Min) || !bbox1.Max.IsAlmostEqualTo(bbox2.Max))
+            return false;
+
+         return MathUtil.IsAlmostEqual(solid1.SurfaceArea, solid2.SurfaceArea) && MathUtil.IsAlmostEqual(solid1.Volume, solid2.Volume);
+      }
+
+      /// <summary>
+      /// Get Site local placement depending on the coordinate reference selected (unscaled)
+      /// </summary>
+      /// <param name="doc">the Document</param>
+      /// <returns>site local placement transform</returns>
+      public static Transform GetSiteLocalPlacement(Document doc)
+      {
+         Transform trf = null;
+         ProjectLocation projLocation = ExporterCacheManager.SelectedSiteProjectLocation;
+         if (projLocation == null)
+            return trf;
+
+         using (SubTransaction projLocTr = new SubTransaction(doc))
+         {
+            projLocTr.Start();
+            doc.ActiveProjectLocation = projLocation;
+
+            BasePoint surveyPoint = BasePoint.GetSurveyPoint(doc);
+            BasePoint projectBasePoint = BasePoint.GetProjectBasePoint(doc);
+            if (surveyPoint == null || projectBasePoint == null)
+               return trf;
+
+            (double svNorthings, double svEastings, double svElevation, double svAngle, double pbNorthings,
+               double pbEastings, double pbElevation, double pbAngle) = OptionsUtil.ProjectLocationInfo(doc, surveyPoint.Position, projectBasePoint.Position);
+
+            SiteTransformBasis transformBasis = ExporterCacheManager.ExportOptionsCache.SiteTransformation;
+
+            trf = Transform.Identity;
+            Transform rotationTrfAtInternal = Transform.CreateRotationAtPoint(XYZ.BasisZ, pbAngle, XYZ.Zero);
+
+            // For Linked file, the WCS should always be based on the shared coordinates
+            if (ExporterUtil.ExportingHostModel())
+            {
+               switch (transformBasis)
+               {
+                  case SiteTransformBasis.Shared:
+                     XYZ intPointOffset = rotationTrfAtInternal.OfPoint(projectBasePoint.Position);
+                     XYZ xyz = new XYZ((projectBasePoint.SharedPosition.X - intPointOffset.X),
+                                    (projectBasePoint.SharedPosition.Y - intPointOffset.Y),
+                                     (projectBasePoint.SharedPosition.Z - intPointOffset.Z));
+                     trf = CreateTransformFromVectorsAndOrigin(rotationTrfAtInternal.BasisX, rotationTrfAtInternal.BasisY, rotationTrfAtInternal.BasisZ, xyz);
+                     break;
+                  case SiteTransformBasis.Site:
+                     xyz = rotationTrfAtInternal.OfPoint(surveyPoint.Position);
+                     xyz = new XYZ(-xyz.X, -xyz.Y, -xyz.Z);
+                     trf = CreateTransformFromVectorsAndOrigin(rotationTrfAtInternal.BasisX, rotationTrfAtInternal.BasisY, rotationTrfAtInternal.BasisZ, xyz);
+                     break;
+                  case SiteTransformBasis.Project:
+                     xyz = projectBasePoint.Position;
+                     xyz = new XYZ(-xyz.X, -xyz.Y, -xyz.Z);
+                     trf = CreateTransformFromVectorsAndOrigin(Transform.Identity.BasisX, Transform.Identity.BasisY, Transform.Identity.BasisZ, xyz);
+                     break;
+                  case SiteTransformBasis.ProjectInTN:
+                     xyz = rotationTrfAtInternal.OfPoint(projectBasePoint.Position);
+                     xyz = new XYZ(-xyz.X, -xyz.Y, -xyz.Z);
+                     trf = CreateTransformFromVectorsAndOrigin(rotationTrfAtInternal.BasisX, rotationTrfAtInternal.BasisY, rotationTrfAtInternal.BasisZ, xyz);
+                     break;
+                  case SiteTransformBasis.Internal:
+                     xyz = new XYZ(0.0, 0.0, 0.0);
+                     trf = CreateTransformFromVectorsAndOrigin(Transform.Identity.BasisX, Transform.Identity.BasisY, Transform.Identity.BasisZ, xyz);
+                     break;
+                  case SiteTransformBasis.InternalInTN:
+                     xyz = rotationTrfAtInternal.OfPoint(new XYZ(0.0, 0.0, 0.0));
+                     trf = CreateTransformFromVectorsAndOrigin(rotationTrfAtInternal.BasisX, rotationTrfAtInternal.BasisY, rotationTrfAtInternal.BasisZ, xyz);
+                     break;
+                  default:
+                     break;
+               }
+            }
+            projLocTr.RollBack();
+         }
+         return trf;
+      }
+
+      /// <summary>
+      /// Determines whether a structural element's geometry has been modified by Revit.
+      /// Checks for void cuts, solid-solid cuts, start/end extensions, reference plane cuts,
+      /// geometry voids (inner loops), and join/cut geometry relationships (including copes).
+      /// Used to route modified elements through Revit native IFC export instead of AdvanceSteel.
+      /// </summary>
+      /// <param name="element">The structural element to check.</param>
+      /// <returns>True if any Revit geometry modification is detected, false otherwise.</returns>
+      public static bool HasRevitModifiedGeometry(Element element)
+      {
+         if (element == null)
+            return false;
+
+         if (HasCuttingVoids(element))
+            return true;
+
+         if (HasSolidSolidCuts(element))
+            return true;
+
+         if (HasStartEndExtension(element))
+            return true;
+
+         if (HasCutByReferencePlane(element))
+            return true;
+
+         if (HasVoidInGeometry(element))
+            return true;
+
+         if (IsElementCutByAnother(element))
+            return true;
+
+         return false;
+      }
+
+      /// <summary>
+      /// Detects if the element has void family instances cutting it.
+      /// Void cuts are created when a void-geometry family instance is used
+      /// to cut a host element (e.g., a rectangular opening in a beam).
+      /// </summary>
+      private static bool HasCuttingVoids(Element element)
+      {
+         if (element == null)
+            return false;
+
+         if (!InstanceVoidCutUtils.CanBeCutWithVoid(element))
+            return false;
+
+         ICollection<ElementId> cuttingVoids = InstanceVoidCutUtils.GetCuttingVoidInstances(element);
+         if (cuttingVoids == null)
+            return false;
+
+         return cuttingVoids.Count > 0;
+      }
+
+      /// <summary>
+      /// Detects if the element is cut by another solid element.
+      /// Solid-solid cuts occur when one element's solid geometry cuts another
+      /// (e.g., a beam cutting through a column).
+      /// </summary>
+      private static bool HasSolidSolidCuts(Element element)
+      {
+         if (element == null)
+            return false;
+
+         if (!SolidSolidCutUtils.IsAllowedForSolidCut(element))
+            return false;
+
+         ICollection<ElementId> cuttingSolids = SolidSolidCutUtils.GetCuttingSolids(element);
+         if (cuttingSolids == null)
+            return false;
+
+         return cuttingSolids.Count > 0;
+      }
+
+      /// <summary>
+      /// Detects if the element has non-zero Start or End Extension values.
+      /// These are beam parameters (paramdef ids 152357, 152358) that extend geometry
+      /// beyond the analytical start or end of the beam.
+      /// </summary>
+      private static bool HasStartEndExtension(Element element)
+      {
+         if (element == null)
+            return false;
+
+         if (HasNonZeroParameter(element, ParameterTypeId.StartExtension))
+            return true;
+
+         if (HasNonZeroParameter(element, ParameterTypeId.EndExtension))
+            return true;
+
+         return false;
+      }
+
+      /// <summary>
+      /// Returns true if the element has the specified parameter and its value is not zero.
+      /// Uses MathUtil.IsAlmostZero for double comparison consistency with the IFC exporter.
+      /// </summary>
+      private static bool HasNonZeroParameter(Element element, ForgeTypeId parameterTypeId)
+      {
+         Parameter param = element.GetParameter(parameterTypeId);
+         if (param == null)
+            return false;
+
+         if (!param.HasValue)
+            return false;
+
+         return !MathUtil.IsAlmostZero(param.AsDouble());
+      }
+
+      /// <summary>
+      /// Detects if the element has been cut by a reference plane (DatumPlane).
+      /// </summary>
+      /// <remarks>
+      /// Uses SteelConnectionUtil.IsElementCutByReferencePlane (public_api) which wraps
+      /// CutStructureWithPlaneGStep::getAllCutStructureWithPlaneGSteps — the only reliable way
+      /// to detect plane cuts, as they are not reflected in the element's geometry returned by get_Geometry().
+      /// </remarks>
+      private static bool HasCutByReferencePlane(Element element)
+      {
+         if (element == null)
+            return false;
+
+         return SteelConnectionUtil.IsElementCutByReferencePlane(element);
+      }
+
+      /// <summary>
+      /// Checks if the element's geometry contains voids (holes in faces).
+      /// </summary>
+      private static bool HasVoidInGeometry(Element element)
+      {
+         if (element == null)
+            return false;
+
+         Options options = new Options
+         {
+            ComputeReferences = true,
+            IncludeNonVisibleObjects = true,
+            DetailLevel = ViewDetailLevel.Fine
+         };
+
+         GeometryElement geomElem = element.get_Geometry(options);
+         if (geomElem == null)
+            return false;
+
+         return HasVoidInGeometryElement(geomElem);
+      }
+
+      /// <summary>
+      /// Recursively checks if a GeometryElement contains faces with inner loops (voids/holes).
+      /// </summary>
+      private static bool HasVoidInGeometryElement(GeometryElement geomElem)
+      {
+         if (geomElem == null)
+            return false;
+
+         foreach (GeometryObject geomObj in geomElem)
+         {
+            if (geomObj is Solid solid)
+            {
+               foreach (Face face in solid.Faces)
+               {
+                  EdgeArrayArray loops = face.EdgeLoops;
+                  if (loops.Size > 1)
+                     return true;
+               }
+            }
+            else if (geomObj is GeometryInstance geomInstance)
+            {
+               GeometryElement instanceGeom = geomInstance.GetInstanceGeometry();
+               if (HasVoidInGeometryElement(instanceGeom))
+                  return true;
+            }
+            else if (geomObj is GeometryElement nestedGeom)
+            {
+               if (HasVoidInGeometryElement(nestedGeom))
+                  return true;
+            }
+         }
+
+         return false;
+      }
+
+      /// <summary>
+      /// Determines whether the given element is cut by at least one other element via Join/Cut Geometry.
+      /// </summary>
+      /// <remarks>
+      /// In Revit, both "Cut Geometry" and "Cope" (when created as a geometry cut between elements) use the same
+      /// join mechanism: one element acts as the cutter and the other as the cut. This method checks all elements
+      /// joined with the input element and returns true if any of them cuts it (i.e. our element is the one being cut).
+      /// Works for Cut Geometry and geometry-based Cope; may not detect parametric copes or some structural connections.
+      /// </remarks>
+      private static bool IsElementCutByAnother(Element element)
+      {
+         if (element == null)
+            return false;
+
+         Document doc = element.Document;
+         if (doc == null)
+            return false;
+
+         ICollection<ElementId> joinedIds = JoinGeometryUtils.GetJoinedElements(doc, element);
+         if (joinedIds == null || joinedIds.Count == 0)
+            return false;
+
+         foreach (ElementId joinedId in joinedIds)
+         {
+            Element other = doc.GetElement(joinedId);
+            if (other == null)
+               continue;
+
+            if (JoinGeometryUtils.IsCuttingElementInJoin(doc, other, element))
+               return true;
+         }
+
+         return false;
+      }
+
+
+      /// <summary>
+      /// Retrieves the steel geometry for a given element.
+      /// </summary>
+      /// <param name="element">The Revit element to retrieve geometry for.</param>
+      /// <returns>A list of GeometryObject representing the steel geometry, or null if not applicable or if element doesn't have fabrication.</returns>
+      private static IList<GeometryObject> GetSteelGeometryObject(Element element)
+      {
+         // IMPORTANT: Element must have fabrication (SteelElementProperties) to use steel geometry
+         // Check this first before any other processing
+         SteelElementProperties cell = SteelElementProperties.GetSteelElementProperties(element);
+         if (cell == null)
+            return null; // No fabrication, cannot use steel geometry
+
+
+         // Only FamilyInstance elements can use steel geometry
+         if (!(element is FamilyInstance))
+            return null;
+
+         // Retrieve the steel geometry at fine detail level.
+         IList<Solid> solidList = SteelConnectionUtil.GetGeometry(element.Document, new Reference(element), (int)ViewDetailLevel.Fine  );
+
+         // Cast is nearly free (reference cast), ToList() pre-allocates from IList<T>
+         return solidList?.Cast<GeometryObject>().ToList();
+      }
+
+
+      /// <summary>
+      /// Checks if the current IFC export configuration supports steel geometry export.
+      /// Steel geometry is supported for IFC 2x3 Coordination View 2.0, Coordination View 1.0, 
+      /// Basic FM Handover View, Extended FM Handover View, and COBie 2.4 Design Deliverable.
+      /// </summary>
+      /// <returns>True if steel geometry should be used for this export configuration, false otherwise.</returns>
+      /// <remarks>
+      /// This function is critical for steel geometry export with fabrication cuts.
+      /// Supported IFC profiles:
+      /// - IFC 2x3 Coordination View 2.0 (ExportAs2x3CoordinationView2)
+      /// - IFC 2x3 Coordination View 1.0 (ExportAs2x3CoordinationView1)
+      /// - IFC 2x3 Basic FM Handover View (FileVersion == IFC2x3BFM)
+      /// - IFC 2x3 Extended FM Handover View (ExportAs2x3ExtendedFMHandoverView)
+      /// - IFC 2x3 COBie 2.4 Design Deliverable (ExportAs2x3COBIE24DesignDeliverable)
+      /// - IFC 2x3 GSA Concept Design BIM 2010 (ExportAsCOBIE)
+      /// 
+      /// Without this check returning true, steel elements will be exported without
+      /// fabrication geometry, and AS cuts (Contour Cut, Cope, Shorten) will not be included.
+      /// </remarks>
+      private static bool IsSteelGeometrySupportedForExport()
+      {
+         if (ExporterCacheManager.ExportOptionsCache.ExportAs2x3CoordinationView2)
+            return true;
+
+         if (ExporterCacheManager.ExportOptionsCache.ExportAs2x3COBIE24DesignDeliverable)
+            return true;
+
+         if (ExporterCacheManager.ExportOptionsCache.ExportAs2x3ExtendedFMHandoverView)
+            return true;
+
+         if (ExporterCacheManager.ExportOptionsCache.ExportAs2x3CoordinationView1)
+            return true;
+
+         // Support for IFC2x3 Basic FM Handover View
+         if (ExporterCacheManager.ExportOptionsCache.FileVersion == IFCVersion.IFC2x3BFM)
+            return true;
+
+         if (ExporterCacheManager.ExportOptionsCache.ExportAsCOBIE)
+            return true;
+
+         return false;
+      }
+
+      /// <summary>
+      /// Attempts to retrieve steel geometry for an element using SteelConnectionUtil.GetGeometry.
+      /// This function is only applicable when exporting to IFC 2x3 Coordination View 2.0 with steel elements enabled.
+      /// </summary>
+      /// <param name="element">The element to get steel geometry for.</param>
+      /// <param name="useSteelGeometry">Output parameter indicating if steel geometry was successfully obtained and should be used.</param>
+      /// <returns>The steel geometry objects if applicable and available, or null otherwise.</returns>
+      /// <remarks>
+      /// This function requires both conditions to be met:
+      /// 1. IncludeSteelElements must be enabled in export options
+      /// 2. Export must be using IFC 2x3 Coordination View 2.0 (ExportAs2x3CoordinationView2)
+      /// 
+      /// The function also validates that the element can use steel geometry (must be a Column or Beam,
+      /// and excludes Joist, C-Channel, and Beams with Undefined structural usage).
+      /// 
+      /// If steel geometry is not available or any condition fails, the function returns null,
+      /// allowing the caller to fall back to normal geometry export.
+      /// </remarks>
+      public static IList<GeometryObject> TryGetSteelGeometryForExport(Element element)
+      {
+         // Check if steel elements export is enabled
+         if (!ExporterCacheManager.ExportOptionsCache.IncludeSteelElements)
+            return null;
+
+         
+         // Only use steel geometry for IFC 2x3 Coordination View 2.0 or COBie 2.4
+         if (!IsSteelGeometrySupportedForExport())
+            return null;
+
+         // Try to get steel geometry (this will also check for fabrication)
+         IList<GeometryObject> geomObjects = GetSteelGeometryObject(element);
+         if (geomObjects != null && geomObjects.Count > 0)
+            return geomObjects;
+
+         return null;
+      }
+
+      /// <summary>
+      /// Determines if an element has steel geometry without extracting it.
+      /// This is used to set the useSteelGeometry flag for transformation purposes.
+      /// </summary>
+      /// <param name="element">The element to check.</param>
+      /// <returns>True if the element has steel geometry that should be exported.</returns>
+      /// <remarks>
+      /// This function is necessary for columns/beams that reuse a cached type (when creatingType = false).
+      /// These elements share geometry through representation maps from the type, so they don't need to
+      /// re-extract the geometry. However, they MUST still apply the correct steel geometry transformation
+      /// (AdjustTransformForSteelGeometry) to get the correct placement.
+      /// 
+      /// Without this check, the second, third, etc. instances of the same column family would have
+      /// useSteelGeometry = false, skip the transformation, and end up with incorrect placement in IFC.
+      /// 
+      /// Example: If you have 4 columns using the same family:
+      /// - Column 1: Creates type, extracts geometry, useSteelGeometry = true, correct placement ✓
+      /// - Column 2-4: Reuse type, but without HasSteelGeometry would have useSteelGeometry = false, wrong placement ✗
+      /// 
+      /// With HasSteelGeometry, ALL instances get useSteelGeometry = true and correct transformation.
+      /// </remarks>
+      public static bool HasSteelGeometry(Element element)
+      {
+         // Check if steel elements export is enabled
+         if (!ExporterCacheManager.ExportOptionsCache.IncludeSteelElements)
+            return false;
+
+         // Only use steel geometry for IFC 2x3 xxx
+         if (!IsSteelGeometrySupportedForExport())
+            return false;
+
+         // Check if element has fabrication (SteelElementProperties)
+         SteelElementProperties cell = SteelElementProperties.GetSteelElementProperties(element);
+         return cell != null;  // If not null, element has steel/fabrication
       }
    }
 }

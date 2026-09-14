@@ -19,14 +19,11 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
 using Revit.IFC.Common.Enums;
 using Revit.IFC.Common.Utility;
 using Revit.IFC.Import.Enums;
-using Revit.IFC.Import.Geometry;
 using Revit.IFC.Import.Utility;
 
 namespace Revit.IFC.Import.Data
@@ -36,16 +33,15 @@ namespace Revit.IFC.Import.Data
    /// </summary>
    public class IFCDistributionPort : IFCPort
    {
-      private IFCFlowDirection m_FlowDirection = IFCFlowDirection.NotDefined;
-
       /// <summary>
       /// The flow direction of this port.
       /// </summary>
-      public IFCFlowDirection FlowDirection
-      {
-         get { return m_FlowDirection; }
-         protected set { m_FlowDirection = value; }
-      }
+      public IFCFlowDirection FlowDirection { get; protected set; } = IFCFlowDirection.NotDefined;
+
+      /// <summary>
+      /// The system type of this port.
+      /// </summary>
+      public IFCDistributionSystemEnum SystemType { get; protected set; } = IFCDistributionSystemEnum.NotDefined;
 
       /// <summary>
       /// Default constructor.
@@ -69,6 +65,7 @@ namespace Revit.IFC.Import.Data
          base.Process(ifcDistributionPort);
 
          FlowDirection = IFCEnums.GetSafeEnumerationAttribute<IFCFlowDirection>(ifcDistributionPort, "FlowDirection", IFCFlowDirection.NotDefined);
+         SystemType = IFCEnums.GetSafeEnumerationAttribute<IFCDistributionSystemEnum>(ifcDistributionPort, "SystemType", IFCDistributionSystemEnum.NotDefined);
       }
 
       /// <summary>
@@ -82,7 +79,10 @@ namespace Revit.IFC.Import.Data
 
          if (element != null)
          {
-            IFCPropertySet.AddParameterString(doc, element, "Flow Direction", FlowDirection.ToString(), Id);
+            Category category = IFCPropertySet.GetCategoryForParameterIfValid(element, Id);
+
+            ParametersToSet.AddStringParameter(doc, element, category, this, "Flow Direction", FlowDirection.ToString(), Id);
+            ParametersToSet.AddStringParameter(doc, element, category, this, "System Type", SystemType.ToString(), Id);
          }
       }
 
@@ -92,17 +92,42 @@ namespace Revit.IFC.Import.Data
       /// <param name="doc">The document.</param>
       protected override void Create(Document doc)
       {
-         Transform lcs = (ObjectLocation != null) ? ObjectLocation.TotalTransform : Transform.Identity;
+         // Try to get the location:
+         // 1. From the ObjectLocation, if it exists.  This should be exact.
+         // 2. From the ObjectLocation of the element that the port is associated to, if it exists.
+         // This should be approximate.
+         // 3. Default to the origin.
+         Transform lcs = ObjectLocation?.TotalTransform;
+         if (lcs == null)
+         {
+            if (IFCImportFile.TheFile.SchemaVersionAtLeast(IFCSchemaVersion.IFC4))
+               lcs = (NestsWhole as IFCProduct)?.ObjectLocation?.TotalTransform;
+            else
+               lcs = ContainedIn?.ObjectLocation?.TotalTransform;
 
+         }
+
+         if (lcs == null)
+         {
+            lcs = Transform.Identity;
+         }
+
+         // We could use ObjectLocation?.TotalTransformAfterOffset above, but that is 
+         // slightly different behavior, since TotalTransformAfterOffset is never null.
+         lcs.Origin += (Importer.TheHybridInfo?.LargeCoordinateOriginOffset ?? XYZ.Zero);
+            
          // 2016+ only.
-         Point point = Point.Create(lcs.Origin, GraphicsStyleId);
+         XYZ origin = lcs.Origin;
+
+         ElementId graphicsStyleId = GetGraphicsStyleId(doc);
+         Point point = XYZ.IsWithinLengthLimits(origin) ? Point.Create(origin, graphicsStyleId) : null;
 
          // 2015+: create cone(s) for the direction of flow.
          CurveLoop rightTrangle = new CurveLoop();
-         const double radius = 0.5 / 12.0;
-         const double height = 1.5 / 12.0;
+         const double radius = 0.04;
+         const double height = 0.12;
 
-         SolidOptions solidOptions = new SolidOptions(ElementId.InvalidElementId, GraphicsStyleId);
+         SolidOptions solidOptions = new SolidOptions(ElementId.InvalidElementId, graphicsStyleId);
 
          Frame coordinateFrame = new Frame(lcs.Origin, lcs.BasisX, lcs.BasisY, lcs.BasisZ);
 
@@ -130,8 +155,7 @@ namespace Revit.IFC.Import.Data
             oppositeRightTrangle.Append(Line.CreateBound(pt1, oppPt2));
             oppositeRightTrangle.Append(Line.CreateBound(oppPt2, oppPt3));
             oppositeRightTrangle.Append(Line.CreateBound(oppPt3, pt1));
-            IList<CurveLoop> oppositeCurveLoops = new List<CurveLoop>();
-            oppositeCurveLoops.Add(oppositeRightTrangle);
+            IList<CurveLoop> oppositeCurveLoops = new List<CurveLoop>() { oppositeRightTrangle };
 
             oppositePortArrow = GeometryCreationUtilities.CreateRevolvedGeometry(oppositeCoordinateFrame, oppositeCurveLoops, 0.0, Math.PI * 2.0, solidOptions);
          }
@@ -146,7 +170,7 @@ namespace Revit.IFC.Import.Data
             if (oppositePortArrow != null)
                geomObjs.Add(oppositePortArrow);
 
-            DirectShape directShape = IFCElementUtil.CreateElement(doc, CategoryId, GlobalId, geomObjs, Id);
+            DirectShape directShape = IFCElementUtil.CreateElement(doc, GetCategoryId(doc), GlobalId, geomObjs, Id, EntityType);
             if (directShape != null)
             {
                CreatedGeometry = geomObjs;
@@ -180,8 +204,7 @@ namespace Revit.IFC.Import.Data
          }
          catch (Exception ex)
          {
-            if (ex.Message != "Don't Import")
-               Importer.TheLog.LogError(ifcDistributionPort.StepId, ex.Message, false);
+            HandleError(ex.Message, ifcDistributionPort, true);
             return null;
          }
       }

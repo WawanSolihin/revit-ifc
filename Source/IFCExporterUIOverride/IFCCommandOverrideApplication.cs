@@ -1,4 +1,4 @@
-﻿//
+//
 // BIM IFC export alternate UI library: this library works with Autodesk(R) Revit(R) to provide an alternate user interface for the export of IFC files from Revit.
 // Copyright (C) 2016  Autodesk, Inc.
 // 
@@ -23,14 +23,19 @@ using System.IO;
 using System.Reflection;
 
 using Autodesk.Revit.DB;
+using Autodesk.Revit.DB.Events;
+using Autodesk.Revit.DB.IFC;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Events;
 using Revit.IFC.Common.Extensions;
 using Revit.IFC.Common.Utility;
+using Revit.IFC.Export.Utility;
+using Autodesk.Revit.DB.ExternalService;
 
+using View = Autodesk.Revit.DB.View;
 
-using SaveFileDialog = Microsoft.Win32.SaveFileDialog;
 using System.Windows.Forms;
+using System.Runtime.CompilerServices;
 
 namespace BIM.IFC.Export.UI
 {
@@ -66,8 +71,6 @@ namespace BIM.IFC.Export.UI
       /// <returns>The result (typically Succeeded).</returns>
       public Result OnStartup(UIControlledApplication application)
       {
-         TryLoadCommonAssembly();
-
          // Register execution override
          RevitCommandId commandId = RevitCommandId.LookupCommandId("ID_EXPORT_IFC");
          try
@@ -81,53 +84,59 @@ namespace BIM.IFC.Export.UI
          }
 
          m_ifcCommandBinding.Executed += OnIFCExport;
+
+         // Register IFCEntityTreeUI server
+         application.ControlledApplication.ApplicationInitialized += ApplicationInitialized;
+
          return Result.Succeeded;
       }
 
-      /// <summary>
-      /// Try to load the Revit.IFC.Common assembly from the folder of current executing assembly of UI. If it is loaded, or doesn't exist, do nothing.
-      /// </summary>
-      private void TryLoadCommonAssembly()
+      private void ApplicationInitialized(object sender, ApplicationInitializedEventArgs e)
       {
-         string commonAssemblyName = @"Revit.IFC.Common";  // The common assembly name, no localization 
-         string commonAssemblyStr = commonAssemblyName + ".dll"; // The common assembly, no localization 
-
-         Assembly executingAssembly = Assembly.GetExecutingAssembly();
-         if (executingAssembly == null)
-            return;
-
-         // If the common assembly is loaded in current domain, skip loading.
-         foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+         // Register the IFC Entity selection server
+         SingleServerService entUIService = ExternalServiceRegistry.GetService(ExternalServices.BuiltInExternalServices.IFCEntityTreeUIService) as SingleServerService;
+         if (entUIService != null)
          {
-            if (assembly.GetName().Name == commonAssemblyName)
-               return;
-         }
-
-         string currentAssemblyDir = Path.GetDirectoryName(executingAssembly.Location);
-         // Skip loading if the assembly doesn't exist in the specified path.
-         String dllPath = Path.Combine(currentAssemblyDir, commonAssemblyStr);
-         if (File.Exists(dllPath))
-         {
-            // Load the assembly from the specified path. 					
-            Assembly assembly = Assembly.LoadFrom(dllPath);
-            if (assembly == null)
+            try
             {
-               throw new FileLoadException(String.Format("Failed to load {0} from {1}.", commonAssemblyStr, currentAssemblyDir));
+               IFCEntityTree.BrowseIFCEntityServer browseIFCEntityServer = new IFCEntityTree.BrowseIFCEntityServer();
+               entUIService.AddServer(browseIFCEntityServer);
+               entUIService.SetActiveServer(browseIFCEntityServer.GetServerId());
+            }
+            catch (Autodesk.Revit.Exceptions.InvalidOperationException ex)
+            {
+               (sender as Autodesk.Revit.ApplicationServices.Application)?.WriteJournalComment("IFC warning: IFC entity tree server registration failed - " + ex.Message, true);
+            }
+            catch (Autodesk.Revit.Exceptions.ArgumentException ex)
+            {
+               (sender as Autodesk.Revit.ApplicationServices.Application)?.WriteJournalComment("IFC warning: IFC entity tree server registration failed - " + ex.Message, true);
             }
          }
       }
+
       #endregion
 
       public static bool PotentiallyUpdatedConfigurations { get; set; }
 
+      private static Document m_Document = null;
+
       /// <summary>
       /// The active document for this export.
       /// </summary>
-      public static Document TheDocument
-      {
-         get;
-         protected set;
+      public static Document TheDocument 
+      { 
+         get => m_Document;
+         set
+         {
+            m_Document = value;
+            TheBindings = value?.ParameterBindings;
+         }
       }
+
+      /// <summary>
+      /// The parameter bindings for the active document for this export.
+      /// </summary>
+      public static BindingMap TheBindings { get; private set; }
 
       /// <summary>
       /// The last successful export location
@@ -152,7 +161,7 @@ namespace BIM.IFC.Export.UI
       {
          try
          {
-            Autodesk.Revit.DB.View activeView = doc.ActiveView;
+            View activeView = doc.ActiveView;
             ElementId activeViewId = (activeView == null) ? ElementId.InvalidElementId : activeView.Id;
             return activeViewId;
          }
@@ -174,6 +183,23 @@ namespace BIM.IFC.Export.UI
          {
             // Prepare basic objects
             UIApplication uiApp = sender as UIApplication;
+
+#pragma warning disable CS0618 // Type or member is obsolete
+            if (uiApp.IsViewerModeActive)
+            {
+               using (Autodesk.Revit.UI.TaskDialog taskDialog = new Autodesk.Revit.UI.TaskDialog(Properties.Resources.String_Revit_CurrentLicenseStatusTitle))
+               {
+                  taskDialog.MainInstruction = string.Format(Properties.Resources.String_Revit_CurrentLicenseStatus_MainInstruction,
+                     uiApp.Application.VersionName, uiApp.Application.VersionBuild, uiApp.Application.VersionName);
+                  taskDialog.MainIcon = Autodesk.Revit.UI.TaskDialogIcon.TaskDialogIconWarning;
+                  taskDialog.TitleAutoPrefix = false;
+                  taskDialog.MainContent = Properties.Resources.String_Revit_CurrentLicenseStatus_MainContent;
+                  TaskDialogResult result = taskDialog.Show();
+                  return;
+               }
+            }
+#pragma warning restore CS0618 // Type or member is obsolete
+
             UIDocument uiDoc = uiApp.ActiveUIDocument;
             Document activeDoc = uiDoc.Document;
 
@@ -181,10 +207,10 @@ namespace BIM.IFC.Export.UI
 
             // Note that when exporting multiple documents, we are still going to use the configurations from the
             // active document.  
-            IFCExportConfigurationsMap configurationsMap = new IFCExportConfigurationsMap();
-            configurationsMap.Add(IFCExportConfiguration.GetInSession());
+            IFCExportConfigurationsMap configurationsMap = new IFCExportConfigurationsMap(TheDocument);
+            configurationsMap.AddOrReplace(IFCExportConfiguration.GetInSession());
             configurationsMap.AddBuiltInConfigurations();
-            configurationsMap.AddSavedConfigurations();
+            configurationsMap.AddSavedConfigurations(IFCExport.LastSelectedConfig);
 
             String mruSelection = null;
             if (m_mruConfiguration != null && configurationsMap.HasName(m_mruConfiguration))
@@ -214,13 +240,25 @@ namespace BIM.IFC.Export.UI
 
                // Prompt the user for the file location and path
                string defaultExt = mainWindow.DefaultExt;
-               String fullName = mainWindow.ExportFilePathName;
-               String path = Path.GetDirectoryName(fullName);
-               String fileName = multipleFiles ? Properties.Resources.MultipleFiles : Path.GetFileName(fullName);
+               string fullName = mainWindow.ExportFilePathName;
+               string path = Path.GetDirectoryName(fullName);
+               string fileName = multipleFiles ? Properties.Resources.MultipleFiles : Path.GetFileName(fullName);
 
+               // Check if the user has write access to the directory
+               if (!CanWriteFilesInDirectory(path))
+               {
+                  using (Autodesk.Revit.UI.TaskDialog taskDialog = new Autodesk.Revit.UI.TaskDialog(Properties.Resources.IFCExport))
+                  {
+                     taskDialog.MainInstruction = string.Format(Properties.Resources.IFCExportProcessNoWriteAccess, fileName);
+                     taskDialog.MainIcon = Autodesk.Revit.UI.TaskDialogIcon.TaskDialogIconWarning;
+                     taskDialog.TitleAutoPrefix = false;
+                     TaskDialogResult result = taskDialog.Show();
+                     return;
+                  }
+               }
 
                // This option should be rarely used, and is only for consistency with old files.  As such, it is set by environment variable only.
-               String use2009GUID = Environment.GetEnvironmentVariable("Assign2009GUIDToBuildingStoriesOnIFCExport");
+               string use2009GUID = Environment.GetEnvironmentVariable("Assign2009GUIDToBuildingStoriesOnIFCExport");
                bool use2009BuildingStoreyGUIDs = (use2009GUID != null && use2009GUID == "1");
 
                string unsuccesfulExports = string.Empty;
@@ -230,12 +268,19 @@ namespace BIM.IFC.Export.UI
                // one of the exports.  Prevent that by keeping track of the exported file names.
                ISet<string> exportedFileNames = new HashSet<string>();
 
+               bool exportLinks =
+                  selectedConfig.ExportLinkedFiles != LinkedFileExportAs.DontExport;
+               bool exportSeparateLinks =
+                  selectedConfig.ExportLinkedFiles == LinkedFileExportAs.ExportAsSeparate;
+               bool doFederatedExport = exportLinks && !exportSeparateLinks;
+
                foreach (Document document in mainWindow.DocumentsToExport)
                {
                   TheDocument = document;
 
                   // Call this before the Export IFC transaction starts, as it has its own transaction.
                   IFCClassificationMgr.DeleteObsoleteSchemas(document);
+                  IFCClassificationMgr.UpdateClassification(document, selectedConfig.ClassificationSettings);
 
                   Transaction transaction = new Transaction(document, "Export IFC");
                   transaction.Start();
@@ -258,41 +303,67 @@ namespace BIM.IFC.Export.UI
                   }
 
                   // Prepare the export options
-                  IFCExportOptions exportOptions = new IFCExportOptions();
+                  IFCExportOptions exportOptions = new();
 
                   ElementId activeViewId = GenerateActiveViewIdFromDocument(document);
-                  selectedConfig.ActiveViewId = selectedConfig.UseActiveViewGeometry ? activeViewId.IntegerValue : -1;
-                  selectedConfig.UpdateOptions(exportOptions, activeViewId);
+                  selectedConfig.ActiveViewId = selectedConfig.UseActiveViewGeometry ? activeViewId : ElementId.InvalidElementId;
+                  selectedConfig.UpdateOptions(document, exportOptions, activeViewId, !OptionsUtil.UseLegacyParameterMapping());
+
+                  IDictionary<ElementId, string> linkGUIDsCache =
+                     new Dictionary<ElementId, string>();
+
+                  IDictionary<RevitLinkInstance, Transform> linkInstanceTranforms = null;
+                  string errorMessage = null;
+                  int numBadInstances = 0;
+
+                  if (exportLinks)
+                  {
+                     // Cache for links guids
+                     FilteredElementCollector collector = new FilteredElementCollector(document);
+                     ElementFilter elementFilter = new ElementClassFilter(typeof(RevitLinkInstance));
+                     List<RevitLinkInstance> rvtLinkInstances =
+                        collector.WherePasses(elementFilter).Cast<RevitLinkInstance>().ToList();
+
+                     string linkGuidOptionString = string.Empty;
+
+                     // Get the transforms of the links we can export, and error message information,
+                     // including number, for the ones we can't.
+                     (linkInstanceTranforms, errorMessage, numBadInstances) =
+                        GetLinkedInstanceInfo(rvtLinkInstances);
+
+                     ISet<string> existingGUIDs = new HashSet<string>();
+
+                     foreach (RevitLinkInstance linkInstance in linkInstanceTranforms.Keys)
+                     {
+                        Parameter parameter = linkInstance.get_Parameter(BuiltInParameter.IFC_GUID);
+
+                        string sGUID = GUIDUtil.GetSimpleElementIFCGUID(linkInstance);
+
+                        string sGUIDlower = sGUID.ToLower();
+
+                        while (existingGUIDs.Contains(sGUIDlower))
+                        {
+                           sGUID += "-";
+                           sGUIDlower += "-";
+                        }
+                        existingGUIDs.Add(sGUIDlower);
+
+                        if (doFederatedExport)
+                           linkGuidOptionString += linkInstance.Id.ToString() + "," + sGUID + ";";
+                        else
+                           linkGUIDsCache.Add(linkInstance.Id, sGUID);
+                     }
+
+                     if (doFederatedExport)
+                     {
+                        exportOptions.AddOption("ExportingLinks", selectedConfig.ExportLinkedFiles.ToString());
+                        exportOptions.AddOption("FederatedLinkInfo", linkGuidOptionString);
+                     }
+                  }
 
                   bool result = document.Export(path, fileName, exportOptions);
 
-                  Dictionary<ElementId, string> linksGUIDsCache = new Dictionary<ElementId, string>();
-                  if (result)
-                  {
-                     // Cache for links guids
-                     if (selectedConfig.ExportLinkedFiles == true)
-                     {
-                        Autodesk.Revit.DB.FilteredElementCollector collector = new FilteredElementCollector(document);
-                        collector.WhereElementIsNotElementType().OfCategory(BuiltInCategory.OST_RvtLinks);
-                        System.Collections.Generic.ICollection<ElementId> rvtLinkInstanceIds = collector.ToElementIds();
-                        foreach (ElementId linkId in rvtLinkInstanceIds)
-                        {
-                           Element linkInstance = document.GetElement(linkId);
-                           if (linkInstance == null)
-                              continue;
-                           Parameter parameter = linkInstance.get_Parameter(BuiltInParameter.IFC_GUID);
-                           if (parameter != null && parameter.HasValue && parameter.StorageType == StorageType.String)
-                           {
-                              String sGUID = parameter.AsString(), sGUIDlower = sGUID.ToLower();
-                              foreach (KeyValuePair<ElementId, string> value in linksGUIDsCache)
-                                 if (value.Value.ToLower().IndexOf(sGUIDlower) == 0)
-                                    sGUID += "-";
-                              linksGUIDsCache.Add(linkInstance.Id, sGUID);
-                           }
-                        }
-                     }
-                  }
-                  else
+                  if (!result)
                   {
                      unsuccesfulExports += fullName + "\n";
                   }
@@ -303,21 +374,45 @@ namespace BIM.IFC.Export.UI
                   else
                      transaction.RollBack();
 
-                  // Export links
-                  if (selectedConfig.ExportLinkedFiles == true)
+                  // Export links as separate files
+                  if (exportSeparateLinks)
                   {
-                     exportOptions.AddOption("ExportingLinks", true.ToString());
-                     ExportLinkedDocuments(document, fullName, linksGUIDsCache, exportOptions);
-                     exportOptions.AddOption("ExportingLinks", false.ToString());
+                     // We can't use the FilterViewId for linked documents, because the
+                     // intermediate code assumes that it is in the exported document.  As such,
+                     // we will pass it in a special place.
+                     ElementId originalFilterViewId = exportOptions.FilterViewId;
+                     if (originalFilterViewId != ElementId.InvalidElementId)
+                     {
+                        exportOptions.AddOption("HostViewId", exportOptions.FilterViewId.ToString());
+                        exportOptions.FilterViewId = ElementId.InvalidElementId;
+                     }
+                     ExporterCacheManager.ExportOptionsCache.HostDocument = document;
+                     exportOptions.AddOption("ExportingLinks", LinkedFileExportAs.ExportAsSeparate.ToString());
+                     ExportLinkedDocuments(document, fullName, linkGUIDsCache, linkInstanceTranforms,
+                        exportOptions, originalFilterViewId);
+                  }
+
+                  // Show user errors, if any.
+                  if (!string.IsNullOrEmpty(errorMessage))
+                  {
+                     using (Autodesk.Revit.UI.TaskDialog taskDialog = new Autodesk.Revit.UI.TaskDialog(Properties.Resources.IFCExport))
+                     {
+                        taskDialog.MainInstruction = string.Format(Properties.Resources.LinkInstanceExportErrorMain, numBadInstances);
+                        taskDialog.MainIcon = Autodesk.Revit.UI.TaskDialogIcon.TaskDialogIconWarning;
+                        taskDialog.TitleAutoPrefix = false;
+
+                        taskDialog.ExpandedContent = errorMessage;
+                        taskDialog.Show();
+                     }
                   }
                }
 
                if (!string.IsNullOrWhiteSpace(unsuccesfulExports))
                {
-                  using (TaskDialog taskDialog = new TaskDialog(Properties.Resources.IFCExport))
+                  using (Autodesk.Revit.UI.TaskDialog taskDialog = new Autodesk.Revit.UI.TaskDialog(Properties.Resources.IFCExport))
                   {
                      taskDialog.MainInstruction = string.Format(Properties.Resources.IFCExportProcessError, unsuccesfulExports);
-                     taskDialog.MainIcon = TaskDialogIcon.TaskDialogIconWarning;
+                     taskDialog.MainIcon = Autodesk.Revit.UI.TaskDialogIcon.TaskDialogIconWarning;
                      TaskDialogResult taskDialogResult = taskDialog.Show();
                   }
                }
@@ -330,22 +425,15 @@ namespace BIM.IFC.Export.UI
             // The cancel button should cancel the export, not any "OK"ed setup changes.
             if (mainWindow.Result == IFCExportResult.ExportAndSaveSettings || mainWindow.Result == IFCExportResult.Cancel)
             {
-               if (PotentiallyUpdatedConfigurations)
-               {
-                  configurationsMap = mainWindow.GetModifiedConfigurations();
-                  configurationsMap.UpdateSavedConfigurations();
-               }
-
-               // Remember last selected configuration
                m_mruConfiguration = mainWindow.GetSelectedConfiguration().Name;
             }
          }
          catch (Exception e)
          {
-            using (TaskDialog taskDialog = new TaskDialog(Properties.Resources.IFCExport))
+            using (Autodesk.Revit.UI.TaskDialog taskDialog = new Autodesk.Revit.UI.TaskDialog(Properties.Resources.IFCExport))
             {
                taskDialog.MainInstruction = Properties.Resources.IFCExportProcessGenericError;
-               taskDialog.MainIcon = TaskDialogIcon.TaskDialogIconWarning;
+               taskDialog.MainIcon = Autodesk.Revit.UI.TaskDialogIcon.TaskDialogIconWarning;
                taskDialog.ExpandedContent = e.ToString();
                TaskDialogResult result = taskDialog.Show();
             }
@@ -371,7 +459,7 @@ namespace BIM.IFC.Export.UI
          {
             if (elementString != "")
                elementString += ", ";
-            elementString += elementId.IntegerValue.ToString();
+            elementString += elementId.ToString();
          }
          return elementString;
       }
@@ -396,7 +484,112 @@ namespace BIM.IFC.Export.UI
             messageString += string.Format(formatString, ElementIdListToString(items));
       }
 
-      public void ExportLinkedDocuments(Autodesk.Revit.DB.Document document, string fileName, Dictionary<ElementId, string> linksGUIDsCache, IFCExportOptions exportOptions)
+      private string GetLinkFileName(Document linkDocument, string linkPathName)
+      {
+         int index = linkPathName.LastIndexOf("\\");
+         if (index <= 0)
+            return linkDocument.Title;
+
+         string linkFileName = linkPathName.Substring(index + 1);
+         // remove the extension
+         index = linkFileName.LastIndexOf('.');
+         if (index > 0)
+            linkFileName = linkFileName.Substring(0, index);
+         return linkFileName;
+      }
+
+      private (IDictionary<RevitLinkInstance, Transform>, string, int) GetLinkedInstanceInfo(
+         IList<RevitLinkInstance> linkInstances)
+      {
+         IDictionary<RevitLinkInstance, Transform> linkedInstanceTransforms =
+            new SortedDictionary<RevitLinkInstance, Transform>(new ElementComparer());
+
+         // We will keep track of the instances we can't export.
+         // Reasons we can't export:
+         // 1. Couldn't create a temporary document for exporting the linked instance.
+         // 2. The document for the linked instance can't be found.
+         // 3. The linked instance is non-conformal or scaled.
+         List<string> noTempDoc = [];
+         List<ElementId> nonConformalInst = [];
+         List<ElementId> scaledInst = [];
+
+         int numBadInstances = 0;
+
+         foreach (RevitLinkInstance currRvtLinkInstance in linkInstances)
+         {
+            // Nothing to report if the element itself is null.
+            if (currRvtLinkInstance == null)
+               continue;
+
+            // get the link document and the unit scale
+            Document linkDocument = currRvtLinkInstance.GetLinkDocument();
+            if (linkDocument == null)
+            {
+               // We can't distinguish between unloaded and an error condition, so we
+               // won't get a likely extraneous error.
+               continue;
+            }
+
+            double lengthScaleFactorLink = UnitUtils.ConvertFromInternalUnits(
+               1.0,
+               linkDocument.GetUnits().GetFormatOptions(SpecTypeId.Length).GetUnitTypeId());
+
+            // get the link transform
+            Transform tr = currRvtLinkInstance.GetTransform();
+
+            ElementId instanceId = currRvtLinkInstance.Id;
+            if (!tr.IsConformal)
+            {
+               nonConformalInst.Add(instanceId);
+               numBadInstances++;
+               continue;
+            }
+
+            if (!MathUtil.IsAlmostEqual(Math.Abs(tr.Determinant), 1.0))
+            {
+               scaledInst.Add(instanceId);
+               numBadInstances++;
+               continue;
+            }
+
+            // scale the transform origin
+            tr.Origin *= lengthScaleFactorLink;
+
+            linkedInstanceTransforms[currRvtLinkInstance] = tr;
+         }
+
+         // Show user errors, if any.
+         string expandedContent = string.Empty;
+         AddExpandedStringContent(ref expandedContent, Properties.Resources.LinkInstanceExportCantCreateDoc, noTempDoc);
+         AddExpandedElementIdContent(ref expandedContent, Properties.Resources.LinkInstanceExportNonConformal, nonConformalInst);
+         AddExpandedElementIdContent(ref expandedContent, Properties.Resources.LinkInstanceExportScaled, scaledInst);
+
+         return (linkedInstanceTransforms, expandedContent, numBadInstances);
+      }
+
+      /// <summary>
+      /// Checks if element is visible for certain view.
+      /// </summary>
+      /// <param name="element">The element.</param>
+      /// <returns>True if the element is visible, false otherwise.</returns>
+      public bool IsLinkVisible(Element element, View filterView)
+      {
+         if (filterView == null)
+            return true;
+
+         if (element.IsHidden(filterView))
+            return false;
+
+         if (!(element.Category?.get_Visible(filterView) ?? false))
+            return false;
+
+         return filterView.IsElementVisibleInTemporaryViewMode(TemporaryViewMode.TemporaryHideIsolate, element.Id);
+      }
+
+      public void ExportLinkedDocuments(Document document, string fileName,
+         IDictionary<ElementId, string> linkGUIDsCache,
+         IDictionary<RevitLinkInstance, Transform> elementToTransform,
+         IFCExportOptions exportOptions, ElementId originalFilterViewId)
       {
          // get the extension
          int index = fileName.LastIndexOf('.');
@@ -405,31 +598,33 @@ namespace BIM.IFC.Export.UI
          string sExtension = fileName.Substring(index);
          fileName = fileName.Substring(0, index);
 
-         // get all the revit link instances
-         FilteredElementCollector collector = new FilteredElementCollector(document);
-         ElementFilter elementFilter = new ElementClassFilter(typeof(RevitLinkInstance));
-         List<RevitLinkInstance> rvtLinkInstances = collector.WherePasses(elementFilter).Cast<RevitLinkInstance>().ToList();
+         // Check view overrides for linked instance 
+         bool existsViewOverrides = false;
 
-         IDictionary<String, int> rvtLinkNamesDict = new Dictionary<String, int>();
-         IDictionary<String, List<RevitLinkInstance>> rvtLinkNamesToInstancesDict = new Dictionary<String, List<RevitLinkInstance>>();
+         // Group linked instances by (linkPathName, isMirrored). Mirrored and non-mirrored instances
+         // of the same link get separate IFC files because mirroring modifies body geometry globally.
+         Dictionary<(string, bool), IList<RevitLinkInstance>> groupedInstances = new();
 
          try
          {
-            // get the link types
-            foreach (RevitLinkInstance rvtLinkInstance in rvtLinkInstances)
+            View filterView = document.GetElement(originalFilterViewId) as View;
+            foreach (RevitLinkInstance rvtLinkInstance in elementToTransform.Keys)
             {
-               // get the instance
-               if (rvtLinkInstance == null)
-                  continue;
-
-               // check the cache
-               if (linksGUIDsCache.Keys.Contains(rvtLinkInstance.Id) == false)
+               if (!IsLinkVisible(rvtLinkInstance, filterView))
                   continue;
 
                // get the link document
                Document linkDocument = rvtLinkInstance.GetLinkDocument();
                if (linkDocument == null)
                   continue;
+
+               ElementId rvtLinkInstanceId = rvtLinkInstance.Id;
+               if (!existsViewOverrides && filterView != null)
+               {
+                  RevitLinkGraphicsSettings settings = filterView.GetLinkOverrides(rvtLinkInstanceId);
+                  if (settings != null)
+                     existsViewOverrides = true;
+               }
 
                // get the link file path and name
                String linkPathName = "";
@@ -440,102 +635,34 @@ namespace BIM.IFC.Export.UI
                   linkPathName = linkDocument.PathName;
 
                // get the link file name
-               String linkFileName = "";
-               index = linkPathName.LastIndexOf("\\");
-               if (index > 0)
-                  linkFileName = linkPathName.Substring(index + 1);
-               else
-                  linkFileName = linkDocument.Title;
+               string linkFileName = GetLinkFileName(linkDocument, linkPathName);
 
-               // remove the extension
-               index = linkFileName.LastIndexOf('.');
-               if (index > 0)
-                  linkFileName = linkFileName.Substring(0, index);
-
-               // add to names count dictionary
-               if (!rvtLinkNamesDict.Keys.Contains(linkFileName))
-                  rvtLinkNamesDict.Add(linkFileName, 0);
-               rvtLinkNamesDict[linkFileName]++;
-
-               // add to names instances dictionary
-               if (!rvtLinkNamesToInstancesDict.Keys.Contains(linkPathName))
-                  rvtLinkNamesToInstancesDict.Add(linkPathName, new List<RevitLinkInstance>());
-               rvtLinkNamesToInstancesDict[linkPathName].Add(rvtLinkInstance);
+               bool isMirrored = elementToTransform[rvtLinkInstance].HasReflection;
+               if (!groupedInstances.TryGetValue((linkPathName, isMirrored), out IList<RevitLinkInstance> linkGroup))
+               {
+                  linkGroup = new List<RevitLinkInstance>();
+                  groupedInstances[(linkPathName, isMirrored)] = linkGroup;
+               }
+               linkGroup.Add(rvtLinkInstance);
             }
          }
          catch
          {
          }
 
-         // get the link instances
-         // We will keep track of the instances we can't export.
-         // Reasons we can't export:
-         // 1. The path for the linked instance doesn't exist.
-         // 2. Couldn't create a temporary document for exporting the linked instance.
-         // 3. The document for the linked instance can't be found.
-         // 4. The linked instance is mirrored, non-conformal, or scaled.
-         IList<string> pathDoesntExist = new List<string>();
-         IList<string> noTempDoc = new List<string>();
-         IList<ElementId> cantFindDoc = new List<ElementId>();
-         IList<ElementId> nonConformalInst = new List<ElementId>();
-         IList<ElementId> scaledInst = new List<ElementId>();
-         IList<ElementId> instHasReflection = new List<ElementId>();
-
-         foreach (String linkPathName in rvtLinkNamesToInstancesDict.Keys)
+         foreach (KeyValuePair<(string, bool), IList<RevitLinkInstance>> linkPathNames in groupedInstances)
          {
-            // get the name of the copy
-            String linkPathNameCopy = System.IO.Path.GetTempPath();
-            index = linkPathName.LastIndexOf("\\");
-            if (index > 0)
-               linkPathNameCopy += linkPathName.Substring(index + 1);
-            else
-               linkPathNameCopy += linkPathName;
-            index = linkPathNameCopy.LastIndexOf('.');
-            if (index <= 0)
-               index = linkPathNameCopy.Length;
-            linkPathNameCopy = linkPathNameCopy.Insert(index, " - Copy");
-            int ii = 1;
-            while (File.Exists(linkPathNameCopy))
-               linkPathNameCopy = linkPathNameCopy.Insert(index, "(" + (++ii).ToString() + ")");
-
-            // copy the file
-            File.Copy(linkPathName, linkPathNameCopy);
-            if (!File.Exists(linkPathNameCopy))
-            {
-               pathDoesntExist.Add(linkPathName);
-               continue;
-            }
-
-            // open the document
-            Document documentCopy = null;
-            try
-            {
-               if ((linkPathName.Length >= 4 && linkPathName.Substring(linkPathName.Length - 4).ToLower() == ".ifc") ||
-                   (linkPathName.Length >= 7 && linkPathName.Substring(linkPathName.Length - 7).ToLower() == ".ifcxml") ||
-                   (linkPathName.Length >= 7 && linkPathName.Substring(linkPathName.Length - 7).ToLower() == ".ifczip"))
-                  documentCopy = document.Application.OpenIFCDocument(linkPathNameCopy);
-               else
-                  documentCopy = document.Application.OpenDocumentFile(linkPathNameCopy);
-            }
-            catch
-            {
-               documentCopy = null;
-            }
-
-            if (documentCopy == null)
-            {
-               noTempDoc.Add(linkPathName);
-               continue;
-            }
-
-            // get the link document unit scale
-            DisplayUnitType dutLink = documentCopy.GetUnits().GetFormatOptions(UnitType.UT_Length).DisplayUnits;
-            double lengthScaleFactorLink = UnitUtils.ConvertFromInternalUnits(1.0, dutLink);
+            string linkPathName = linkPathNames.Key.Item1;
+            bool isMirrored = linkPathNames.Key.Item2;
+            string separator = isMirrored ? "--" : "-";
 
             // get the link instances
-            List<RevitLinkInstance> currRvtLinkInstances = rvtLinkNamesToInstancesDict[linkPathName];
-            IList<string> serTransforms = new List<string>();
-            IList<string> linkFileNames = new List<string>();
+            IList<RevitLinkInstance> currRvtLinkInstances = linkPathNames.Value;
+            int numInstances = currRvtLinkInstances.Count;
+            List<string> linkFileNames = new();
+            List<(ElementId, string)> serTransforms = new();
+
+            Document linkDocument = null;
 
             foreach (RevitLinkInstance currRvtLinkInstance in currRvtLinkInstances)
             {
@@ -543,82 +670,38 @@ namespace BIM.IFC.Export.UI
                if (currRvtLinkInstance == null)
                   continue;
 
-               // get the link document
-               Document linkDocument = currRvtLinkInstance.GetLinkDocument();
-               if (linkDocument == null)
-               {
-                  cantFindDoc.Add(currRvtLinkInstance.Id);
-                  continue;
-               }
+               ElementId instanceId = currRvtLinkInstance.Id;
 
-               // get the link transform
-               Transform tr = currRvtLinkInstance.GetTransform();
-
-               // We can't handle non-conformal, scaled, or mirrored transforms.
-               if (!tr.IsConformal)
-               {
-                  nonConformalInst.Add(currRvtLinkInstance.Id);
-                  continue;
-               }
-
-               if (tr.HasReflection)
-               {
-                  instHasReflection.Add(currRvtLinkInstance.Id);
-                  continue;
-               }
-
-               if (!MathUtil.IsAlmostEqual(tr.Determinant, 1.0))
-               {
-                  scaledInst.Add(currRvtLinkInstance.Id);
-                  continue;
-               }
+               // get the link document and the unit scale
+               linkDocument = linkDocument ?? currRvtLinkInstance.GetLinkDocument();
 
                // get the link file path and name
-               String linkFileName = "";
-               index = linkPathName.LastIndexOf("\\");
-               if (index > 0)
-                  linkFileName = linkPathName.Substring(index + 1);
-               else
-                  linkFileName = linkDocument.Title;
-
-               // remove the extension
-               index = linkFileName.LastIndexOf('.');
-               if (index > 0)
-                  linkFileName = linkFileName.Substring(0, index);
+               string linkFileName = GetLinkFileName(linkDocument, linkPathName);
 
                //if link was an IFC file then make a different formating to the file name
-               if ((linkPathName.Length >= 4 && linkPathName.Substring(linkPathName.Length - 4).ToLower() == ".ifc") ||
-                   (linkPathName.Length >= 7 && linkPathName.Substring(linkPathName.Length - 7).ToLower() == ".ifcxml") ||
-                   (linkPathName.Length >= 7 && linkPathName.Substring(linkPathName.Length - 7).ToLower() == ".ifczip"))
+               int extensionStart = linkPathName.LastIndexOf('.');
+               string extension = (extensionStart >= 0) ? linkPathName.Substring(extensionStart + 1).ToLower() : null;
+               if (extension != null && (extension == "ifc" || extension == "ifcxml" || extension == "ifczip"))
                {
-                  String fName = fileName;
-
                   //get output path and add to the new file name 
-                  index = fName.LastIndexOf("\\");
-                  if (index > 0)
-                     fName = fName.Substring(0, index + 1);
-                  else
-                     fName = "";
+                  index = fileName.LastIndexOf("\\");
+                  string fName = (index > 0) ? fileName.Substring(0, index + 1) : string.Empty;
 
-                  //construct IFC file name
-                  linkFileName = fName + linkFileName + "-";
-
-                  //add guid
-                  linkFileName += linksGUIDsCache[currRvtLinkInstance.Id];
+                  // construct IFC file name.  We will use an extra dash if it is a mirrored copy.
+                  linkFileName = fName + linkFileName + separator + linkGUIDsCache[instanceId];
                }
                else
                {
                   // check if there are multiple instances with the same name
-                  bool bMultiple = (rvtLinkNamesDict[linkFileName] > 1);
+                  bool bMultiple = numInstances > 1;
 
                   // add the path
-                  linkFileName = fileName + "-" + linkFileName;
+                  linkFileName = fileName + separator + linkFileName;
 
                   // add the guid
                   if (bMultiple)
                   {
-                     linkFileName += "-";
-                     linkFileName += linksGUIDsCache[currRvtLinkInstance.Id];
+                     linkFileName += "-" + linkGUIDsCache[instanceId];
                   }
                }
 
@@ -627,86 +710,87 @@ namespace BIM.IFC.Export.UI
 
                linkFileNames.Add(linkFileName);
 
-               // scale the transform origin
-               tr.Origin *= lengthScaleFactorLink;
-
                // serialize transform
-               serTransforms.Add(SerializeTransform(tr));
+               serTransforms.Add((instanceId, SerializeTransform(elementToTransform[currRvtLinkInstance])));
             }
 
-            // IFC export requires an open transaction, although no changes should be made
-            Transaction transaction = new Transaction(documentCopy, "Export IFC Link");
-            transaction.Start();
-            FailureHandlingOptions failureOptions = transaction.GetFailureHandlingOptions();
-            failureOptions.SetClearAfterRollback(false);
-            transaction.SetFailureHandlingOptions(failureOptions);
-
-            // export
-            try
+            if (linkDocument != null)
             {
-               int numLinkInstancesToExport = linkFileNames.Count;
-               exportOptions.AddOption("NumberOfExportedLinkInstances", numLinkInstancesToExport.ToString());
-
-               for (int ind = 0; ind < numLinkInstancesToExport; ind++)
+               // export
+               try
                {
-                  string optionName = (ind == 0) ? "ExportLinkInstanceTransform" : "ExportLinkInstanceTransform" + (ind + 1).ToString();
-                  exportOptions.AddOption(optionName, serTransforms[ind]);
+                  int numLinkInstancesToExport = linkFileNames.Count;
 
-                  // Don't pass in file name for the first link instance.
-                  if (ind == 0)
-                     continue;
+                  // Pass in the first value; the rest will  be in the options.
+                  string path_ = Path.GetDirectoryName(linkFileNames[0]);
+                  string fileName_ = Path.GetFileName(linkFileNames[0]);
 
-                  optionName = "ExportLinkInstanceFileName" + (ind + 1).ToString();
-                  exportOptions.AddOption(optionName, linkFileNames[ind]);
+                  if (existsViewOverrides)
+                  {
+                     // Current linked instance.
+                     exportOptions.AddOption("NumberOfExportedLinkInstances", "1");
+
+                     //If view is overridden export linked instances individually.
+                     for (int ind = 0; ind < numLinkInstancesToExport; ind++)
+                     {
+                        path_ = Path.GetDirectoryName(linkFileNames[ind]);
+                        fileName_ = Path.GetFileName(linkFileNames[ind]);
+
+                        RevitLinkInstance rvtLinkInstance = document.GetElement(serTransforms[ind].Item1) as RevitLinkInstance;
+                        if (rvtLinkInstance == null)
+                           continue;
+
+                        string optionName = "ExportLinkId";
+                        exportOptions.AddOption(optionName, serTransforms[ind].Item1.ToString());
+
+                        optionName = "ExportLinkInstanceTransform";
+                        exportOptions.AddOption(optionName, serTransforms[ind].Item2);
+
+                        optionName = "ExportLinkInstanceFileName";
+                        exportOptions.AddOption(optionName, linkFileNames[ind]);
+
+                        ExportLinkedDocument(linkDocument, path_, fileName_, exportOptions);
+                     }
+                  }
+                  else
+                  {
+                     // Optimized version to avoid extra copies of the IFC file.
+                     exportOptions.AddOption("NumberOfExportedLinkInstances", numLinkInstancesToExport.ToString());
+
+                     for (int ind = 0; ind < numLinkInstancesToExport; ind++)
+                     {
+                        string optionName = (ind == 0) ? "ExportLinkId" : "ExportLinkId" + (ind + 1).ToString();
+                        exportOptions.AddOption(optionName, serTransforms[ind].Item1.ToString());
+
+                        optionName = (ind == 0) ? "ExportLinkInstanceTransform" : "ExportLinkInstanceTransform" + (ind + 1).ToString();
+                        exportOptions.AddOption(optionName, serTransforms[ind].Item2);
+
+                        // Don't pass in file name for the first link instance.
+                        if (ind == 0)
+                           continue;
+
+                        optionName = "ExportLinkInstanceFileName" + (ind + 1).ToString();
+                        exportOptions.AddOption(optionName, linkFileNames[ind]);
+                     }
+
+                     ExportLinkedDocument(linkDocument, path_, fileName_, exportOptions);
+                  }
                }
-
-               // Pass in the first value; the rest will  be in the options.
-               String path_ = Path.GetDirectoryName(linkFileNames[0]);
-               String fileName_ = Path.GetFileName(linkFileNames[0]);
-               bool result = documentCopy.Export(path_, fileName_, exportOptions); // pass in the options here
-            }
-            catch
-            {
-            }
-
-            // rollback the transaction
-            transaction.RollBack();
-
-            // close the document
-            documentCopy.Close(false);
-
-            // delete the copy
-            try
-            {
-               File.Delete(linkPathNameCopy);
-            }
-            catch
-            {
-            }
-
-            // Show user errors, if any.
-            int numBadInstances = pathDoesntExist.Count + noTempDoc.Count + cantFindDoc.Count + nonConformalInst.Count
-                + scaledInst.Count + instHasReflection.Count;
-            if (numBadInstances > 0)
-            {
-               using (TaskDialog taskDialog = new TaskDialog(Properties.Resources.IFCExport))
+               catch
                {
-                  taskDialog.MainInstruction = string.Format(Properties.Resources.LinkInstanceExportErrorMain, numBadInstances);
-                  taskDialog.MainIcon = TaskDialogIcon.TaskDialogIconWarning;
-                  taskDialog.TitleAutoPrefix = false;
-
-                  string expandedContent = "";
-                  AddExpandedStringContent(ref expandedContent, Properties.Resources.LinkInstanceExportErrorPath, pathDoesntExist);
-                  AddExpandedStringContent(ref expandedContent, Properties.Resources.LinkInstanceExportCantCreateDoc, noTempDoc);
-                  AddExpandedElementIdContent(ref expandedContent, Properties.Resources.LinkInstanceExportCantFindDoc, cantFindDoc);
-                  AddExpandedElementIdContent(ref expandedContent, Properties.Resources.LinkInstanceExportNonConformal, nonConformalInst);
-                  AddExpandedElementIdContent(ref expandedContent, Properties.Resources.LinkInstanceExportScaled, scaledInst);
-                  AddExpandedElementIdContent(ref expandedContent, Properties.Resources.LinkInstanceExportHasReflection, instHasReflection);
-
-                  taskDialog.ExpandedContent = expandedContent;
-                  TaskDialogResult result = taskDialog.Show();
                }
             }
+         }
+      }
+
+      private void ExportLinkedDocument(Document linkDocument, string path, string fileName, IFCExportOptions exportOptions)
+      {
+         // Normally, IFC export would need a transaction, even if no permanent
+         // changes are made.  For linked documents, though, that's handled by the
+         // export itself.
+         using (IFCLinkDocumentExportScope scope = new IFCLinkDocumentExportScope(linkDocument))
+         {
+            linkDocument.Export(path, fileName, exportOptions);
          }
       }
 
@@ -725,6 +809,52 @@ namespace BIM.IFC.Export.UI
          retVal += SerializeXYZ(tr.BasisY) + ";";
          retVal += SerializeXYZ(tr.BasisZ) + ";";
          return retVal;
+      }
+
+      static public bool CanWriteFilesInDirectory(string directoryPath)
+      {
+         if (string.IsNullOrEmpty(directoryPath))
+            return false;
+
+         // Probe actual write access instead of inspecting NTFS ACLs, whose SIDs never match
+         // the local WindowsIdentity on network shares (NAS/SMB) and cause false rejections.
+         // Write access only (matching export) with best-effort cleanup, so a share that
+         // grants write but not delete is still reported as writable. A fixed probe name
+         // created with Create overwrites any file orphaned by an abnormal termination,
+         // so probes cannot accumulate across repeated exports.
+         try
+         {
+            string probeFilePath = Path.Combine(directoryPath, ".revit_ifc_write_probe");
+            using (new FileStream(probeFilePath, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+            }
+
+            try
+            {
+               File.Delete(probeFilePath);
+            }
+            catch
+            {
+               // Cleanup is best-effort: the export itself only needs write access, so a
+               // failure to remove the probe file must not mark the directory unwritable.
+            }
+
+            return true;
+         }
+         catch (UnauthorizedAccessException ex)
+         {
+            System.Diagnostics.Trace.TraceWarning("IFC warning: Directory write check failed for '" + directoryPath + "' - " + ex.Message);
+         }
+         catch (IOException ex)
+         {
+            System.Diagnostics.Trace.TraceWarning("IFC warning: Directory write check failed for '" + directoryPath + "' - " + ex.Message);
+         }
+         catch (System.Security.SecurityException ex)
+         {
+            System.Diagnostics.Trace.TraceWarning("IFC warning: Directory security check failed for '" + directoryPath + "' - " + ex.Message);
+         }
+
+         return false;
       }
    }
 }

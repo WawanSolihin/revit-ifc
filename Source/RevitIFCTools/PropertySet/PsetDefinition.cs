@@ -19,28 +19,54 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace RevitIFCTools.PropertySet
 {
+   public class PropertyComparer : IEqualityComparer<PsetProperty>
+   {
+      public bool Equals(PsetProperty prop1, PsetProperty prop2)
+      {
+         return (prop1.Name.Equals(prop2.Name, StringComparison.InvariantCultureIgnoreCase));
+      }
+
+      public int GetHashCode(PsetProperty prop)
+      {
+         return StringComparer.InvariantCultureIgnoreCase.GetHashCode(prop.Name);
+      }
+   }
+
    public class PsetDefinition
    {
       public string Name { get; set; }
-      public string IfcVersion { get; set; }
+      private string m_IfcVersion;
+      public string IfcVersion { 
+         get
+         {
+            return m_IfcVersion;
+         } 
+         set {
+            if (value.StartsWith("IFC2X2", StringComparison.InvariantCultureIgnoreCase))
+               m_IfcVersion = "IFC2X2";
+            else if (value.StartsWith("IFC2X3", StringComparison.InvariantCultureIgnoreCase))
+               m_IfcVersion = "IFC2X3";
+            else if (value.Equals("IFC4", StringComparison.InvariantCultureIgnoreCase))
+               m_IfcVersion = "IFC4";
+            else
+               m_IfcVersion = value;
+         } 
+      }
       public string IfdGuid { get; set; }
       public IList<string> ApplicableClasses { get; set; }
       public string ApplicableType { get; set; }
-      public string PredefinedType { get; set; }
-      public IList<PsetProperty> properties { get; set; }
+      public IList<string> PredefinedTypes { get; set; } = new List<string>();
+      public HashSet<PsetProperty> properties { get; set; }
       public override string ToString()
       {
          string psetDefStr = "";
-         psetDefStr = "\nPsetName:\t" + Name
-                     + "\nIfcVersion:\t" + IfcVersion;
+         psetDefStr = "\r\nPsetName:\t" + Name
+                     + "\r\nIfcVersion:\t" + IfcVersion;
          if (!string.IsNullOrEmpty(IfdGuid))
-            psetDefStr += "\nifdguid:\t" + IfdGuid;
+            psetDefStr += "\r\nifdguid:\t" + IfdGuid;
          string appCl = "";
          foreach (string cl in ApplicableClasses)
          {
@@ -48,11 +74,11 @@ namespace RevitIFCTools.PropertySet
                appCl += ", ";
             appCl += cl;
          }
-         psetDefStr += "\nApplicableClasses:\t(" + appCl + ")";
+         psetDefStr += "\r\nApplicableClasses:\t(" + appCl + ")";
          psetDefStr += "\nProperties:";
          foreach (PsetProperty p in properties)
          {
-            psetDefStr += p.ToString() + "\n";
+            psetDefStr += p.ToString() + "\r\n";
          }
          return psetDefStr;
       }

@@ -42,8 +42,8 @@ namespace Revit.IFC.Export.Exporter.PropertySet
       /// <param name="revitParameterName">
       /// Revit parameter name.
       /// </param>
-      public QuantityEntryMap(string revitParameterName)
-          : base(revitParameterName)
+      public QuantityEntryMap(string revitParameterName, string compatibleParamName)
+          : base(revitParameterName, compatibleParamName)
       {
 
       }
@@ -65,82 +65,77 @@ namespace Revit.IFC.Export.Exporter.PropertySet
       {
 
       }
+
       /// <summary>
       /// Process to create element quantity.
       /// </summary>
-      /// <param name="file">
-      /// The IFC file.
-      /// </param>
-      /// <param name="exporterIFC">
-      /// The ExporterIFC object.
-      /// </param>
-      /// <param name="extrusionCreationData">
-      /// The IFCExtrusionCreationData.
-      /// </param>
-      /// <param name="element">
-      /// The element of which this property is created for.
-      /// </param>
-      /// <param name="elementType">
-      /// The element type of which this quantity is created for.
-      /// </param>
-      /// <returns>
-      /// Then created quantity handle.
-      /// </returns>
-      public IFCAnyHandle ProcessEntry(IFCFile file, ExporterIFC exporterIFC, IFCExtrusionCreationData extrusionCreationData,
-             Element element, ElementType elementType, QuantityType quantityType, string methodOfMeasurement, string quantityName)
+      /// <param name="file">The IFC file.</param>
+      /// <param name="exporterIFC">The ExporterIFC object.</param>
+      /// <param name="extrusionCreationData">The IFCExportBodyParams.</param>
+      /// <param name="element">The element of which this property is created for.</param>
+      /// <param name="elementType">The element type of which this quantity is created for.</param>
+      /// <returns>The created quantity handle.</returns>
+      public IFCAnyHandle ProcessEntry(IFCFile file, ExporterIFC exporterIFC, IFCExportBodyParams extrusionCreationData,
+             Element element, ElementType elementType, QuantityEntry parentEntry)
       {
          bool useProperty = (!String.IsNullOrEmpty(RevitParameterName)) || (RevitBuiltInParameter != BuiltInParameter.INVALID);
 
          bool success = false;
-         double val = 0;
+         object val = 0;
          if (useProperty)
          {
-            success = (ParameterUtil.GetDoubleValueFromElementOrSymbol(element, RevitParameterName, out val) != null);
-            if (!success && RevitBuiltInParameter != BuiltInParameter.INVALID)
-               success = (ParameterUtil.GetDoubleValueFromElementOrSymbol(element, RevitBuiltInParameter, out val) != null);
-
-            if (success) // factor in the scale factor for all the parameters depending of the data type to get the correct value
+            if (parentEntry.QuantityType is QuantityType.Count)
             {
-               switch (quantityType)
+               int? intValPar = null;
+               intValPar = (ParameterUtil.GetIntValueFromElementOrSymbol(element, RevitParameterName));
+               if (intValPar.HasValue)
                {
-                  case QuantityType.PositiveLength:
-                     val = UnitUtil.ScaleLength(val);
-                     break;
-                  case QuantityType.Area:
-                     val = UnitUtil.ScaleArea(val);
-                     break;
-                  case QuantityType.Volume:
-                     val = UnitUtil.ScaleVolume(val);
-                     break;
-                  default:
-                     break;
+                  success = true;
+                  val = intValPar.Value;
                }
             }
+            else
+            {
+               success = PropertyUtil.GetQuantityDoubleValueFromParameter(element, RevitParameterName, RevitBuiltInParameter, parentEntry.QuantityType, out double dblVal);
+               if (success)
+                  val = dblVal;
+            }
          }
-
+         
          if (PropertyCalculator != null && !success)
          {
-            success = PropertyCalculator.Calculate(exporterIFC, extrusionCreationData, element, elementType);
-            if (success)
+            success = PropertyCalculator.Calculate(exporterIFC, null, extrusionCreationData, element, elementType, this);
+            if (success && parentEntry.QuantityType == QuantityType.Count)
+               val = PropertyCalculator.GetIntValue();
+            else
                val = PropertyCalculator.GetDoubleValue();
          }
 
          IFCAnyHandle quantityHnd = null;
          if (success)
          {
-            switch (quantityType)
+            switch (parentEntry.QuantityType)
             {
                case QuantityType.PositiveLength:
-                  quantityHnd = IFCInstanceExporter.CreateQuantityLength(file, quantityName, methodOfMeasurement, null, val);
+               case QuantityType.Length:
+                  quantityHnd = IFCInstanceExporter.CreateQuantityLength(file, parentEntry.PropertyName, parentEntry.MethodOfMeasurement, null, (double)val);
                   break;
                case QuantityType.Area:
-                  quantityHnd = IFCInstanceExporter.CreateQuantityArea(file, quantityName, methodOfMeasurement, null, val);
+                  quantityHnd = IFCInstanceExporter.CreateQuantityArea(file, parentEntry.PropertyName, parentEntry.MethodOfMeasurement, null, (double)val);
                   break;
                case QuantityType.Volume:
-                  quantityHnd = IFCInstanceExporter.CreateQuantityVolume(file, quantityName, methodOfMeasurement, null, val);
+                  quantityHnd = IFCInstanceExporter.CreateQuantityVolume(file, parentEntry.PropertyName, parentEntry.MethodOfMeasurement, null, (double)val);
                   break;
                case QuantityType.Weight:
-                  quantityHnd = IFCInstanceExporter.CreateQuantityWeight(file, quantityName, methodOfMeasurement, null, val);
+               case QuantityType.Mass:
+                  // NOTE: There is no distinction between weight and mass currently in IFC4.
+                  quantityHnd = IFCInstanceExporter.CreateQuantityWeight(file, parentEntry.PropertyName, parentEntry.MethodOfMeasurement, null, (double)val);
+                  break;
+               case QuantityType.Count:
+                  quantityHnd = IFCInstanceExporter.CreateQuantityCount(file, parentEntry.PropertyName, parentEntry.MethodOfMeasurement, null, (int)val);
+                  break;
+               case QuantityType.Time:
+                  quantityHnd = IFCInstanceExporter.CreateQuantityTime(file, parentEntry.PropertyName, parentEntry.MethodOfMeasurement, null, (double)val);
                   break;
                default:
                   throw new InvalidOperationException("Missing case!");

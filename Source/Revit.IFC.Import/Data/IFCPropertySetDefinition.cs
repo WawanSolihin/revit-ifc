@@ -75,21 +75,28 @@ namespace Revit.IFC.Import.Data
       }
 
       /// <summary>
-      /// Determines if we require the IfcRoot entity to have a name.
+      /// Determines the default name of an IfcRoot, if any.
       /// </summary>
-      /// <returns>Returns true if we require the IfcRoot entity to have a name.</returns>
-      protected override bool CreateNameIfNull()
+      /// <param name="name">The original name.</param>
+      /// <returns>The default name of an IfcRoot, if any.</returns>
+      protected override string GetDefaultName(string name)
       {
-         return true;
+         return Properties.Resources.IFCUnknownPropertySet;
       }
 
       /// <summary>
       /// Processes an IfcPropertySetDefinition.
       /// </summary>
       /// <param name="ifcPropertySetDefinition">The IfcPropertySetDefinition handle.</param>
+      /// <param name="hostIfcObjectStepId">The STEP Id of the host IFC object which invoked this method.</param>
       /// <returns>The IFCPropertySetDefinition object.</returns>
-      public static IFCPropertySetDefinition ProcessIFCPropertySetDefinition(IFCAnyHandle ifcPropertySetDefinition)
+      public static IFCPropertySetDefinition ProcessIFCPropertySetDefinition(IFCAnyHandle ifcPropertySetDefinition, int hostIfcObjectStepId)
       {
+         if (Importer.TheOptions.UsingHybridPropertySetsForHostObject(hostIfcObjectStepId))
+         {
+            return null;
+         }
+
          if (IFCAnyHandleUtil.IsNullOrHasNoValue(ifcPropertySetDefinition))
          {
             Importer.TheLog.LogNullError(IFCEntityType.IfcPropertySetDefinition);
@@ -120,107 +127,25 @@ namespace Revit.IFC.Import.Data
       }
 
       /// <summary>
-      /// Create a schedule for a given property set.
-      /// </summary>
-      /// <param name="doc">The document.</param>
-      /// <param name="element">The element being created.</param>
-      /// <param name="parameterGroupMap">The parameters of the element.  Cached for performance.</param>
-      /// <param name="parametersCreated">The created parameters.</param>
-      protected void CreateScheduleForPropertySet(Document doc, Element element, IFCParameterSetByGroup parameterGroupMap, ISet<string> parametersCreated)
-      {
-         if (parametersCreated.Count == 0)
-            return;
-
-         Category category = element.Category;
-         if (category == null)
-            return;
-
-         ElementId categoryId = category.Id;
-         bool elementIsType = (element is ElementType);
-
-         Tuple<ElementId, bool, string> scheduleKey = new Tuple<ElementId, bool, string>(categoryId, elementIsType, Name);
-
-         ISet<string> viewScheduleNames = Importer.TheCache.ViewScheduleNames;
-         IDictionary<Tuple<ElementId, bool, string>, ElementId> viewSchedules = Importer.TheCache.ViewSchedules;
-
-         ElementId viewScheduleId;
-         if (!viewSchedules.TryGetValue(scheduleKey, out viewScheduleId))
-         {
-            string scheduleName = scheduleKey.Item3;
-            string scheduleTypeName = elementIsType ? " " + Resources.IFCTypeSchedule : string.Empty;
-
-            int index = 1;
-            while (viewScheduleNames.Contains(scheduleName))
-            {
-               string indexString = (index > 1) ? " " + index.ToString() : string.Empty;
-               scheduleName += " (" + category.Name + scheduleTypeName + indexString + ")";
-               index++;
-               if (index > 1000)
-               {
-                  Importer.TheLog.LogWarning(Id, "Too many property sets with the name " + scheduleKey.Item3 +
-                     ", no longer creating schedules with that name.", true);
-                  return;
-               }
-            }
-
-            // Not all categories allow creating schedules.  Skip these.
-            ViewSchedule viewSchedule = null;
-            try
-            {
-               viewSchedule = ViewSchedule.CreateSchedule(doc, scheduleKey.Item1);
-            }
-            catch
-            {
-               // Only try to create the schedule once per key.
-               viewSchedules[scheduleKey] = ElementId.InvalidElementId;
-               return;
-            }
-
-            if (viewSchedule != null)
-            {    
-               viewSchedule.Name = scheduleName;
-               viewSchedules[scheduleKey] = viewSchedule.Id;
-               viewScheduleNames.Add(scheduleName);
-
-               ElementId ifcGUIDId = new ElementId(elementIsType ? BuiltInParameter.IFC_TYPE_GUID : BuiltInParameter.IFC_GUID);
-               string propertySetListName = elementIsType ? Resources.IFCTypeSchedule + " IfcPropertySetList" : "IfcPropertySetList";
-
-               IList<SchedulableField> schedulableFields = viewSchedule.Definition.GetSchedulableFields();
-
-               bool filtered = false;
-               foreach (SchedulableField sf in schedulableFields)
-               {
-                  string fieldName = sf.GetName(doc);
-                  if (parametersCreated.Contains(fieldName) || sf.ParameterId == ifcGUIDId)
-                  {
-                     viewSchedule.Definition.AddField(sf);
-                  }
-                  else if (!filtered && fieldName == propertySetListName)
-                  {
-                     // We want to filter the schedule for specifically those elements that have this property set assigned.
-                     ScheduleField scheduleField = viewSchedule.Definition.AddField(sf);
-                     scheduleField.IsHidden = true;
-                     ScheduleFilter filter = new ScheduleFilter(scheduleField.FieldId, ScheduleFilterType.Contains, "\"" + Name + "\"");
-                     viewSchedule.Definition.AddFilter(filter);
-                     filtered = true;
-                  }
-               }
-            }
-         }
-
-         return;
-      }
-
-      /// <summary>
       /// Create a property set for a given element.
       /// </summary>
       /// <param name="doc">The document.</param>
       /// <param name="element">The element being created.</param>
       /// <param name="parameterGroupMap">The parameters of the element.  Cached for performance.</param>
       /// <returns>The name of the property set created, if it was created, and a Boolean value if it should be added to the property set list.</returns>
-      public virtual KeyValuePair<string, bool> CreatePropertySet(Document doc, Element element, IFCParameterSetByGroup parameterGroupMap)
+      public virtual Tuple<string, bool> CreatePropertySet(Document doc, Element element, IFCObjectDefinition objDef, 
+         IFCParameterSetByGroup parameterGroupMap, ParametersToSet parametersToSet)
       {
-         return new KeyValuePair<string, bool>(null, false);
+         return new Tuple<string, bool>(null, false);
+      }
+
+      protected string CreatePropertyName(string propertyName, string typeString = "")
+      {
+         // Navisworks uses this engine and needs support for the old naming.
+         // We use the API-only UseStreamlinedOptions as a proxy for knowing this.
+         return IFCImportFile.TheFile.Options.UseStreamlinedOptions ?
+            propertyName + "(" + Name + typeString +  ")" :
+            Name + "." + propertyName + typeString;
       }
    }
 }

@@ -17,12 +17,8 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 //
 
-using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using Autodesk.Revit.DB;
-using Autodesk.Revit.DB.IFC;
 
 namespace Revit.IFC.Export.Utility
 {
@@ -34,7 +30,7 @@ namespace Revit.IFC.Export.Utility
       /// <summary>
       /// The dictionary mapping from a exported part and it's level and host element. 
       /// </summary>
-      private Dictionary<ElementId, Dictionary<ElementId, ElementId>> m_PartExportedDictionary = new Dictionary<ElementId, Dictionary<ElementId, ElementId>>();
+      private Dictionary<ElementId, Dictionary<ElementId, ElementId>> PartExportedDictionary { get; set; } = new();
 
       /// <summary>
       /// Find the host element from a part and a level.
@@ -44,11 +40,11 @@ namespace Revit.IFC.Export.Utility
       /// <returns>The host element.</returns>
       public ElementId Find(ElementId partId, ElementId LevelId)
       {
-         Dictionary<ElementId, ElementId> hostOverideLevels;
+         Dictionary<ElementId, ElementId> hostOverrideLevels;
          ElementId hostId;
-         if (m_PartExportedDictionary.TryGetValue(partId, out hostOverideLevels))
+         if (PartExportedDictionary.TryGetValue(partId, out hostOverrideLevels))
          {
-            if (hostOverideLevels.TryGetValue(LevelId, out hostId))
+            if (hostOverrideLevels.TryGetValue(LevelId, out hostId))
                return hostId;
          }
          return null;
@@ -62,22 +58,20 @@ namespace Revit.IFC.Export.Utility
       /// <returns>True if the part in the level has exported, false otherwise.</returns>
       public bool HasExported(ElementId partId, ElementId LevelId)
       {
-         if (Find(partId, LevelId) != null)
-            return true;
-         return false;
+         return Find(partId, LevelId) != null;
       }
 
       /// <summary>
       /// Register the exported part and its host and level.
       /// </summary>
       /// <param name="partId">The exported part.</param>
-      /// <param name="hostOverideLevels">The dictionary of host and level the part has exported.</param>
-      public void Register(ElementId partId, Dictionary<ElementId, ElementId> hostOverideLevels)
+      /// <param name="hostOverrideLevels">The dictionary of host and level the part has exported.</param>
+      public void Register(ElementId partId, Dictionary<ElementId, ElementId> hostOverrideLevels)
       {
          if (HasRegistered(partId))
             return;
 
-         m_PartExportedDictionary[partId] = hostOverideLevels;
+         PartExportedDictionary[partId] = hostOverrideLevels;
       }
 
       /// <summary>
@@ -87,9 +81,7 @@ namespace Revit.IFC.Export.Utility
       /// <returns>True if registered, false otherwise.</returns>
       public bool HasRegistered(ElementId partId)
       {
-         if (m_PartExportedDictionary.ContainsKey(partId))
-            return true;
-         return false;
+         return PartExportedDictionary.ContainsKey(partId);
       }
 
       /// <summary>
@@ -100,7 +92,12 @@ namespace Revit.IFC.Export.Utility
       /// <param name="hostId">The host element the part has exported.</param>
       public void Add(ElementId partId, ElementId levelId, ElementId hostId)
       {
-         m_PartExportedDictionary[partId].Add(levelId, hostId);
+         PartExportedDictionary[partId].Add(levelId, hostId);
+      }
+
+      public void Clear()
+      {
+         PartExportedDictionary.Clear();
       }
    }
 }

@@ -16,36 +16,99 @@
 // License along with this library; if not, write to the Free Software
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 //
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Diagnostics;
-using System.Globalization;
-
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
 using Revit.IFC.Common.Enums;
+using Revit.IFC.Common.Extensions;
 using Revit.IFC.Common.Utility;
-
-using Newtonsoft.Json;
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Reflection;
 
 // CQ_TODO: Better storage of pipe insulation options
 
 namespace Revit.IFC.Export.Utility
 {
+   public class SeperatedLinkManager
+   {
+      public SeperatedLinkManager() { }
+
+      public bool IsMirrored { get; set; } = false;
+
+      private List<(string, Transform)> LinkInstanceInfos { get; } = new();
+
+      public void AddLinkInstanceInformation(string fileName, Transform scaledTransform)
+      {
+         LinkInstanceInfos.Add((fileName, scaledTransform ?? Transform.Identity));
+      }
+
+      /// <summary>
+      /// Get the number of RevitLinkInstance transforms for this export.
+      /// </summary>
+      /// <returns>The number of Revit Link Instance transforms for this export.</returns>
+      public int GetNumLinkInstanceInfos()
+      {
+         return LinkInstanceInfos?.Count ?? 0;
+      }
+
+      /// <summary>
+      /// Gets the file name of the link corresponding to the given index.
+      /// </summary>
+      /// <param name="idx">The index</param>
+      /// <returns>The transform corresponding to the given index, or the Identity transform if out of range.</returns>
+      /// <remarks>Note that the file name for index 0 is not stored here, and returns null.</remarks>
+      public string GetLinkInstanceFileName(int idx)
+      {
+         if (idx < 1 || idx >= GetNumLinkInstanceInfos())
+            return null;
+
+         return LinkInstanceInfos[idx].Item1;
+      }
+
+      /// <summary>
+      /// Gets the transform corresponding to the given index.
+      /// </summary>
+      /// <param name="idx">The index</param>
+      /// <returns>The transform corresponding to the given index, or the Identity transform if out of range.</returns>
+      public Transform GetUnscaledLinkInstanceTransform(int idx)
+      {
+         if (idx < 0 || idx >= GetNumLinkInstanceInfos())
+            return Transform.Identity;
+
+         Transform unscaledTransform = new Transform(LinkInstanceInfos[idx].Item2);
+         unscaledTransform.Origin = UnitUtil.UnscaleLength(unscaledTransform.Origin);
+
+         if (!IsMirrored || !unscaledTransform.HasReflection)
+         {
+            return unscaledTransform;
+         }
+
+         Transform mirrorTransform = FederatedLinkManager.MirrorTransform;
+         return unscaledTransform.Multiply(mirrorTransform);
+      }
+   }
+   
    /// <summary>
    /// The cache which holds all export options.
    /// </summary>
    public class ExportOptionsCache
    {
-      public enum SiteTransformBasis
-      {
-         Shared = 0,
-         Site = 1,
-         Project = 2,
-         Internal = 3,
-      }
-      public SiteTransformBasis SiteTransformation { get; set; } = ExportOptionsCache.SiteTransformBasis.Shared;
+      /// <summary>
+      /// The pointer to the host document, set when exporting links, so that data the host
+      /// document stores for linked elements (such as extended properties) is available while
+      /// exporting the linked elements.
+      /// </summary>
+      /// <remarks>
+      /// Accessed through the shared ExporterCacheManager.ExportOptionsCache instance.  It is only
+      /// expected to be valid while exporting links.
+      /// </remarks>
+      public Document HostDocument { get; set; } = null;
+
+      public SiteTransformBasis SiteTransformation { get; set; } = SiteTransformBasis.Shared;
 
       public enum ExportTessellationLevel
       {
@@ -55,20 +118,61 @@ namespace Revit.IFC.Export.Utility
          High = 4
       }
 
-      private GUIDOptions m_GUIDOptions;
-      private bool m_ExportAs4_ADD1;
-      private bool m_ExportAs4_ADD2;
-      private IFCVersion m_FileVersion;
       public COBieCompanyInfo COBieCompanyInfo { get; set; }
+
       public COBieProjectInfo COBieProjectInfo { get; set; }
+
+      public IFCFileHeaderItem FileHeaderItem 
+      { 
+         get 
+         { 
+            return OptionsUtil.FileHeaderIFC; 
+         } 
+      }
+
+      /// <summary>
+      /// Always export floors and roofs as a single entity unless exporting parts.
+      /// </summary>
+      public bool ExportHostAsSingleEntity { get; private set; } = false;
+
+      /// <summary>
+      /// If set, set the IfcOwnerHistory LastModified attribute to be the Author in Project Information.
+      /// </summary>
+      public bool OwnerHistoryLastModified { get; private set; } = false;
+
+      public bool ExportBarsInUniformSetsAsSeparateIFCEntities { get; private set; } = false;
+
+      public KnownERNames ExchangeRequirement { get; set; } = KnownERNames.NotDefined;
+
+      public KnownFacilityTypes FacilityType { get; set; } = KnownFacilityTypes.Building;
+
+      public string FacilityPredefinedType { get; set; } = null;
+
+      public string GeoRefCRSName { get; private set; }
+
+      public string GeoRefCRSDesc { get; private set; }
+
+      public string GeoRefEPSGCode { get; private set; }
+
+      public string GeoRefGeodeticDatum { get; private set; }
+
+      public string GeoRefMapUnit { get; private set; }
+
+      /// <summary>
+      /// If we are exporting a linked file as a separate document and using a filter view, 
+      /// contains the element id of the filter view in the host document.
+      /// </summary>
+      public ElementId HostViewId { get; private set; } = ElementId.InvalidElementId;
+
       public bool IncludeSteelElements { get; set; }
 
-      /// Private default constructor.
+      public IDictionary<long, string> FederatedLinkInfo { get; set; } = null;
+
+      /// <summary>
+      /// Public default constructor.
       /// </summary>
-      private ExportOptionsCache()
+      public ExportOptionsCache()
       {
-         m_ExportAs4_ADD1 = false;
-         m_ExportAs4_ADD2 = false;
       }
 
 
@@ -80,8 +184,8 @@ namespace Revit.IFC.Export.Utility
          XYZ retVal = null;
 
          //split string to components by removing seprator characters
-         string[] separator = new string[] { ",", "(", ")", " " };
-         string[] sList = new string[3] { "", "", "" };
+         string[] separator = [ ",", "(", ")", " " ];
+         string[] sList = [ "", "", "" ];
          sList = value.Split(separator, StringSplitOptions.RemoveEmptyEntries);
          //should remain only 3 values if everything is OK
 
@@ -94,7 +198,7 @@ namespace Revit.IFC.Export.Utility
             double valY = double.Parse(sList[1], CultureInfo.InvariantCulture);
             double valZ = double.Parse(sList[2], CultureInfo.InvariantCulture);
             //if no exception then put it in return value
-            retVal = new XYZ(valX, valY, valZ);
+            retVal = new(valX, valY, valZ);
          }
          catch (FormatException)
          {
@@ -114,11 +218,11 @@ namespace Revit.IFC.Export.Utility
          try
          {
             //spit string by separator; it should remain 4 items
-            string[] separator = new string[] { ";" };
-            string[] sList = new string[4] { "", "", "", "" };
+            string[] separator = [ ";" ];
+            string[] sList = [ "", "", "", "" ];
 
             sList = value.Split(separator, StringSplitOptions.RemoveEmptyEntries);
-            Transform tr = new Transform(Transform.Identity);
+            Transform tr = new(Transform.Identity);
             // parse each item in part
             tr.Origin = ParseXYZ(sList[0]);
             tr.BasisX = ParseXYZ(sList[1]);
@@ -140,10 +244,10 @@ namespace Revit.IFC.Export.Utility
 
       private static ElementId ParseElementId(String singleElementValue)
       {
-         int elementIdAsInt;
-         if (Int32.TryParse(singleElementValue, out elementIdAsInt))
+         ElementId elementId;
+         if (ElementId.TryParse(singleElementValue, out elementId))
          {
-            return new ElementId(elementIdAsInt);
+            return elementId;
          }
          else
          {
@@ -153,16 +257,17 @@ namespace Revit.IFC.Export.Utility
          }
       }
 
-      private static IList<ElementId> ParseElementIds(String elementsToExportValue)
+      private static List<ElementId> ParseElementIds(string elementsToExportValue)
       {
-         String[] elements = elementsToExportValue.Split(';');
-         List<ElementId> ids = new List<ElementId>();
-         foreach (String element in elements)
+         string[] elements = elementsToExportValue.Split(';');
+         List<ElementId> ids = [];
+
+         foreach (string element in elements)
          {
-            int elementIdAsInt;
-            if (Int32.TryParse(element, out elementIdAsInt))
+            ElementId elementId;
+            if (ElementId.TryParse(element, out elementId))
             {
-               ids.Add(new ElementId(elementIdAsInt));
+               ids.Add(elementId);
             }
             else
             {
@@ -174,62 +279,153 @@ namespace Revit.IFC.Export.Utility
          return ids;
       }
 
+      private static IDictionary<long, string> ParseFederatedLinkInfo(
+         string federatedInfoString)
+      {
+         if (federatedInfoString == null)
+            return null;
+
+         SortedDictionary<long, string> federatedLinkInfo = new();
+
+         string[] idsAndGuids = federatedInfoString.Split(';');
+         foreach (string idAndGuid in idsAndGuids)
+         {
+            if (idAndGuid == null)
+               continue;
+
+            string[] idGuidPair = idAndGuid.Split(',');
+            if (idGuidPair.Count() != 2)
+               continue;
+
+            ElementId elementId;
+            if (!ElementId.TryParse(idGuidPair[0], out elementId))
+               continue;
+
+            if (federatedLinkInfo.ContainsKey(elementId.Value))
+               continue;
+
+            if (string.IsNullOrWhiteSpace(idGuidPair[1]))
+               continue;
+
+            federatedLinkInfo[elementId.Value] = idGuidPair[1];
+         }
+
+         return federatedLinkInfo;
+      }
+
       /// <summary>
       /// Creates a new export options cache from the data in the ExporterIFC passed from Revit.
       /// </summary>
       /// <param name="exporterIFC">The ExporterIFC handle passed during export.</param>
+      /// <param name="document">The current document.</param>
+      /// <param name="filterView">The optional filter view.</param>
       /// <returns>The new cache.</returns>
-      public static ExportOptionsCache Create(ExporterIFC exporterIFC, Document document, Autodesk.Revit.DB.View filterView)
+      public static ExportOptionsCache Create(ExporterIFC exporterIFC, Document document, View filterView)
       {
-         IDictionary<String, String> options = exporterIFC.GetOptions();
+         IDictionary<string, string> options = exporterIFC.GetOptions();
 
-         ExportOptionsCache cache = new ExportOptionsCache();
+         ExportOptionsCache cache = new();
+
+         // This is for the option to export links as separate IFC files.
+         string exportLinkedFileAsString = OptionsUtil.GetNamedStringOption(options, "ExportingLinks");
+         if (!string.IsNullOrWhiteSpace(exportLinkedFileAsString))
+         {
+            if (Enum.TryParse(exportLinkedFileAsString, out LinkedFileExportAs linkedFileExportAs))
+               cache.ExportLinkedFileAs = linkedFileExportAs;
+         }
+
+         // Carry over the host document set before the export started, but ONLY for a separate-links
+         // sub-export.  In that path the UI sets the host document on the previous ExportOptionsCache
+         // instance (and ExporterCacheManager.Clear preserves it across the reset) so this freshly
+         // created cache can expose the host document's data (such as the active-view filter and
+         // extended properties) while exporting the linked document.  We must not inherit it for any
+         // other export: the preserved value lives in a static cache and would otherwise leak into
+         // later, unrelated exports, where it may reference a document that has since been closed -
+         // dereferencing that stale document (e.g. via HostParameterAccess) aborts the export.
+         // A separate-links sub-export is the only export that carries "ExportingLinks=ExportAsSeparate"
+         // (the UI adds it just before launching each link sub-export); the host export itself does not.
+         if (cache.ExportingSeparateLink())
+         {
+            cache.HostDocument = ExporterCacheManager.ExportOptionsCache?.HostDocument;
+         }
+
          cache.FileVersion = exporterIFC.FileVersion;
-         cache.FileName = exporterIFC.FileName;
-         cache.ExportBaseQuantities = exporterIFC.ExportBaseQuantities;
+         cache.FullFileName = exporterIFC.FileName;
+         cache.FileNameOnly = Path.GetFileName(cache.FullFileName);
          cache.WallAndColumnSplitting = exporterIFC.WallAndColumnSplitting;
          cache.SpaceBoundaryLevel = exporterIFC.SpaceBoundaryLevel;
-         // Export Part element only if 'Current View Only' is checked and 'Show Parts' is selected. Or if it is exported as IFC4RV
+         // Export Part element only if 'Current View Only' is checked and 'Show Parts' is selected. Or if it is exported as Reference View
          cache.ExportParts = (filterView != null && filterView.PartsVisibility == PartsVisibility.ShowPartsOnly);
          cache.ExportPartsAsBuildingElementsOverride = null;
-         //cache.ExportAllLevels = false;
          cache.ExportAnnotationsOverride = null;
+         cache.ExportCeilingGrids = false;
 
-         bool? includeSteelElements = GetNamedBooleanOption(options, "IncludeSteelElements");
-         cache.IncludeSteelElements = includeSteelElements.HasValue && includeSteelElements.Value;
+         // We are going to default to "true" for IncludeSteelElements to allow the default API
+         // export to match the default UI.
+         // IncludeSteelElements is currently only supported for IFC2x3, so ignore any attempt to export otherwise.
+         bool? includeSteelElements = OptionsUtil.GetNamedBooleanOption(options, "IncludeSteelElements");
+         cache.IncludeSteelElements = cache.ExportAs2x3 && includeSteelElements.HasValue && includeSteelElements.Value;
 
-         // There is a bug in the native code that doesn't allow us to cast the filterView to any sub-type of View.  Work around this by re-getting the element pointer.
-         if (filterView != null)
-            cache.FilterViewForExport = filterView.Document.GetElement(filterView.Id) as View;
+         if (filterView == null)
+         {
+            // if the filter view is null, but we have a HostViewId set, that means that we are
+            // exporting a link as a separate file, and need to get the view from the host
+            // document.
+            long? filterViewIdInt = OptionsUtil.GetNamedInt64Option(options, "HostViewId", false);
+            if (filterViewIdInt.HasValue)
+            {
+               cache.HostViewId = new ElementId(filterViewIdInt.Value);
+               cache.FilterViewForExport = cache.HostDocument?.GetElement(cache.HostViewId) as View;
+            }
+         }
          else
-            cache.FilterViewForExport = null;
+         {
+            // There is a bug in the native code that doesn't allow us to cast the filterView to
+            // any sub-type of View.  Work around this by re-getting the element pointer.
+            cache.FilterViewForExport = filterView?.Document.GetElement(filterView.Id) as View;
+         }
 
          cache.ExportBoundingBoxOverride = null;
          cache.IncludeSiteElevation = false;
 
-         cache.PropertySetOptions = PropertySetOptions.Create(exporterIFC, cache);
+         cache.PropertySetOptions = PropertySetOptions.Create(exporterIFC, document, cache.FileVersion);
 
-         String use2DRoomBoundary = Environment.GetEnvironmentVariable("Use2DRoomBoundaryForRoomVolumeCalculationOnIFCExport");
-         bool? use2DRoomBoundaryOption = GetNamedBooleanOption(options, "Use2DRoomBoundaryForVolume");
+         string use2DRoomBoundary = Environment.GetEnvironmentVariable("Use2DRoomBoundaryForRoomVolumeCalculationOnIFCExport");
+         bool? use2DRoomBoundaryOption = OptionsUtil.GetNamedBooleanOption(options, "Use2DRoomBoundaryForVolume");
          cache.Use2DRoomBoundaryForRoomVolumeCreation =
              ((use2DRoomBoundary != null && use2DRoomBoundary == "1") ||
              cache.ExportAs2x2 ||
              (use2DRoomBoundaryOption != null && use2DRoomBoundaryOption.GetValueOrDefault()));
 
-         bool? exportAdvancedSweptSolids = GetNamedBooleanOption(options, "ExportAdvancedSweptSolids");
+         bool? exportAdvancedSweptSolids = OptionsUtil.GetNamedBooleanOption(options, "ExportAdvancedSweptSolids");
          cache.ExportAdvancedSweptSolids = (exportAdvancedSweptSolids.HasValue) ? exportAdvancedSweptSolids.Value : false;
 
+         string exchangeRequirementString = OptionsUtil.GetNamedStringOption(options, "ExchangeRequirement");
+         if (Enum.TryParse(exchangeRequirementString, out KnownERNames exchangeRequirment))
+         {
+            cache.ExchangeRequirement = exchangeRequirment;
+         }
+
+         string facilityTypeString = OptionsUtil.GetNamedStringOption(options, "FacilityType");
+         if (Enum.TryParse(facilityTypeString, out KnownFacilityTypes facilityType) &&
+            facilityType != KnownFacilityTypes.NotDefined)
+         {
+            cache.FacilityType = facilityType;
+         }
+
+         cache.FacilityPredefinedType = OptionsUtil.GetNamedStringOption(options, "FacilityPredefinedType");
+         
          // Set GUIDOptions here.
          {
             // This option should be rarely used, and is only for consistency with old files.  As such, it is set by environment variable only.
-            String use2009GUID = Environment.GetEnvironmentVariable("Assign2009GUIDToBuildingStoriesOnIFCExport");
+            string use2009GUID = Environment.GetEnvironmentVariable("Assign2009GUIDToBuildingStoriesOnIFCExport");
             cache.GUIDOptions.Use2009BuildingStoreyGUIDs = (use2009GUID != null && use2009GUID == "1");
 
-            bool? allowGUIDParameterOverride = GetNamedBooleanOption(options, "AllowGUIDParameterOverride");
+            bool? allowGUIDParameterOverride = OptionsUtil.GetNamedBooleanOption(options, "AllowGUIDParameterOverride");
             if (allowGUIDParameterOverride != null)
                cache.GUIDOptions.AllowGUIDParameterOverride = allowGUIDParameterOverride.Value;
 
-            bool? storeIFCGUID = GetNamedBooleanOption(options, "StoreIFCGUID");
+            bool? storeIFCGUID = OptionsUtil.GetNamedBooleanOption(options, "StoreIFCGUID");
             if (storeIFCGUID != null)
                cache.GUIDOptions.StoreIFCGUID = storeIFCGUID.Value;
          }
@@ -237,63 +433,74 @@ namespace Revit.IFC.Export.Utility
          // Set NamingOptions here.
          cache.NamingOptions = new NamingOptions();
          {
-            bool? useFamilyAndTypeNameForReference = GetNamedBooleanOption(options, "UseFamilyAndTypeNameForReference");
+            bool? useFamilyAndTypeNameForReference = OptionsUtil.GetNamedBooleanOption(options, "UseFamilyAndTypeNameForReference");
             cache.NamingOptions.UseFamilyAndTypeNameForReference =
                 (useFamilyAndTypeNameForReference != null) && useFamilyAndTypeNameForReference.GetValueOrDefault();
 
-            bool? useVisibleRevitNameAsEntityName = GetNamedBooleanOption(options, "UseVisibleRevitNameAsEntityName");
+            bool? useVisibleRevitNameAsEntityName = OptionsUtil.GetNamedBooleanOption(options, "UseVisibleRevitNameAsEntityName");
             cache.NamingOptions.UseVisibleRevitNameAsEntityName =
                 (useVisibleRevitNameAsEntityName != null) && useVisibleRevitNameAsEntityName.GetValueOrDefault();
+
+            bool? useOnlyTypeNameForIfcType = OptionsUtil.GetNamedBooleanOption(options, "UseTypeNameOnlyForIfcType");
+            cache.NamingOptions.UseTypeNameOnlyForIfcType =
+                (useOnlyTypeNameForIfcType != null) && useOnlyTypeNameForIfcType.GetValueOrDefault();
          }
 
+         bool? exportHostAsSingleEntity = OptionsUtil.GetNamedBooleanOption(options, "ExportHostAsSingleEntity");
+         cache.ExportHostAsSingleEntity = exportHostAsSingleEntity.GetValueOrDefault(false);
+
+         bool? ownerHistoryLastModified = OptionsUtil.GetNamedBooleanOption(options, "OwnerHistoryLastModified");
+         cache.OwnerHistoryLastModified = ownerHistoryLastModified.GetValueOrDefault(false);
+
+         bool? exportBarsInUniformSetsAsSeparateIFCEntities = OptionsUtil.GetNamedBooleanOption(options, "ExportBarsInUniformSetsAsSeparateIFCEntities");
+         cache.ExportBarsInUniformSetsAsSeparateIFCEntities = exportBarsInUniformSetsAsSeparateIFCEntities.GetValueOrDefault(false);
+
          // "SingleElement" export option - useful for debugging - only one input element will be processed for export
-         String singleElementValue;
-         String elementsToExportValue;
-         if (options.TryGetValue("SingleElement", out singleElementValue))
+         if (options.TryGetValue("SingleElement", out string singleElementValue))
          {
             ElementId elementId = ParseElementId(singleElementValue);
 
-            List<ElementId> ids = new List<ElementId>();
-            ids.Add(elementId);
+            List<ElementId> ids = [ elementId ];
             cache.ElementsForExport = ids;
          }
-         else if (options.TryGetValue("ElementsForExport", out elementsToExportValue))
+         else if (options.TryGetValue("SingleElementGeometry", out string singleElementGeometryValue))
          {
-            IList<ElementId> ids = ParseElementIds(elementsToExportValue);
+            ElementId elementId = ParseElementId(singleElementGeometryValue);
+
+            List<ElementId> ids = [elementId];
             cache.ElementsForExport = ids;
+            cache.ExportGeometryOnly = true;
          }
-         else
+         else if (options.TryGetValue("ElementsForExport", out string elementsToExportValue))
          {
-            cache.ElementsForExport = new List<ElementId>();
+            List<ElementId> ids = ParseElementIds(elementsToExportValue);
+            cache.ElementsForExport = ids;
          }
 
          // "ExportAnnotations" override
-         cache.ExportAnnotationsOverride = GetNamedBooleanOption(options, "ExportAnnotations");
+         cache.ExportAnnotationsOverride = OptionsUtil.GetNamedBooleanOption(options, "Export2DElements");
+
+         // "ExportAnnotations" override
+         cache.ExportCeilingGrids = OptionsUtil.GetNamedBooleanOption(options, "ExportCeilingGrids").GetValueOrDefault(false);
 
          // "ExportSeparateParts" override
-         cache.ExportPartsAsBuildingElementsOverride = GetNamedBooleanOption(options, "ExportPartsAsBuildingElements");
+         cache.ExportPartsAsBuildingElementsOverride = OptionsUtil.GetNamedBooleanOption(options, "ExportPartsAsBuildingElements");
 
          // "ExportBoundingBox" override
-         cache.ExportBoundingBoxOverride = GetNamedBooleanOption(options, "ExportBoundingBox");
+         cache.ExportBoundingBoxOverride = OptionsUtil.GetNamedBooleanOption(options, "ExportBoundingBox");
 
-         bool? exportRoomsInView = GetNamedBooleanOption(options, "ExportRoomsInView");
+         bool? exportRoomsInView = OptionsUtil.GetNamedBooleanOption(options, "ExportRoomsInView");
          cache.ExportRoomsInView = exportRoomsInView != null ? exportRoomsInView.Value : false;
 
-         // Using the alternate UI or not.
-         cache.AlternateUIVersionOverride = GetNamedStringOption(options, "AlternateUIVersion");
-
          // Include IFCSITE elevation in the site local placement origin
-         bool? includeIfcSiteElevation = GetNamedBooleanOption(options, "IncludeSiteElevation");
+         bool? includeIfcSiteElevation = OptionsUtil.GetNamedBooleanOption(options, "IncludeSiteElevation");
          cache.IncludeSiteElevation = includeIfcSiteElevation != null ? includeIfcSiteElevation.Value : false;
 
-         int? siteTransformation = GetNamedIntOption(options, "SitePlacement");
-         if (siteTransformation != null)
+         string siteTransformation = OptionsUtil.GetNamedStringOption(options, "SitePlacement");
+         if (!string.IsNullOrEmpty(siteTransformation))
          {
-            try
-            {
-               cache.SiteTransformation = (SiteTransformBasis)siteTransformation;
-            }
-            catch (Exception) { }
+            if (Enum.TryParse(siteTransformation, out SiteTransformBasis trfBasis))
+               cache.SiteTransformation = trfBasis;
          }
          // We have two ways to get information about level of detail:
          // 1. The old Boolean "UseCoarseTessellation".
@@ -306,11 +513,11 @@ namespace Revit.IFC.Export.Utility
 
          cache.LevelOfDetail = ExportTessellationLevel.Low;
 
-         bool? useCoarseTessellation = GetNamedBooleanOption(options, "UseCoarseTessellation");
+         bool? useCoarseTessellation = OptionsUtil.GetNamedBooleanOption(options, "UseCoarseTessellation");
          if (useCoarseTessellation.HasValue)
             cache.LevelOfDetail = useCoarseTessellation.Value ? ExportTessellationLevel.ExtraLow : ExportTessellationLevel.High;
 
-         double? tessellationLOD = GetNamedDoubleOption(options, "TessellationLevelOfDetail");
+         double? tessellationLOD = OptionsUtil.GetNamedDoubleOption(options, "TessellationLevelOfDetail");
          if (tessellationLOD.HasValue)
          {
             int levelOfDetail = (int)(tessellationLOD.Value * 4.0 + 0.5);
@@ -319,83 +526,70 @@ namespace Revit.IFC.Export.Utility
             cache.LevelOfDetail = (ExportTessellationLevel)levelOfDetail;
          }
 
-         bool? useOnlyTriangulation = GetNamedBooleanOption(options, "UseOnlyTriangulation");
+         bool? useOnlyTriangulation = OptionsUtil.GetNamedBooleanOption(options, "UseOnlyTriangulation");
          cache.UseOnlyTriangulation = useOnlyTriangulation.HasValue ? useOnlyTriangulation.Value : false;
 
          /// Allow exporting a mix of extrusions and BReps as a solid model, if possible.
-         bool? canExportSolidModelRep = GetNamedBooleanOption(options, "ExportSolidModelRep");
+         bool? canExportSolidModelRep = OptionsUtil.GetNamedBooleanOption(options, "ExportSolidModelRep");
          cache.CanExportSolidModelRep = canExportSolidModelRep != null ? canExportSolidModelRep.Value : false;
 
          // Set the phase we are exporting
          cache.ActivePhaseId = ElementId.InvalidElementId;
 
-         String activePhaseElementValue;
-         if (options.TryGetValue("ActivePhase", out activePhaseElementValue))
+         string activePhaseElementValue;
+         if (options.TryGetValue("ActivePhaseId", out activePhaseElementValue))
             cache.ActivePhaseId = ParseElementId(activePhaseElementValue);
 
-         if ((cache.ActivePhaseId == ElementId.InvalidElementId) && (cache.FilterViewForExport != null))
+         // If we have a filter view, the phase to be exported is only the phase of the
+         // view.  So we ignore any phase sent.
+         if (cache.FilterViewForExport != null)
          {
             Parameter currPhase = cache.FilterViewForExport.get_Parameter(BuiltInParameter.VIEW_PHASE);
             if (currPhase != null)
                cache.ActivePhaseId = currPhase.AsElementId();
          }
 
-         if (cache.ActivePhaseId == ElementId.InvalidElementId)
-         {
-            PhaseArray phaseArray = document.Phases;
-            Phase lastPhase = phaseArray.get_Item(phaseArray.Size - 1);
-            cache.ActivePhaseId = lastPhase.Id;
-            cache.ActivePhaseElement = lastPhase;
-         }
-         else
-         {
-            cache.ActivePhaseElement = document.GetElement(cache.ActivePhaseId) as Phase;
-         }
-
-         bool? useActiveViewGeometry = GetNamedBooleanOption(options, "UseActiveViewGeometry");
-         cache.UseActiveViewGeometry = useActiveViewGeometry.HasValue ? useActiveViewGeometry.Value : false;
-
-         if (cache.UseActiveViewGeometry)
-         {
-            int? viewId = GetNamedIntOption(options, "ActiveViewId");
-            int activeViewId = viewId.HasValue ? viewId.Value : -1;
-            View activeView = null;
-            try
-            {
-               activeView = document.GetElement(new ElementId(activeViewId)) as View;
-            }
-            catch
-            {
-            }
-            cache.ActiveView = activeView;
-         }
-
          // "FileType" - note - setting is not respected yet
          ParseFileType(options, cache);
 
-         cache.SelectedConfigName = GetNamedStringOption(options, "ConfigName");
+         cache.SelectedConfigName = OptionsUtil.GetNamedStringOption(options, "ConfigName");
 
-         cache.SelectedParametermappingTableName = GetNamedStringOption(options, "ExportUserDefinedParameterMappingFileName");
+         cache.SelectedParametermappingTableName = OptionsUtil.GetNamedStringOption(options, "ExportUserDefinedParameterMappingFileName");
 
-         bool? bExportLinks = GetNamedBooleanOption(options, "ExportingLinks");
-         cache.ExportingLink = (bExportLinks.HasValue && bExportLinks.Value == true);
+         cache.CategoryMappingTemplateName = OptionsUtil.GetNamedStringOption(options, "CategoryMapping");
 
-         if (cache.ExportingLink)
+         // This is for the option to export links as part of a federated export.
+         string federatedInfoString = OptionsUtil.GetNamedStringOption(options, "FederatedLinkInfo");
+         cache.FederatedLinkInfo = ParseFederatedLinkInfo(federatedInfoString);
+
+         cache.SeperatedLinkManager = new();
+         if (cache.ExportingSeparateLink())
          {
-            int? numInstances = GetNamedIntOption(options, "NumberOfExportedLinkInstances");
+            // This code only works if either all of the instances are mirrored or not, as for mirrored exports
+            // we need to individually modify the geometries of the exported elements.  We will therefore assume
+            // that we can get the information from the first transform.
+            int numInstances = OptionsUtil.GetNamedIntOption(options, "NumberOfExportedLinkInstances") ?? 0;
             for (int ii = 0; ii < numInstances; ii++)
             {
                string optionName = (ii == 0) ? "ExportLinkInstanceTransform" : "ExportLinkInstanceTransform" + (ii + 1).ToString();
-               String aLinkInstanceTransform = GetNamedStringOption(options, optionName);
+               string aLinkInstanceTransform = OptionsUtil.GetNamedStringOption(options, optionName);
+
+               // We don't expect this to fail.  But in case it does, all it means is that we
+               // can't filter out hidden elements.
+               optionName = (ii == 0) ? "ExportLinkId" : "ExportLinkId" + (ii + 1).ToString();
+               long? linkIdInt = OptionsUtil.GetNamedInt64Option(options, optionName, false);
+               ExporterStateManager.FederatedLinkManager.Update(new ElementId(linkIdInt.HasValue ? linkIdInt.Value : -1));
 
                Transform currTransform = null;
-               if (!String.IsNullOrEmpty(aLinkInstanceTransform))
+               if (!string.IsNullOrEmpty(aLinkInstanceTransform))
                {
                   //reconstruct transform
-                  Transform tr = ParseTransform(aLinkInstanceTransform);
-                  //set to cache
-                  if (tr != null)
-                     currTransform = tr;
+                  currTransform = ParseTransform(aLinkInstanceTransform);
+               }
+
+               if (ii == 0)
+               {
+                  cache.SeperatedLinkManager.IsMirrored = currTransform?.HasReflection ?? false;
                }
 
                string fileName = null;
@@ -403,101 +597,75 @@ namespace Revit.IFC.Export.Utility
                if (ii > 0)
                {
                   optionName = "ExportLinkInstanceFileName" + (ii + 1).ToString();
-                  fileName = GetNamedStringOption(options, optionName);
+                  fileName = OptionsUtil.GetNamedStringOption(options, optionName);
                }
 
-               if (currTransform == null)
-                  cache.m_LinkInstanceInfos.Add(new Tuple<string, Transform>(fileName, Transform.Identity));
-               else
-                  cache.m_LinkInstanceInfos.Add(new Tuple<string, Transform>(fileName, currTransform));
+               cache.SeperatedLinkManager.AddLinkInstanceInformation(fileName, currTransform ?? Transform.Identity);
             }
          }
 
-         cache.ExcludeFilter = GetNamedStringOption(options, "ExcludeFilter");
+         cache.ExcludeFilter = OptionsUtil.GetNamedStringOption(options, "ExcludeFilter");
 
-         // Get COBie specific information
-         //if (cache.ExportAs2x3COBIE24DesignDeliverable)
-         //{
-            //cache.COBieCompanyInfo = JsonConvert.DeserializeObject<COBieCompanyInfo>(GetNamedStringOption(options, "COBieCompanyInfo"));
-            //cache.COBieProjectInfo = JsonConvert.DeserializeObject<COBieProjectInfo>(GetNamedStringOption(options, "COBieProjectInfo"));
-         //}
+         cache.GeoRefCRSName = OptionsUtil.GetNamedStringOption(options, "GeoRefCRSName");
+         cache.GeoRefCRSDesc = OptionsUtil.GetNamedStringOption(options, "GeoRefCRSDesc");
+         cache.GeoRefEPSGCode = OptionsUtil.GetNamedStringOption(options, "GeoRefEPSGCode");
+         cache.GeoRefGeodeticDatum = OptionsUtil.GetNamedStringOption(options, "GeoRefGeodeticDatum");
+         cache.GeoRefMapUnit = OptionsUtil.GetNamedStringOption(options, "GeoRefMapUnit");
+
          return cache;
       }
 
-      /// <summary>
-      /// Utility for processing boolean option from the options collection.
-      /// </summary>
-      /// <param name="options">The collection of named options for IFC export.</param>
-      /// <param name="optionName">The name of the target option.</param>
-      /// <returns>The value of the option, or null if the option is not set.</returns>
-      public static bool? GetNamedBooleanOption(IDictionary<String, String> options, String optionName)
+      public void UpdateForDocument(ExporterIFC exporterIFC, Document document, string guid)
       {
-         String optionString;
-         if (options.TryGetValue(optionName, out optionString))
+         ExporterCacheManager.BaseLinkedDocumentGUID = guid;
+         ExporterCacheManager.Document = document;
+
+         IDictionary<string, string> options = exporterIFC.GetOptions();
+
+         if (MathUtil.IsInvalidElementId(ActivePhaseId))
          {
-            bool option;
-            if (Boolean.TryParse(optionString, out option))
-               return option;
-
-            // TODO: consider logging this error later and handling results better.
-            throw new Exception("Option '" + optionName + "' could not be parsed to boolean");
+            PhaseArray phaseArray = document.Phases;
+            Phase lastPhase = phaseArray.get_Item(phaseArray.Size - 1);
+            ActivePhaseId = lastPhase.Id;
+            ActivePhaseElement = lastPhase;
          }
-         return null;
-      }
-
-      /// <summary>
-      /// Utility for processing integer option from the options collection.
-      /// </summary>
-      /// <param name="options">The collection of named options for IFC export.</param>
-      /// <param name="optionName">The name of the target option.</param>
-      /// <returns>The value of the option, or null if the option is not set.</returns>
-      public static int? GetNamedIntOption(IDictionary<String, String> options, String optionName)
-      {
-         String optionString;
-         if (options.TryGetValue(optionName, out optionString))
+         else
          {
-            int option;
-            if (int.TryParse(optionString, out option))
-               return option;
-
-            // TODO: consider logging this error later and handling results better.
-            throw new Exception("Option '" + optionName + "' could not be parsed to int");
+            ActivePhaseElement = document.GetElement(ActivePhaseId) as Phase;
          }
-         return null;
-      }
 
-      /// <summary>
-      /// Utility for processing double option from the options collection.
-      /// </summary>
-      /// <param name="options">The collection of named options for IFC export</param>
-      /// <param name="optionName">The name of the target option</param>
-      /// <returns>the value of the option, or null if the option is not set</returns>
-      public static double? GetNamedDoubleOption(IDictionary<String, String> options, String optionName)
-      {
-         String optionString;
-         if (options.TryGetValue(optionName, out optionString))
+         bool? useActiveViewGeometry = OptionsUtil.GetNamedBooleanOption(options, "UseActiveViewGeometry");
+         UseActiveViewGeometry = useActiveViewGeometry.HasValue ? useActiveViewGeometry.Value : false;
+
+         if (UseActiveViewGeometry)
          {
-            double option;
-            if (double.TryParse(optionString, out option))
-               return option;
-
-            // TODO: consider logging this error later and handling results better.
-            throw new Exception("Option '" + optionName + "' could not be parsed to double");
+            long? viewId = OptionsUtil.GetNamedInt64Option(options, "ActiveViewId", false);
+            ElementId activeViewId = viewId.HasValue ? new ElementId(viewId.Value) : ElementId.InvalidElementId;
+            View activeView = null;
+            try
+            {
+               activeView = document.GetElement(activeViewId) as View;
+            }
+            catch
+            {
+            }
+            ActiveView = activeView;
          }
-         return null;
-      }
 
-      /// <summary>
-      /// Utility for processing string option from the options collection.
-      /// </summary>
-      /// <param name="options">The collection of named options for IFC export.</param>
-      /// <param name="optionName">The name of the target option.</param>
-      /// <returns>The value of the option, or null if the option is not set.</returns>
-      public static string GetNamedStringOption(IDictionary<String, String> options, String optionName)
-      {
-         String optionString;
-         options.TryGetValue(optionName, out optionString);
-         return optionString;
+         // Geo Reference info
+         ExporterCacheManager.SelectedSiteProjectLocation = null;
+         string selSite = OptionsUtil.GetNamedStringOption(options, "SelectedSite");
+         foreach (ProjectLocation pLoc in document.ProjectLocations.Cast<ProjectLocation>().ToList())
+         {
+            if (pLoc.Name.Equals(selSite))
+            {
+               ExporterCacheManager.SelectedSiteProjectLocation = pLoc;
+               break;
+            }
+         }
+
+         // Ensure the cache is set to the default (ActiveProjectLocation) if not set
+         ExporterCacheManager.SelectedSiteProjectLocation ??= document.ActiveProjectLocation;
       }
 
       /// <summary>
@@ -511,7 +679,7 @@ namespace Revit.IFC.Export.Utility
       private static void ParseFileType(IDictionary<String, String> options, ExportOptionsCache cache)
       {
          String fileTypeString;
-         if (options.TryGetValue("FileType", out fileTypeString))
+         if (options.TryGetValue("IFCFileType", out fileTypeString))
          {
             IFCFileFormat fileType;
             if (Enum.TryParse<IFCFileFormat>(fileTypeString, true, out fileType))
@@ -525,13 +693,13 @@ namespace Revit.IFC.Export.Utility
                throw new Exception("Option 'FileType' did not match an existing IFCFileFormat value");
             }
          }
-         else if (!string.IsNullOrEmpty(cache.FileName))
+         else if (!string.IsNullOrEmpty(cache.FileNameOnly))
          {
-            if (cache.FileName.EndsWith(".ifcXML")) //localization?
+            if (cache.FileNameOnly.EndsWith(".ifcXML")) //localization?
             {
                cache.IFCFileFormat = IFCFileFormat.IfcXML;
             }
-            else if (cache.FileName.EndsWith(".ifcZIP"))
+            else if (cache.FileNameOnly.EndsWith(".ifcZIP"))
             {
                cache.IFCFileFormat = IFCFileFormat.IfcZIP;
             }
@@ -556,26 +724,17 @@ namespace Revit.IFC.Export.Utility
       /// Used in ExportIntializer to define the Property Sets.
       /// Try not to use it outside of ExportOptionsCache except to initialize the Property Sets.
       /// </summary>
-      public IFCVersion FileVersion
-      {
-         get
-         {
-            return m_FileVersion;
-         }
-         set
-         {
-            m_FileVersion = value;
-         }
-      }
+      public IFCVersion FileVersion { get; set; }
 
       /// <summary>
-      /// The file name.
+      /// The full file name, including path.
       /// </summary>
-      public string FileName
-      {
-         get;
-         set;
-      }
+      public string FullFileName { get; set; }
+
+      /// <summary>
+      /// The file name, not the including path.
+      /// </summary>
+      public string FileNameOnly { get; set; }
 
       /// <summary>
       /// Identifies if the schema version being exported is IFC 2x2.
@@ -584,7 +743,7 @@ namespace Revit.IFC.Export.Utility
       {
          get
          {
-            return FileVersion == IFCVersion.IFC2x2 || FileVersion == IFCVersion.IFCBCA;
+            return OptionsUtil.ExportAs2x2(FileVersion);
          }
       }
 
@@ -595,7 +754,7 @@ namespace Revit.IFC.Export.Utility
       {
          get
          {
-            return (FileVersion == IFCVersion.IFC2x3);
+            return OptionsUtil.ExportAs2x3CoordinationView1(FileVersion);
          }
       }
 
@@ -606,7 +765,7 @@ namespace Revit.IFC.Export.Utility
       {
          get
          {
-            return (FileVersion == IFCVersion.IFC2x3CV2);
+            return OptionsUtil.ExportAs2x3CoordinationView2(FileVersion);
          }
       }
 
@@ -617,7 +776,7 @@ namespace Revit.IFC.Export.Utility
       {
          get
          {
-            return (FileVersion == IFCVersion.IFC2x3FM);
+            return OptionsUtil.ExportAs2x3ExtendedFMHandoverView(FileVersion);
          }
       }
 
@@ -629,7 +788,7 @@ namespace Revit.IFC.Export.Utility
       {
          get
          {
-            return (FileVersion == IFCVersion.IFC2x3CV2) || (FileVersion == IFCVersion.IFC4) || (FileVersion == IFCVersion.IFC2x3FM) || (FileVersion == IFCVersion.IFC2x3BFM);
+            return OptionsUtil.ExportAsCoordinationView2(FileVersion);
          }
       }
 
@@ -640,7 +799,18 @@ namespace Revit.IFC.Export.Utility
       {
          get
          {
-            return ExportAs2x2 || ExportAs2x3;
+            return OptionsUtil.ExportAsOlderThanIFC4(FileVersion);
+         }
+      }
+
+      /// <summary>
+      /// Identifies if the IFC schema version is older than IFC 4x3.
+      /// </summary>
+      public bool ExportAsOlderThanIFC4x3
+      {
+         get
+         {
+            return OptionsUtil.ExportAsOlderThanIFC4x3(FileVersion);
          }
       }
 
@@ -651,42 +821,8 @@ namespace Revit.IFC.Export.Utility
       {
          get
          {
-            return (FileVersion == IFCVersion.IFC4) || (FileVersion == IFCVersion.IFC4RV) || (FileVersion == IFCVersion.IFC4DTV);
+            return OptionsUtil.ExportAs4(FileVersion);
          }
-      }
-
-      /// <summary>
-      /// Identifies if the schema used is IFC4 Addendum 1 in place of IFC4 for version 4.
-      /// </summary>
-      public bool ExportAs4_ADD1
-      {
-         get
-         {
-            return m_ExportAs4_ADD1;
-         }
-
-         set
-         {
-            m_ExportAs4_ADD1 = value;
-         }
-
-      }
-
-      /// <summary>
-      /// Identifies if the schema used is IFC4 Addendum 2 in place of IFC4 for version 4.
-      /// </summary>
-      public bool ExportAs4_ADD2
-      {
-         get
-         {
-            return m_ExportAs4_ADD2;
-         }
-
-         set
-         {
-            m_ExportAs4_ADD2 = value;
-         }
-
       }
 
       /// <summary>
@@ -696,7 +832,7 @@ namespace Revit.IFC.Export.Utility
       {
          get
          {
-            return ((FileVersion == IFCVersion.IFC2x3) || (FileVersion == IFCVersion.IFCCOBIE) || (FileVersion == IFCVersion.IFC2x3FM) || (FileVersion == IFCVersion.IFC2x3BFM) || (FileVersion == IFCVersion.IFC2x3CV2));
+            return OptionsUtil.ExportAs2x3(FileVersion);
          }
       }
 
@@ -707,29 +843,29 @@ namespace Revit.IFC.Export.Utility
       {
          get
          {
-            return (FileVersion == IFCVersion.IFCCOBIE);
+            return OptionsUtil.ExportAsCOBIE(FileVersion);
          }
       }
 
       /// <summary>
-      /// Identifies if the schema and MVD used is the IFC 4 Reference View.
+      /// Identifies if the MVD used is the Reference View, for IFC 4 onwards.
       /// </summary>
-      public bool ExportAs4ReferenceView
+      public bool ExportAsReferenceView
       {
          get
          {
-            return (FileVersion == IFCVersion.IFC4RV);
+            return OptionsUtil.ExportAs4ReferenceView(FileVersion) || OptionsUtil.ExportAs4x3ReferenceView(FileVersion);
          }
       }
 
       /// <summary>
-      /// Identifies if the schema and MVD used is the IFC 4 Design Transfer View.
+      /// Identifies if the schema and MVD used is the Design Transfer View.
       /// </summary>
-      public bool ExportAs4DesignTransferView
+      public bool ExportAsDesignTransferView
       {
          get
          {
-            return (FileVersion == IFCVersion.IFC4DTV);
+            return OptionsUtil.ExportAs4DesignTransferView(FileVersion) || OptionsUtil.ExportAs4x3DesignTransferView(FileVersion);
          }
       }
 
@@ -741,7 +877,18 @@ namespace Revit.IFC.Export.Utility
       {
          get
          {
-            return (FileVersion == IFCVersion.IFC4);
+            return OptionsUtil.ExportAs4General(FileVersion);
+         }
+      }
+
+      /// <summary>
+      /// Option for IFC4x3 export option
+      /// </summary>
+      public bool ExportAs4x3
+      {
+         get
+         {
+            return OptionsUtil.ExportAs4x3(FileVersion);
          }
       }
 
@@ -752,18 +899,19 @@ namespace Revit.IFC.Export.Utility
       {
          get
          {
-            return (FileVersion == IFCVersion.IFC2x3FM);
+            return OptionsUtil.ExportAs2x3COBIE24DesignDeliverable(FileVersion);
          }
       }
 
       /// <summary>
       /// Cache variable for the export annotations override (if set independently via the UI or API inputs)
       /// </summary>
-      private bool? ExportAnnotationsOverride
-      {
-         get;
-         set;
-      }
+      private bool? ExportAnnotationsOverride { get; set; } = null;
+
+      /// <summary>
+      /// Cache variable for the export ceiling grids override (if set independently via the UI or API inputs)
+      /// </summary>
+      public bool ExportCeilingGrids { get; set; } = false;
 
       /// <summary>
       /// Identifies if the file version being exported supports annotations.
@@ -797,22 +945,9 @@ namespace Revit.IFC.Export.Utility
       }
 
       /// <summary>
-      /// Whether or not export base quantities.
-      /// </summary>
-      public bool ExportBaseQuantities
-      {
-         get;
-         set;
-      }
-
-      /// <summary>
       /// The space boundary level.
       /// </summary>
-      public int SpaceBoundaryLevel
-      {
-         get;
-         set;
-      }
+      public int SpaceBoundaryLevel { get; set; } = 0;
 
       /// <summary>
       /// True to use the active view when generating geometry.
@@ -903,35 +1038,12 @@ namespace Revit.IFC.Export.Utility
       }
 
       /// <summary>
-      /// The option to leave tessellation results as triangulation and not optimized into polygonal faceset (supported in IFC4_ADD2)
+      /// The option to leave tessellation results as triangulation and not optimized into polygonal faceset (supported from IFC4_ADD2)
       /// </summary>
       public bool UseOnlyTriangulation
       {
          get;
          set;
-      }
-
-      /// <summary>
-      /// Cache variable for the Alternate UI version override (if export from Alternate UI)
-      /// </summary>
-      public string AlternateUIVersionOverride
-      {
-         get;
-         set;
-      }
-
-      /// <summary>
-      /// The UI Version of the exporter.
-      /// </summary>
-      public string ExporterUIVersion
-      {
-         get
-         {
-            if (AlternateUIVersionOverride != null)
-               return AlternateUIVersionOverride;
-            else
-               return "Default UI";
-         }
       }
 
       /// <summary>
@@ -945,40 +1057,35 @@ namespace Revit.IFC.Export.Utility
             string exporterVersion = "Unknown Exporter version";
             if (File.Exists(assemblyFile))
             {
-               exporterVersion = "Exporter " + FileVersionInfo.GetVersionInfo(assemblyFile).FileVersion;
+               exporterVersion = FileVersionInfo.GetVersionInfo(assemblyFile).FileVersion;
             }
             return exporterVersion;
          }
       }
 
       /// <summary>
+      /// A bare-bones IFC export that include only BRep geometry, generally for
+      /// a specific set of elements.
+      /// </summary>
+      public bool ExportGeometryOnly { get; set; } = false;
+
+      /// <summary>
       /// A collection of elements from which to export (before filtering is applied).  If empty, all elements in the document
       /// are used as the initial set of elements before filtering is applied.
       /// </summary>
-      public IList<ElementId> ElementsForExport
-      {
-         get;
-         set;
-      }
+      public List<ElementId> ElementsForExport { get; set; } = new();
 
       /// <summary>
-      /// The filter view for export.
+      /// The filter view for export.  
       /// </summary>
+      /// <remarks>This is the optional view that determines which elements to
+      /// export based on visibility settings for the view.  It does not control
+      /// what geometry is exported for the element.</remarks>
       public View FilterViewForExport
       {
          get;
          set;
       }
-
-      /// <summary>
-      /// Whether or not to export all levels, or just export building stories.
-      /// This will be set to true by default if there are no building stories in the file.
-      /// </summary>
-      //public bool ExportAllLevels
-      //{
-         //get;
-         //set;
-      //}
 
       /// <summary>
       /// Determines how to generate space volumes on export.  True means that we use the 2D room boundary and extrude it upwards based
@@ -994,52 +1101,28 @@ namespace Revit.IFC.Export.Utility
       /// <summary>
       /// Contains options for controlling how IFC GUIDs are generated on export.
       /// </summary>
-      public GUIDOptions GUIDOptions
-      {
-         get
-         {
-            if (m_GUIDOptions == null)
-               m_GUIDOptions = new GUIDOptions();
-            return m_GUIDOptions;
-         }
-      }
+      public GUIDOptions GUIDOptions { get; } = new GUIDOptions();
 
       /// <summary>
       /// Contains options for setting how entity names are generated.
       /// </summary>
-      public NamingOptions NamingOptions
-      {
-         get;
-         set;
-      }
+      public NamingOptions NamingOptions { get; set; }
 
       /// <summary>
       /// The file format to export.  Not used currently.
       /// </summary>
       // TODO: Connect this to the output file being written by the client.
-      public IFCFileFormat IFCFileFormat
-      {
-         get;
-         set;
-      }
+      public IFCFileFormat IFCFileFormat { get; set; }
 
       /// <summary>
       /// Select export Config Name from the UI
       /// </summary>
-      public String SelectedConfigName
-      {
-         get;
-         set;
-      }
+      public string SelectedConfigName { get; set; }
 
       /// <summary>
       /// Select export Config Name from the UI
       /// </summary>
-      public String SelectedParametermappingTableName
-      {
-         get;
-         set;
-      }
+      public string SelectedParametermappingTableName { get; set; }
 
       /// <summary>
       /// Allow exporting a mix of extrusions and BReps as a solid model, if possible.
@@ -1049,72 +1132,33 @@ namespace Revit.IFC.Export.Utility
       /// <summary>
       /// Specifies which phase id to export.  May be expanded to phases.
       /// </summary>
-      public ElementId ActivePhaseId
-      {
-         get;
-         protected set;
-      }
+      public ElementId ActivePhaseId { get; protected set; }
 
       /// <summary>
       /// The phase element corresponding to the phase id.
       /// </summary>
-      public Phase ActivePhaseElement
-      {
-         get;
-         protected set;
-      }
+      public Phase ActivePhaseElement { get; protected set; }
+
+      /// <summary>
+      /// The status of how to handle Revit link instances.
+      /// </summary>
+      public LinkedFileExportAs ExportLinkedFileAs { get; set; } = LinkedFileExportAs.DontExport;
 
       ///<summary>
-      /// The ExportingLink flag.
-      /// This stores the flag telling if the current export is for a linked document.
+      /// Returns true if we are exporting links as separate files.
       /// </summary>
-      public bool ExportingLink
+      /// <returns>True if we are exporting links as separate files, false otherwise.</returns>
+      public bool ExportingSeparateLink() 
       {
-         get;
-         set;
-      }
-
-      private IList<Tuple<string, Transform>> m_LinkInstanceInfos = new List<Tuple<string, Transform>>();
-
-      /// <summary>
-      /// Get the number of RevitLinkInstance transforms for this export.
-      /// </summary>
-      /// <returns>The number of Revit Link Instance transforms for this export.</returns>
-      public int GetNumLinkInstanceInfos()
-      {
-         if (m_LinkInstanceInfos == null)
-            return 0;
-
-         return m_LinkInstanceInfos.Count;
+         return ExportLinkedFileAs == LinkedFileExportAs.ExportAsSeparate;
       }
 
       /// <summary>
-      /// Gets the file name of the link corresponding to the given index.
+      /// The table that contains Revit class to IFC entity mappings.
       /// </summary>
-      /// <param name="idx">The index</param>
-      /// <returns>The transform corresponding to the given index, or the Identity transform if out of range.</returns>
-      /// <remarks>Note that the file name for index 0 is not stored here, and returns null.</remarks>
-      public string GetLinkInstanceFileName(int idx)
-      {
-         if (idx < 1 || idx >= GetNumLinkInstanceInfos())
-            return null;
+      public string CategoryMappingTemplateName { get; set; } = null;
 
-         return m_LinkInstanceInfos[idx].Item1;
-      }
-
-      /// <summary>
-      /// Gets the transform corresponding to the given index.
-      /// </summary>
-      /// <param name="idx">The index</param>
-      /// <returns>The transform corresponding to the given index, or the Identity transform if out of range.</returns>
-      public Transform GetLinkInstanceTransform(int idx)
-      {
-         if (idx < 0 || idx >= GetNumLinkInstanceInfos())
-            return Transform.Identity;
-
-         return m_LinkInstanceInfos[idx].Item2;
-      }
-
+      public SeperatedLinkManager SeperatedLinkManager { get; set; } = new();
 
       /// <summary>
       /// Whether or not to export all the rooms in the view.
@@ -1145,9 +1189,28 @@ namespace Revit.IFC.Export.Utility
       /// </summary>
       /// <param name="entity">IFCEntityType enumeration representing the IFC entity concerned</param>
       /// <returns>true if the entity found in the set</returns>
-      public bool IsElementInExcludeList(IFCEntityType entity)
+      public bool IsElementInExcludeList(IFCEntityType entityType)
       {
-         return (ExcludeElementSet.Contains(entity.ToString()));
+         return IsEntityInExcludeList(IFCAnyHandleUtil.GetIFCEntityTypeName(entityType));
+      }
+
+      /// <summary>
+      /// To check whether a specified IFC Entity is listed in the Exclude Filter (from configuration)
+      /// </summary>
+      /// <param name="entity">IFCEntityType enumeration representing the IFC entity concerned</param>
+      /// <returns>true if the entity found in the set</returns>
+      public bool IsEntityInExcludeList(string entityTypeName)
+      {
+         return ExcludeElementSet.Contains(entityTypeName);
+      }
+
+      /// <summary>
+      /// Check whether there is an Exclude Filter (from configuration)
+      /// </summary>
+      /// <returns>True if there are any entities excluded.</returns>
+      public bool HasExcludeList()
+      {
+         return ExcludeElementSet.Count > 0;
       }
 
       /// <summary>
@@ -1163,35 +1226,20 @@ namespace Revit.IFC.Export.Utility
             if (_excludesElementSet != null)
                return _excludesElementSet;
 
-            HashSet<string> exclSet = new HashSet<string>();
+            HashSet<string> exclSet = [];
             if (!string.IsNullOrEmpty(ExcludeFilter))
             {
                string[] eList = ExcludeFilter.Split(';');
-               foreach (string elem in eList)
-                  exclSet.Add(elem);
+               foreach (string entityToFilter in eList)
+               {
+                  if (!string.IsNullOrWhiteSpace(entityToFilter))
+                  {
+                     exclSet.Add(entityToFilter);
+                  }
+               }
             }
             _excludesElementSet = exclSet;
             return _excludesElementSet;
-         }
-      }
-
-      /// <summary>
-      /// Checks if using IFCBCA - Building Code Authority code checking.
-      /// </summary>
-      /// <param name="exportOptionsCache">The export options cache.</param>
-      /// <returns>True if it is, false otherwise.</returns>
-      public bool DoCodeChecking()
-      {
-         switch (FileVersion)
-         {
-            case IFCVersion.IFC2x2:
-               {
-                  return WallAndColumnSplitting;
-               }
-            case IFCVersion.IFCBCA:
-               return true;
-            default:
-               return false;
          }
       }
    }

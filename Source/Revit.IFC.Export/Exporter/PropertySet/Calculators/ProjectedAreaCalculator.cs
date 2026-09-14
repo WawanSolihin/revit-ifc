@@ -58,7 +58,7 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// The ExporterIFC object.
       /// </param>
       /// <param name="extrusionCreationData">
-      /// The IFCExtrusionCreationData.
+      /// The IFCExportBodyParams.
       /// </param>
       /// <param name="element">
       /// The element to calculate the value.
@@ -69,26 +69,20 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// <returns>
       /// True if the operation succeed, false otherwise.
       /// </returns>
-      public override bool Calculate(ExporterIFC exporterIFC, IFCExtrusionCreationData extrusionCreationData, Element element, ElementType elementType)
+      public override bool Calculate(ExporterIFC exporterIFC, IFCAnyHandle handle, IFCExportBodyParams extrusionCreationData, Element element, ElementType elementType, EntryMap entryMap)
       {
+         (_, m_Area) = ParameterUtil.GetDoubleValueFromElementOrSymbol(element, entryMap.RevitParameterName, entryMap.CompatibleRevitParameterName);
+         if (m_Area > MathUtil.Eps * MathUtil.Eps)
+            return true;
+
          m_Area = UnitUtil.ScaleArea(ExporterIFCUtils.ComputeRoofProjectedArea(element));
-         if (m_Area > MathUtil.Eps() * MathUtil.Eps())
-            return true;
-
-         ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "ProjectedArea", out m_Area);
-
-         if (m_Area > MathUtil.Eps() * MathUtil.Eps())
-            return true;
-
-         return false;
+         return m_Area > MathUtil.Eps * MathUtil.Eps;
       }
 
       /// <summary>
       /// Gets the calculated double value.
       /// </summary>
-      /// <returns>
-      /// The double value.
-      /// </returns>
+      /// <returns>The double value.</returns>
       public override double GetDoubleValue()
       {
          return m_Area;

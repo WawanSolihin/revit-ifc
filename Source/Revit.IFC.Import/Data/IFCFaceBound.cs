@@ -34,37 +34,28 @@ namespace Revit.IFC.Import.Data
 {
    public class IFCFaceBound : IFCRepresentationItem
    {
-      IFCLoop m_Bound = null;
-
-      bool m_Orientation = true;
-
-      bool m_IsOuter = false;
-
       /// <summary>
       /// Return the defining loop of the face boundary.
       /// </summary>
-      public IFCLoop Bound
-      {
-         get { return m_Bound; }
-         protected set { m_Bound = value; }
-      }
+      public IFCLoop Bound { get; protected set; } = null;
 
       /// <summary>
       /// Return the orientation of the defining loop of the face boundary.
       /// </summary>
-      public bool Orientation
-      {
-         get { return m_Orientation; }
-         protected set { m_Orientation = value; }
-      }
+      public bool Orientation { get; protected set; } = true;
 
       /// <summary>
       /// Returns whether this is an outer boundary (TRUE) or an inner boundary (FALSE).
       /// </summary>
-      public bool IsOuter
+      public bool IsOuter { get; protected set; } = false;
+
+      /// <summary>
+      /// Checks if the FaceBound definition represents a non-empty boundary.
+      /// </summary>
+      /// <returns>True if the FaceBound contains any information.</returns>
+      public bool IsEmpty()
       {
-         get { return m_IsOuter; }
-         protected set { m_IsOuter = value; }
+         return Bound?.IsEmpty() ?? true;
       }
 
       protected IFCFaceBound()
@@ -79,7 +70,7 @@ namespace Revit.IFC.Import.Data
 
          Bound = IFCLoop.ProcessIFCLoop(ifcLoop);
 
-         IsOuter = (IFCAnyHandleUtil.IsSubTypeOf(ifcFaceBound, IFCEntityType.IfcFaceOuterBound));
+         IsOuter = IFCAnyHandleUtil.IsValidSubTypeOf(ifcFaceBound, EntityType, IFCEntityType.IfcFaceOuterBound);
       }
 
       private void CreateTessellatedShapeInternal(IFCImportShapeEditScope shapeEditScope, Transform scaledLcs)
@@ -112,66 +103,111 @@ namespace Revit.IFC.Import.Data
          // Check that the loop vertices don't contain points that are very close to one another;
          // if so, throw the point away and hope that the TessellatedShapeBuilder can repair the result.
          // Warn in this case.  If the entire boundary is bad, report an error and don't add the loop vertices.
+         List<XYZ> validVertices = null;
+         for (int pass = 0; pass < 2; pass++)
+         {
+            if (pass == 1 && !tsBuilderScope.RevertToMeshIfPossible())
+               break;
 
-         IList<XYZ> validVertices;
-         IFCGeometryUtil.CheckAnyDistanceVerticesWithinTolerance(Id, shapeEditScope, transformedVertices, out validVertices);
+            IFCGeometryUtil.CheckAnyDistanceVerticesWithinTolerance(Id, shapeEditScope, transformedVertices, out validVertices);
+            count = validVertices.Count;
+            if (count >= 3 || !IsOuter)
+               break;
+         }
 
          // We are going to catch any exceptions if the loop is invalid.  
          // We are going to hope that we can heal the parent object in the TessellatedShapeBuilder.
-         bool bPotentiallyAbortFace = false;
+         bool bPotentiallyAbortFace = (count < 3);
 
-         count = validVertices.Count;
-         if (count < 3)
+         if (bPotentiallyAbortFace)
          {
             Importer.TheLog.LogComment(Id, "Too few distinct loop vertices (" + count + "), ignoring.", false);
-            bPotentiallyAbortFace = true;
          }
          else
          {
-            // Last check: check to see if the vertices are actually planar.  If not, for the vertices to be planar.
-            // We are not going to be particularly fancy about how we pick the plane.
-            XYZ planeNormal = null;
-            bool foundNormal = false;
+            bool maybeTryToTriangulate = tsBuilderScope.CanProcessDelayedFaceBoundary && (count == 4);
+            bool tryToTriangulate = false;
 
-            XYZ firstPoint = validVertices[0];
-            XYZ secondPoint = validVertices[1];
-            XYZ firstDir = secondPoint - firstPoint;
-
-            int thirdPointIndex = 2;
-            for (; thirdPointIndex < count; thirdPointIndex++)
+            // Last check: check to see if the vertices are actually planar.  
+            // We are not going to be particularly fancy about how we pick the plane.	
+            if (count > 3)
             {
-               XYZ thirdPoint = validVertices[thirdPointIndex];
-               planeNormal = firstDir.CrossProduct(thirdPoint - firstPoint);
-               if (!planeNormal.IsZeroLength())
+               XYZ planeNormal = null;
+
+               XYZ firstPoint = validVertices[0];
+               XYZ secondPoint = validVertices[1];
+               XYZ firstDir = secondPoint - firstPoint;
+               double bestLength = 0;
+
+               for (int index = 2; index <= count; index++)
                {
-                  planeNormal = planeNormal.Normalize();
-                  foundNormal = true;
-                  break;
-               }
-            }
-
-            if (!foundNormal)
-            {
-               Importer.TheLog.LogComment(Id, "Loop is degenerate, ignoring.", false);
-               bPotentiallyAbortFace = true;
-            }
-            else
-            {
-               double vertexEps = IFCImportFile.TheFile.Document.Application.VertexTolerance;
-
-               for (++thirdPointIndex; thirdPointIndex < count; thirdPointIndex++)
-               {
-                  XYZ pointOnPlane = validVertices[thirdPointIndex] -
-                     (validVertices[thirdPointIndex] - firstPoint).DotProduct(planeNormal) * planeNormal;
-                  if (pointOnPlane.DistanceTo(validVertices[thirdPointIndex]) > vertexEps)
+                  XYZ thirdPoint = validVertices[(index % count)];
+                  XYZ currentPlaneNormal = firstDir.CrossProduct(thirdPoint - firstPoint);
+                  double planeNormalLength = currentPlaneNormal.GetLength();
+                  if (planeNormalLength > 0.01)
                   {
-                     Importer.TheLog.LogComment(Id, "Bounded loop plane is slightly non-planar, correcting.", false);
-                     validVertices[thirdPointIndex] = pointOnPlane;
+                     planeNormal = currentPlaneNormal.Normalize();
+                     break;
+                  }
+                  else if (maybeTryToTriangulate && (planeNormalLength > bestLength))
+                  {
+                     planeNormal = currentPlaneNormal.Normalize();
+                     bestLength = planeNormalLength;
+                  }
+
+                  firstPoint = secondPoint;
+                  secondPoint = thirdPoint;
+                  firstDir = secondPoint - firstPoint;
+               }
+
+               if (planeNormal == null)
+               {
+                  // Even if we don't find a good normal, we will still see if the internal function can make sense of it.
+                  Importer.TheLog.LogComment(Id, "Bounded loop plane is likely non-planar, may triangulate.", false);
+               }
+               else
+               {
+                  double vertexEps = IFCImportFile.TheFile.VertexTolerance;
+
+                  for (int index = 0; index < count; index++)
+                  {
+                     XYZ pointOnPlane = validVertices[index] -
+                        (validVertices[index] - firstPoint).DotProduct(planeNormal) * planeNormal;
+                     double distance = pointOnPlane.DistanceTo(validVertices[index]);
+                     if (distance > vertexEps * 10.0)
+                     {
+                        Importer.TheLog.LogComment(Id, "Bounded loop plane is non-planar, may triangulate.", false);
+                        tryToTriangulate = maybeTryToTriangulate;
+                        bPotentiallyAbortFace = !tryToTriangulate;
+                        break;
+                     }
+                     else if (distance > vertexEps)
+                     {
+                        if (!maybeTryToTriangulate)
+                        {
+                           Importer.TheLog.LogComment(Id, "Bounded loop plane is slightly non-planar, correcting.", false);
+                           validVertices[index] = pointOnPlane;
+                        }
+                        else
+                        {
+                           Importer.TheLog.LogComment(Id, "Bounded loop plane is slightly non-planar, will triangulate.", false);
+                           tryToTriangulate = maybeTryToTriangulate;
+                        }
+                     }
                   }
                }
+            }
 
-               if (!tsBuilderScope.AddLoopVertices(Id, validVertices))
-                  bPotentiallyAbortFace = true;
+            if (!bPotentiallyAbortFace)
+            {
+               if (tryToTriangulate)
+               {
+                  tsBuilderScope.DelayedFaceBoundary = validVertices;      
+               }
+               else
+               {
+                  bPotentiallyAbortFace = !tsBuilderScope.AddLoopVertices(Id, validVertices);
+               }
             }
          }
 
@@ -183,17 +219,17 @@ namespace Revit.IFC.Import.Data
       /// Create geometry for a particular representation item.
       /// </summary>
       /// <param name="shapeEditScope">The geometry creation scope.</param>
-      /// <param name="lcs">Local coordinate system for the geometry, without scale.</param>
       /// <param name="scaledLcs">Local coordinate system for the geometry, including scale, potentially non-uniform.</param>
       /// <param name="guid">The guid of an element for which represntation is being created.</param>
-      protected override void CreateShapeInternal(IFCImportShapeEditScope shapeEditScope, Transform lcs, Transform scaledLcs, string guid)
+      protected override void CreateShapeInternal(IFCImportShapeEditScope shapeEditScope, 
+         Transform scaledLcs, string guid)
       {
          if (shapeEditScope.BuilderScope == null)
          {
             throw new InvalidOperationException("BuilderScope has not been initialised");
          }
-         base.CreateShapeInternal(shapeEditScope, lcs, scaledLcs, guid);
-         Bound.CreateShape(shapeEditScope, lcs, scaledLcs, guid);
+         base.CreateShapeInternal(shapeEditScope, scaledLcs, guid);
+         Bound.CreateShape(shapeEditScope, scaledLcs, guid);
          IsValidForCreation = Bound.IsValidForCreation;
 
          if (shapeEditScope.BuilderType == IFCShapeBuilderType.TessellatedShapeBuilder)

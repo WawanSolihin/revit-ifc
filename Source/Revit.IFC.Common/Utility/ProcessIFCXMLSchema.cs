@@ -1,23 +1,4 @@
-﻿//
-// BIM IFC library: this library works with Autodesk(R) Revit(R) to export IFC files containing model geometry.
-// Copyright (C) 2012  Autodesk, Inc.
-// 
-// This library is free software; you can redistribute it and/or
-// modify it under the terms of the GNU Lesser General Public
-// License as published by the Free Software Foundation; either
-// version 2.1 of the License, or (at your option) any later version.
-//
-// This library is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-// Lesser General Public License for more details.
-//
-// You should have received a copy of the GNU Lesser General Public
-// License along with this library; if not, write to the Free Software
-// Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
-//
-
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -30,19 +11,14 @@ namespace Revit.IFC.Common.Utility
 {
    public class ProcessIFCXMLSchema
    {
-      static string loadedSchema = string.Empty;
-
       /// <summary>
       /// Process an IFCXML schema file
       /// </summary>
       /// <param name="ifcxmlSchemaFile">the IfcXML schema file info</param>
-      public static bool ProcessIFCSchema(FileInfo ifcxmlSchemaFile)
+      /// <param name="theTree">the IFC Entity tree</param>
+      public static bool ProcessIFCSchema(FileInfo ifcxmlSchemaFile, ref IfcSchemaEntityTree theTree)
       {
-         if (ifcxmlSchemaFile.Name.Equals(loadedSchema) && IfcSchemaEntityTree.EntityDict.Count > 0)
-            return false;     // The schema file has been processed and loaded before
-
-         loadedSchema = Path.GetFileNameWithoutExtension(ifcxmlSchemaFile.Name);
-         IfcSchemaEntityTree.Initialize(loadedSchema);
+         string loadedSchema = Path.GetFileNameWithoutExtension(ifcxmlSchemaFile.Name);
          XmlTextReader reader = new XmlTextReader(ifcxmlSchemaFile.FullName);
          XmlSchema theSchema = XmlSchema.Read(reader, ValidationCallback);
          foreach (XmlSchemaObject item in theSchema.Items)
@@ -50,38 +26,38 @@ namespace Revit.IFC.Common.Utility
             if (item is XmlSchemaComplexType)
             {
 
-               XmlSchemaComplexType ct = item as XmlSchemaComplexType;
-               string entityName = ct.Name;
+            XmlSchemaComplexType ct = item as XmlSchemaComplexType;
+            string entityName = ct.Name;
 
-               if (string.Compare(entityName, 0, "Ifc", 0, 3, ignoreCase: true) != 0)
-                  continue;
+            if (string.Compare(entityName, 0, "Ifc", 0, 3, ignoreCase: true) != 0)
+               continue;
 
-               string parentName = string.Empty;
+            string parentName = string.Empty;
 
-               if (ct.ContentModel == null)
-                  continue;
+            if (ct.ContentModel == null)
+               continue;
 
-               if (ct.ContentModel.Parent == null)
-                  continue;
+            if (ct.ContentModel.Parent == null)
+               continue;
 
                string predefTypeEnum = null;
-               if (ct.ContentModel.Parent is XmlSchemaComplexType)
-               {
-                  XmlSchemaComplexType parent = ct.ContentModel.Parent as XmlSchemaComplexType;
-                  XmlSchemaSimpleContentExtension parentSimpleType = parent.ContentModel.Content as XmlSchemaSimpleContentExtension;
-                  XmlSchemaComplexContentExtension parentComplexType = parent.ContentModel.Content as XmlSchemaComplexContentExtension;
-                  if (parentSimpleType != null)
+            if (ct.ContentModel.Parent is XmlSchemaComplexType)
+            {
+               XmlSchemaComplexType parent = ct.ContentModel.Parent as XmlSchemaComplexType;
+               XmlSchemaSimpleContentExtension parentSimpleType = parent.ContentModel.Content as XmlSchemaSimpleContentExtension;
+               XmlSchemaComplexContentExtension parentComplexType = parent.ContentModel.Content as XmlSchemaComplexContentExtension;
+               if (parentSimpleType != null)
                   {
-                     parentName = parentSimpleType.BaseTypeName.Name;
+                  parentName = parentSimpleType.BaseTypeName.Name;
                      foreach (XmlSchemaAttribute attr in parentSimpleType.Attributes)
                      {
                         if (attr.Name != null && attr.Name.Equals("PredefinedType", StringComparison.InvariantCultureIgnoreCase))
                            predefTypeEnum = attr.SchemaTypeName.Name;
                      }
                   }
-                  if (parentComplexType != null)
+               if (parentComplexType != null)
                   {
-                     parentName = parentComplexType.BaseTypeName.Name;
+                  parentName = parentComplexType.BaseTypeName.Name;
                      foreach (XmlSchemaAttribute attr in parentComplexType.Attributes)
                      {
                         if (attr.Name != null && attr.Name.Equals("PredefinedType", StringComparison.InvariantCultureIgnoreCase))
@@ -109,7 +85,7 @@ namespace Revit.IFC.Common.Utility
                   }
                }
 
-               IfcSchemaEntityTree.Add(entityName, parentName, predefTypeEnum, isAbstract: ct.IsAbstract);
+               theTree.Add(entityName, parentName, predefTypeEnum, isAbstract: ct.IsAbstract);
             }
             else if (item is XmlSchemaSimpleType)
             {
@@ -124,9 +100,9 @@ namespace Revit.IFC.Common.Utility
                      IList<string> enumValueList = new List<string>();
                      foreach (XmlSchemaEnumerationFacet enumFacet in enums.Facets)
                      {
-                        if (IfcSchemaEntityTree.PredefinedTypeEnumDict.ContainsKey(enumName))
+                        if (theTree.PredefinedTypeEnumDict.ContainsKey(enumName))
                         {
-                           IfcSchemaEntityTree.PredefinedTypeEnumDict[enumName].Add(enumFacet.Value.ToUpper());
+                           theTree.PredefinedTypeEnumDict[enumName].Add(enumFacet.Value.ToUpper());
                         }
                         else
                         {
@@ -134,7 +110,7 @@ namespace Revit.IFC.Common.Utility
                         }
                      }
                      if (enumValueList.Count > 0)
-                        IfcSchemaEntityTree.PredefinedTypeEnumDict.Add(enumName, enumValueList);
+                        theTree.PredefinedTypeEnumDict.Add(enumName, enumValueList);
                   }
                }
             }

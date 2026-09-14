@@ -72,11 +72,12 @@ namespace Revit.IFC.Import.Data
          }
       }
 
-      protected override void CreateShapeInternal(IFCImportShapeEditScope shapeEditScope, Transform lcs, Transform scaledLcs, string guid)
+      protected override void CreateShapeInternal(IFCImportShapeEditScope shapeEditScope, 
+         Transform scaledLcs, string guid)
       {
          using (BuilderScope bs = shapeEditScope.InitializeBuilder(IFCShapeBuilderType.TessellatedShapeBuilder))
          {
-            base.CreateShapeInternal(shapeEditScope, lcs, scaledLcs, guid);
+            base.CreateShapeInternal(shapeEditScope, scaledLcs, guid);
 
             TessellatedShapeBuilderScope tsBuilderScope = bs as TessellatedShapeBuilderScope;
 
@@ -85,7 +86,8 @@ namespace Revit.IFC.Import.Data
             // Create the face set from IFCIndexedPolygonalFace
             foreach (IFCIndexedPolygonalFace face in Faces)
             {
-               tsBuilderScope.StartCollectingFace(GetMaterialElementId(shapeEditScope));
+               // TODO: Consider adding ability to triangulate here.
+               tsBuilderScope.StartCollectingFace(GetMaterialElementId(shapeEditScope), false);
 
                IList<XYZ> loopVertices = new List<XYZ>();
                foreach (int vertInd in face.CoordIndex)
@@ -96,7 +98,7 @@ namespace Revit.IFC.Import.Data
                   XYZ vertex = Coordinates.CoordList[actualVIdx];
                   loopVertices.Add(scaledLcs.OfPoint(vertex));
                }
-               IList<XYZ> validVertices;
+               List<XYZ> validVertices;
                IFCGeometryUtil.CheckAnyDistanceVerticesWithinTolerance(Id, shapeEditScope, loopVertices, out validVertices);
 
                bool bPotentiallyAbortFace = false;
@@ -118,7 +120,7 @@ namespace Revit.IFC.Import.Data
                         // add vertex to the loop
                         innerLoopVertices.Add(scaledLcs.OfPoint(vertex));
                      }
-                     IList<XYZ> validInnerV;
+                     List<XYZ> validInnerV;
                      IFCGeometryUtil.CheckAnyDistanceVerticesWithinTolerance(Id, shapeEditScope, innerLoopVertices, out validInnerV);
 
                      if (!tsBuilderScope.AddLoopVertices(Id, validInnerV))
@@ -126,10 +128,7 @@ namespace Revit.IFC.Import.Data
                   }
                }
 
-               if (bPotentiallyAbortFace)
-                  tsBuilderScope.AbortCurrentFace();
-               else
-                  tsBuilderScope.StopCollectingFace();
+               tsBuilderScope.StopCollectingFace(!bPotentiallyAbortFace, false);
             }
 
             IList<GeometryObject> createdGeometries = tsBuilderScope.CreateGeometry(guid);

@@ -25,8 +25,11 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.ExternalService;
 using Autodesk.Revit.DB.IFC;
 using Revit.IFC.Import.Data;
+using Revit.IFC.Import.Properties;
 using Revit.IFC.Import.Utility;
 using IFCImportOptions = Revit.IFC.Import.Utility.IFCImportOptions;
+using Revit.IFC.Import.Core;
+using static Revit.IFC.Import.Utility.IFCImportOptions;
 
 namespace Revit.IFC.Import
 {
@@ -81,7 +84,7 @@ namespace Revit.IFC.Import
          }
          else
             throw new InvalidOperationException("Failed to get IFC importer service.");
-      }
+      } 
    }
 
    /// <summary>
@@ -90,8 +93,6 @@ namespace Revit.IFC.Import
    public class Importer : IIFCImporterServer
    {
       #region IIFCImporterServer Members
-
-      static Importer m_TheImporter = null;
 
       IFCImportOptions m_ImportOptions = null;
 
@@ -142,40 +143,42 @@ namespace Revit.IFC.Import
       /// <summary>
       /// The one  Importer class for this import process.
       /// </summary>
-      static public Importer TheImporter
-      {
-         get { return m_TheImporter; }
-         protected set { m_TheImporter = value; }
-      }
+      static public Importer TheImporter { get; protected set; } = null;
 
       /// <summary>
       /// The Import cache used for this import process.
       /// </summary>
       static public IFCImportCache TheCache
       {
-         get { return m_TheImporter.m_ImportCache; }
-         protected set { m_TheImporter.m_ImportCache = value; }
+         get { return TheImporter.m_ImportCache; }
+         protected set { TheImporter.m_ImportCache = value; }
       }
+
+      /// <summary>
+      /// Determines if we are using the default (i.e., Revit) processor.
+      /// </summary>
+      /// <returns>True if we are using the default processor.</returns>
+      /// <remarks>This function can be used to short-circuit function calls that do unnecessary
+      /// work (e.g., creating custom sub-categories.)</remarks>
+      static public bool IsDefaultProcessor() { return TheProcessor is IFCDefaultProcessor; }
+
+      static public IIFCFileProcessor TheProcessor { get => TheOptions?.Processor; }
+
+      static public IFCImportHybridInfo TheHybridInfo { get; protected set; } = null;
 
       /// <summary>
       /// The log file used for this import process.
       /// </summary>
       static public IFCImportLog TheLog
       {
-         get { return m_TheImporter.m_ImportLog; }
-         protected set { m_TheImporter.m_ImportLog = value; }
+         get { return TheImporter.m_ImportLog; }
+         protected set { TheImporter.m_ImportLog = value; }
       }
-
-      static IFCImportOptions m_TheOptions = null;
 
       /// <summary>
       /// The IFC import options used for this import process.
       /// </summary>
-      public static IFCImportOptions TheOptions
-      {
-         get { return m_TheOptions; }
-         protected set { m_TheOptions = value; }
-      }
+      public static IFCImportOptions TheOptions { get; protected set;  }
 
       /// <summary>
       /// Allow for the creation of an Importer class for external API use.
@@ -192,8 +195,8 @@ namespace Revit.IFC.Import
          Importer importer = new Importer();
          TheImporter = importer;
          TheCache = IFCImportCache.Create(originalDocument, ifcFileName);
-         TheLog = IFCImportLog.CreateLog(ifcFileName, "log.html");
          TheOptions = importer.m_ImportOptions = IFCImportOptions.Create(importOptions);
+         TheLog = IFCImportLog.CreateLog(ifcFileName, "log.html", !TheOptions.DisableLogging);
          return importer;
       }
 
@@ -204,9 +207,32 @@ namespace Revit.IFC.Import
 
          Application application = originalDocument.Application;
 
+         Document doc = application.OpenDocumentFile(linkedFileName);
+         if (doc == null)
+         {
+            return null;
+         }
+
+         ProjectInfo projInfo = doc.ProjectInformation;
+         if (projInfo == null)
+         {
+            doc.Close();
+            return null;
+         }
+
+         // Check to see if the projInfo ImportMethod parameter equals the current method of import.
+         // If it does not, then update current method to match original method.
+         IFCHybridImportOptions hybridImportOptions = null;
+         Parameter originalImportMethod = projInfo.LookupParameter(ImportMethodParameter);
+         if ((originalImportMethod?.StorageType ?? StorageType.None) == StorageType.String)
+         {
+            hybridImportOptions = IFCHybridImportOptions.Create(originalImportMethod.AsString());
+         }
+         TheOptions.HybridImportOptions = hybridImportOptions;
+
          // We won't catch any exceptions here, yet.
          // There could be a number of reasons why this fails, to be investigated.
-         return application.OpenDocumentFile(linkedFileName);
+         return doc;
       }
 
       private Document CreateLinkDocument(Document originalDocument)
@@ -239,6 +265,10 @@ namespace Revit.IFC.Import
          bool templatesDifferent = noIFCTemplate ? false : (string.Compare(defaultTemplate, defaultProjectTemplate, true) != 0);
          bool canUseDefault = templatesDifferent;
 
+         string projectFilesUsed = templatesDifferent ? defaultIFCTemplate + ", " + defaultProjectTemplate : defaultTemplate;
+         if (string.Compare(defaultTemplate, defaultProjectTemplate, true) != 0)
+            projectFilesUsed += ", " + defaultProjectTemplate;
+
          while (ifcDocument == null)
          {
             try
@@ -250,11 +280,14 @@ namespace Revit.IFC.Import
                }
                else
                   ifcDocument = application.NewProjectDocument(defaultTemplate);
+
+               if (ifcDocument == null)
+               {
+                  throw new InvalidOperationException("Can't open template file(s) " + projectFilesUsed + " to create link document");
+               }
             }
             catch
             {
-               ifcDocument = null;
-
                if (canUseDefault)
                {
                   defaultTemplate = defaultProjectTemplate;
@@ -263,12 +296,8 @@ namespace Revit.IFC.Import
                }
                else
                {
-                  string projectFilesUsed = templatesDifferent ? defaultIFCTemplate + ", " + defaultProjectTemplate : defaultTemplate;
-
-                  if (string.Compare(defaultTemplate, defaultProjectTemplate, true) != 0)
-                     projectFilesUsed += ", " + defaultProjectTemplate;
                   Importer.TheLog.LogError(-1, "Can't open template file(s) " + projectFilesUsed + " to create link document, aborting import.", false);
-                  return null;
+                  throw;
                }
             }
 
@@ -278,39 +307,39 @@ namespace Revit.IFC.Import
          return ifcDocument;
       }
 
-      private Document LoadOrCreateLinkDocument(Document originalDocument, string linkedFileName)
+      private (Document ifcDocument, bool doUpdate) LoadOrCreateLinkDocument(Document originalDocument, string linkedFileName)
       {
          Document ifcDocument = null;
+         bool doUpdate = true;
 
          try
          {
             // Check to see if the Revit file already exists; if so, we will re-use it.
             ifcDocument = LoadLinkDocument(originalDocument, linkedFileName);
-         }
-         catch
-         {
-            ifcDocument = null;
-         }
 
-         // If it doesn't exist, create a new document.
-         if (ifcDocument == null)
-         {
-            try
+            // If it doesn't exist, create a new document.
+            if (ifcDocument == null)
             {
                ifcDocument = CreateLinkDocument(originalDocument);
+               doUpdate = false;
             }
-            catch
+
+            if (ifcDocument == null)
             {
-               ifcDocument = null;
-               Importer.TheLog.LogError(-1, "Could not create document for cached IFC Revit file while importing: " + linkedFileName + ", aborting.", false);
+               throw new InvalidOperationException("Could not create document while importing: " + linkedFileName);
             }
          }
+         finally
+         {
+            if(ifcDocument == null)
+               TheLog.LogError(-1, "Could not create document for cached IFC Revit file while importing: " + linkedFileName + ", aborting.", false);
+         }
 
-         return ifcDocument;
+         return (ifcDocument, doUpdate);
       }
 
       /// <summary>
-      /// Retuns the GUID associated with the importer, for DirectShape creation.
+      /// Returns the GUID associated with the importer, for DirectShape creation.
       /// </summary>
       static public string ImportAppGUID()
       {
@@ -331,7 +360,7 @@ namespace Revit.IFC.Import
 
          string revitFileName = IFCImportFile.GetRevitFileName(ifcFileName);
 
-         // If the RVT file doesn't exist, we'll reload.  Otherwise, look at saved file size and timestamp.
+         // If the RVT file doesn't exist, we'll reload. Otherwise, look at saved file size and timestamp.
          if (!File.Exists(revitFileName))
             return true;
 
@@ -358,12 +387,39 @@ namespace Revit.IFC.Import
          if (checkFileTimestamp)
          {
             // Ignore ticks - only needs to be accurate to the second, or 10,000,000 ticks.
-            Int64 diffTicks = infoIFC.LastWriteTimeUtc.Ticks - TheOptions.OriginalTimeStamp.Ticks;
+            long diffTicks = infoIFC.LastWriteTimeUtc.Ticks - TheOptions.OriginalTimeStamp.Ticks;
             if (diffTicks < 0 || diffTicks >= 10000000)
                return true;
          }
 
          return false;
+      }
+
+      /// <summary>
+      /// Start a Transaction for the ReferenceIFC path.
+      /// Will enable ForcedModalHandling and ClearAfterRollback in FailureHandlingOptions.
+      /// </summary>
+      /// <param name="transaction">Transaction to start.</param>
+      /// <returns>Transaction Status after Start().  This should be Started if all went well.</returns>
+      /// <exception cref="ArgumentNullException">Transaction parameter should be non-null.</exception>
+      public static TransactionStatus StartReferenceIFCTransaction(Transaction transaction)
+      {
+         TransactionStatus transactionStatus = transaction.GetStatus();
+         if (transactionStatus == TransactionStatus.Started)
+         {
+            TheLog.LogComment(-1, "Attempting to start ReferenceIFC Transaction when already started", true);
+            return transactionStatus;
+         }
+
+         transactionStatus = transaction.Start(Resources.IFCOpenReferenceFile);
+         if (transactionStatus == TransactionStatus.Started)
+         {
+            FailureHandlingOptions options = transaction.GetFailureHandlingOptions();
+            options.SetForcedModalHandling(true);
+            options.SetClearAfterRollback(true);
+         }
+
+         return transactionStatus;
       }
 
       private bool DocumentUpToDate(Document doc, string ifcFileName)
@@ -438,35 +494,112 @@ namespace Revit.IFC.Import
          return true;
       }
 
+      private void LogEndImportDetailed(Document ifcDocument)
+      {
+         if (!TheOptions.VerboseLogging || TheHybridInfo == null)
+            return;
+
+         TheLog.LogWarning(-1, "--- Hybrid IFC Import:  Start of Detailed Logging after Hybrid IFC Import. ---", false);
+         TheLog.LogWarning(-1, "Hybrid IFC Import:  If an IfcGuid does not appear in the following list, then it was processed entirely via legacy code.", false);
+         TheLog.LogWarning(-1, "Hybrid IFC Import:  If an IfcGuid is no longer in the Hybrid Map, but its ElementId is in the Elements to be deleted list, this is normal.", false);
+         TheHybridInfo.LogHybridMapDetailed();
+         TheHybridInfo.LogElementsToDeleteDetailed();
+         TheLog.LogWarning(-1, "--- Hybrid IFC Import:  End of Logging detailed Information after Hybrid IFC Import.---", false);
+
+         FilteredElementCollector collector = new FilteredElementCollector(ifcDocument);
+
+         List<Type> supportedElementTypes = new List<Type>() { typeof(DirectShape) };
+         ElementMulticlassFilter multiclassFilter = new ElementMulticlassFilter(supportedElementTypes);
+         collector.WherePasses(multiclassFilter);
+
+         int numDirectShapes = collector.GetElementCount();
+         if (numDirectShapes == 0)
+         {
+            ifcDocument.Application.WriteJournalComment("Hybrid IFC Import: No IFCProducts Imported.", false);
+         }
+         else if (numDirectShapes != (Importer.TheHybridInfo.HybridElements?.Count ?? 0))
+         {
+            ifcDocument.Application.WriteJournalComment("---- Hybrid IFC Import: Some DirectShapes processed within Revit. ---", false);
+
+            IList<Element> directShapeElements = collector.ToElements();
+            // This is inefficient, but we need to reliably get the IFCGuids
+
+            if (Importer.TheHybridInfo?.HybridMap != null)
+            {
+               // HybridMap is for IFC STEP Id --> ElementId.  This is used for almost all of the Hybrid IFC Import processing.
+               // reverseLookup is for ElementId --> IFC STEP Id.  This is used to find the ElementId associated with a given IFC STEP Id (for logging purposes).
+               IDictionary<ElementId, string> reverseLookup = new Dictionary<ElementId, string>();
+               foreach (KeyValuePair<string, ElementId> pair in TheHybridInfo.HybridMap)
+               {
+                  try
+                  {
+                     ElementId elementId = pair.Value;
+                     string stepId = pair.Key;
+                     reverseLookup.Add(elementId, stepId);
+                  }
+                  catch (ArgumentException ex)
+                  {
+                     TheLog.LogWarning(-1, $"Duplicate ElementId found when reversing Hybrid Map for logging {ex.Message}", false);
+                  }
+               }
+
+               // Log (into journal) IFC STEP Ids & ElementIds that were imported by AnyCAD or via Revit alone.
+               ifcDocument.Application.WriteJournalComment($"Hybrid IFC Import: Count of DirectShapes imported via AnyCAD:  {Importer.TheHybridInfo.HybridElements.Count}", false);
+               foreach (Element element in directShapeElements)
+               {
+                  string stepId;
+                  if (reverseLookup.TryGetValue(element.Id, out stepId))
+                  {
+                     ifcDocument.Application.WriteJournalComment($"Hybrid IFC Import: AnyCAD DirectShape (IFC STEP Id, ElementId): ({stepId}, {element.Id})", false);
+                  }
+               }
+
+               ifcDocument.Application.WriteJournalComment($"Hybrid IFC Import: Count of DirectShapes falling back to Revit:  {numDirectShapes - Importer.TheHybridInfo.HybridElements.Count}", false);
+               foreach (Element element in directShapeElements)
+               {
+                  if (reverseLookup.ContainsKey(element.Id))
+                     continue;
+                  ifcDocument.Application.WriteJournalComment($"Hybrid IFC Import: Fallback DirectShape ElementId: ({element.Id})", false);
+               }
+            }
+         }
+      }
+
       /// <summary>
       /// Import an IFC file into a given document for Reference only.
       /// </summary>
       /// <param name="document">The host document for the import.</param>
       /// <param name="origFullFileName">The full file name of the document.</param>
-      /// <param name="options">The list of configurable options for this import.</param>
-      public void ReferenceIFC(Document document, string origFullFileName, IDictionary<String, String> options)
+      public void ReferenceIFC(Document document, string origFullFileName)
       {
          // We need to generate a local file name for all of the intermediate files (the log file, the cache file, and the shared parameters file).
          string localFileName = ImporterIFCUtils.GetLocalFileName(document, origFullFileName);
          if (localFileName == null)
-            return;
+            throw new InvalidOperationException("Could not generate local file name for: " + origFullFileName);
 
          // An early check, based on the options set - if we are allowed to use an up-to-date existing file on disk, use it.
-         m_ImportLog = IFCImportLog.CreateLog(localFileName, "log.html");
+         // It is possible that the log file may have been created in CreateImporter above, 
+         // if it is used by an external developer.
+         if (TheLog == null)
+            m_ImportLog = IFCImportLog.CreateLog(localFileName, "log.html", !m_ImportOptions.DisableLogging);
 
          Document originalDocument = document;
-         Document ifcDocument = null;
+         Document ifcDocument;
+         bool doUpdate = false;
 
          if (TheOptions.Action == IFCImportAction.Link)
          {
             string linkedFileName = IFCImportFile.GetRevitFileName(localFileName);
 
-            ifcDocument = LoadOrCreateLinkDocument(originalDocument, linkedFileName);
-            if (ifcDocument == null)
-               return;
+            // NOTE: This will update HybridImportOptions if we are reloading an existing document - we will use
+            // whatever method we originally used.  If a user wants to switch, they will have to delete the
+            // cache file.  Do not use HybridImportOptions before this call.
+            (ifcDocument, doUpdate) = LoadOrCreateLinkDocument(originalDocument, linkedFileName);
          }
          else
+         {
             ifcDocument = originalDocument;
+         }
 
          bool useCachedRevitFile = DocumentUpToDate(ifcDocument, localFileName);
 
@@ -475,9 +608,10 @@ namespace Revit.IFC.Import
          if (!useCachedRevitFile && ifcDocument.IsLinked)
          {
             useCachedRevitFile = true;
-            Importer.AddDelayedLinkError(BuiltInFailures.ImportFailures.IFCCantUpdateLinkedFile);
+            AddDelayedLinkError(BuiltInFailures.ImportFailures.IFCCantUpdateLinkedFile);
          }
 
+         Transaction transaction = null;
          if (!useCachedRevitFile)
          {
             m_ImportCache = IFCImportCache.Create(ifcDocument, localFileName);
@@ -486,8 +620,44 @@ namespace Revit.IFC.Import
             if (TheOptions.Action == IFCImportAction.Link)
                TheCache.CreateExistingElementMaps(ifcDocument);
 
+            // At this point:
+            // ifcDoument = document that will hold the info.
+            // localFileName = file path from where input will occur.
+            // Do Hybrid Import if needed.
+            //
+            if (TheOptions.HybridImportOptions != null)
+            {
+               BasePoint originalSurveyPoint = BasePoint.GetSurveyPoint(ifcDocument);
+               XYZ originalPosition = originalSurveyPoint.SharedPosition;
+               
+               // Hybrid IFC Import:  Create Transaction now, since Document.Import needs it.
+               // Non-Hybrid IFC Import:  IFCFile.Create() will create Transaction later.
+               transaction = new Transaction(ifcDocument);
+               if (TransactionStatus.Started != StartReferenceIFCTransaction(transaction))
+               {
+                  TheLog.LogError(-1, "Unable to start Transaction for Hybrid IFC Import", false);
+               }
+               else
+               {
+                  TheHybridInfo = new IFCImportHybridInfo(ifcDocument, localFileName, doUpdate);
+                  if (TheHybridInfo != null)
+                  {
+                     BasePoint newSurveyPoint = BasePoint.GetSurveyPoint(ifcDocument);
+                     XYZ newPosition = newSurveyPoint.SharedPosition;
+
+                     if (!newPosition.IsAlmostEqualTo(originalPosition))
+                     {
+                        TheHybridInfo.LargeCoordinateOriginOffset = originalPosition - newPosition;
+                        TheHybridInfo.OriginalLargeCoordinateOriginOffset = TheHybridInfo.LargeCoordinateOriginOffset;
+                     }
+                  }
+               }
+            }
+
+            m_ImportCache.ReadSharedParametersFile(ifcDocument, localFileName);
+
             // TheFile will contain the same value as the return value for this function.
-            IFCImportFile.Create(localFileName, m_ImportOptions, ifcDocument);
+            IFCImportFile.Create(localFileName, m_ImportOptions, ifcDocument, transaction);
          }
 
          if (useCachedRevitFile || IFCImportFile.TheFile != null)
@@ -503,6 +673,9 @@ namespace Revit.IFC.Import
                   IFCObjectDefinition.CreateElement(ifcDocument, objDef);
 
                theFile.EndImport(ifcDocument, localFileName);
+
+               // Make sure to log detailed information after EndImport.
+               LogEndImportDetailed(ifcDocument);      
             }
 
             if (TheOptions.Action == IFCImportAction.Link)
@@ -514,8 +687,7 @@ namespace Revit.IFC.Import
             }
          }
 
-         if (m_ImportCache != null)
-            m_ImportCache.Reset(ifcDocument);
+         m_ImportCache?.Reset(ifcDocument);
       }
 
       /// <summary>
@@ -526,13 +698,13 @@ namespace Revit.IFC.Import
       {
          TheImporter = this;
 
-         IDictionary<String, String> options = importer.GetOptions();
-         TheOptions = m_ImportOptions = IFCImportOptions.Create(options);
+         string fullIFCFileName = importer.FullFileName;
+         IDictionary<string, string> options = importer.GetOptions();
+         TheOptions = m_ImportOptions = Create(options);
 
          // An early check, based on the options set - if we are allowed to use an up-to-date existing file on disk, use it.
          try
          {
-            string fullIFCFileName = importer.FullFileName;
             if (!TheOptions.ForceImport && !NeedsReload(importer.Document, fullIFCFileName))
                return;
 
@@ -545,20 +717,24 @@ namespace Revit.IFC.Import
             }
             else
             {
-               ReferenceIFC(importer.Document, fullIFCFileName, options);
+               ReferenceIFC(importer.Document, fullIFCFileName);
             }
          }
          catch (Exception ex)
          {
-            if (Importer.TheLog != null)
-               Importer.TheLog.LogError(-1, ex.Message, false);
+            TheLog?.LogError(-1, ex.Message, false);
+            // The following message can sometimes occur when reloading some IFC files
+            // from external resources.  In this case, we should silently fail, and not
+            // throw.
+            if (!ex.Message.Contains("Starting a new transaction is not permitted"))
+               throw;
          }
          finally
          {
-            if (Importer.TheLog != null)
-               Importer.TheLog.Close();
-            if (IFCImportFile.TheFile != null)
-               IFCImportFile.TheFile.Close();
+            TheLog?.Close();
+            IFCImportFile.TheFile?.Close();
+            TheHybridInfo = null;
+            TheLog = null;
          }
       }
 
@@ -576,14 +752,18 @@ namespace Revit.IFC.Import
          return "IFC importer";
       }
 
-      public System.Guid GetServerId()
+      /// <summary>
+      /// Returns the server id for the link service.
+      /// </summary>
+      /// <returns>The GUID representing the server id.</returns>
+      public Guid GetServerId()
       {
-         return new Guid("88743F28-A2E1-4935-949D-4DB7A724A150");
+         return new Guid(ImportAppGUID());
       }
 
-      public Autodesk.Revit.DB.ExternalService.ExternalServiceId GetServiceId()
+      public ExternalServiceId GetServiceId()
       {
-         return Autodesk.Revit.DB.ExternalService.ExternalServices.BuiltInExternalServices.IFCImporterService;
+         return ExternalServices.BuiltInExternalServices.IFCImporterService;
       }
 
       public string GetVendorId()

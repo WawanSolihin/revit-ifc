@@ -88,6 +88,21 @@ namespace Revit.IFC.Import.Utility
       }
 
       /// <summary>
+      /// Finds the value of a optional length attribute.
+      /// </summary>
+      /// <param name="handle">The entity handle.</param>
+      /// <param name="name">The name of the atribute.</param>
+      /// <returns>The length value if it exists, scaled.</returns>
+      static public double? GetOptionalScaledLengthAttribute(IFCAnyHandle handle, string name)
+      {
+         double? value = IFCAnyHandleUtil.GetDoubleAttribute(handle, name);
+         if (value.HasValue)
+            return IFCUnitUtil.ScaleLength(value.Value);
+
+         return value;
+      }
+
+      /// <summary>
       /// Finds the value of a optional normalised ratio attribute.
       /// </summary>
       /// <param name="handle">The entity handle.</param>
@@ -98,7 +113,7 @@ namespace Revit.IFC.Import.Utility
       static public double GetOptionalNormalisedRatioAttribute(IFCAnyHandle handle, string name, double defaultValue)
       {
          double? value = IFCAnyHandleUtil.GetDoubleAttribute(handle, name);
-         if (value.HasValue && (value.Value > -MathUtil.Eps()) && (value.Value < 1.0 + MathUtil.Eps()))
+         if (value.HasValue && (value.Value > -MathUtil.Eps) && (value.Value < 1.0 + MathUtil.Eps))
             return value.Value;
 
          return defaultValue;
@@ -116,7 +131,7 @@ namespace Revit.IFC.Import.Utility
       static public double GetOptionalPositiveRatioAttribute(IFCAnyHandle handle, string name, double defaultValue)
       {
          double? value = IFCAnyHandleUtil.GetDoubleAttribute(handle, name);
-         if (value.HasValue && (value.Value > MathUtil.Eps()))
+         if (value.HasValue && (value.Value > MathUtil.Eps))
             return value.Value;
 
          return defaultValue;
@@ -263,7 +278,7 @@ namespace Revit.IFC.Import.Utility
       /// <param name="handle">The entity handle.</param>
       /// <param name="name">The attribute name.</param>
       /// <param name="throwError">True if the routine should throw an exception.</param>
-      /// <returns>The attribute valu, or null if not found.</returns>
+      /// <returns>The attribute value, or null if not found.</returns>
       static public string GetRequiredStringAttribute(IFCAnyHandle handle, string name, bool throwError)
       {
          string attribute = IFCAnyHandleUtil.GetStringAttribute(handle, name);
@@ -435,32 +450,6 @@ namespace Revit.IFC.Import.Utility
             }
          }
          return outerList;
-      }
-
-      /// <summary>
-      /// Read the HasAssignments INVERSE attribute from an IfcObjectDefinition, if it is defined.
-      /// </summary>
-      /// <param name="ifcObjectDefinition">The handle assumed to be an IfcObjectDefinition.</param>
-      /// <returns>The set.</returns>
-      /// <remarks>This deals with the issue that the default IFC2x3 EXP file doesn't have this inverse attribute set.</remarks>
-      static public ISet<IFCAnyHandle> GetHasAssignments(IFCAnyHandle ifcObjectDefinition)
-      {
-         HashSet<IFCAnyHandle> hasAssignments = null;
-         if (IFCImportFile.TheFile.Options.AllowUseHasAssignments)
-         {
-            try
-            {
-               hasAssignments = IFCAnyHandleUtil.GetAggregateInstanceAttribute
-                   <HashSet<IFCAnyHandle>>(ifcObjectDefinition, "HasAssignments");
-            }
-            catch
-            {
-               IFCImportFile.TheFile.Options.AllowUseHasAssignments = false;
-               hasAssignments = null;
-            }
-         }
-
-         return hasAssignments;
       }
    }
 }

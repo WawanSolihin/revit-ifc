@@ -73,16 +73,18 @@ namespace Revit.IFC.Import.Data
 
          if (element != null)
          {
+            Category category = IFCPropertySet.GetCategoryForParameterIfValid(element, Id);
+
             // Set "ElevationWithFlooring" parameter.
-            IFCPropertySet.AddParameterDouble(doc, element, "ElevationWithFlooring", UnitType.UT_Length, ElevationWithFlooring, Id);
+            ParametersToSet.AddParameterDouble(doc, element, category, this, "ElevationWithFlooring", SpecTypeId.Length, UnitTypeId.Feet, ElevationWithFlooring, Id);
 
             // Set "PredefinedType" parameter.
             if (PredefinedType != null)
             {
-               if (IFCImportFile.TheFile.SchemaVersion < IFCSchemaVersion.IFC4)
-                  IFCPropertySet.AddParameterString(doc, element, "InteriorOrExteriorSpace", PredefinedType, Id);
+               if (IFCImportFile.TheFile.SchemaVersionAtLeast(IFCSchemaVersion.IFC4Obsolete))
+                  ParametersToSet.AddStringParameter(doc, element, category, this, "PredefinedType", PredefinedType, Id);
                else
-                  IFCPropertySet.AddParameterString(doc, element, "PredefinedType", PredefinedType, Id);
+                  ParametersToSet.AddStringParameter(doc, element, category, this, "InteriorOrExteriorSpace", PredefinedType, Id);
             }
 
             // Set "IfcZone" parameter.
@@ -103,7 +105,7 @@ namespace Revit.IFC.Import.Data
             }
 
             if (zoneNames != null)
-               IFCPropertySet.AddParameterString(doc, element, "IfcZone", zoneNames, Id);
+               ParametersToSet.AddStringParameter(doc, element, category, this, "IfcZone", zoneNames, Id);
          }
       }
 
@@ -119,10 +121,10 @@ namespace Revit.IFC.Import.Data
          try
          {
             // We won't bother validating the return values, since we are storing them as a string.
-            if (IFCImportFile.TheFile.SchemaVersion < IFCSchemaVersion.IFC4)
-               predefinedType = IFCAnyHandleUtil.GetEnumerationAttribute(ifcSpace, "InteriorOrExteriorSpace");
-            else
+            if (IFCImportFile.TheFile.SchemaVersionAtLeast(IFCSchemaVersion.IFC4Obsolete))
                predefinedType = IFCAnyHandleUtil.GetEnumerationAttribute(ifcSpace, "PredefinedType");
+            else
+               predefinedType = IFCAnyHandleUtil.GetEnumerationAttribute(ifcSpace, "InteriorOrExteriorSpace");
          }
          catch
          {

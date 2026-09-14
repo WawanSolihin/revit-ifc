@@ -17,14 +17,11 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 //
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
 using Revit.IFC.Common.Utility;
 using Revit.IFC.Export.Utility;
+using System;
 
 namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
 {
@@ -36,7 +33,7 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// <summary>
       /// A double variable to keep the calculated value.
       /// </summary>
-      private double m_Slope = 0;
+      private double? m_Slope = null;
 
       /// <summary>
       /// A static instance of this class.
@@ -55,32 +52,30 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// Calculates slope value.
       /// </summary>
       /// <param name="exporterIFC">The ExporterIFC object.</param>
-      /// <param name="extrusionCreationData">The IFCExtrusionCreationData.</param>
+      /// <param name="extrusionCreationData">The IFCExportBodyParams.</param>
       /// <param name="element">The element to calculate the value.</param>
       /// <param name="elementType">The element type.</param>
       /// <returns>True if the operation succeed, false otherwise.</returns>
-      public override bool Calculate(ExporterIFC exporterIFC, IFCExtrusionCreationData extrusionCreationData, Element element, ElementType elementType)
+      public override bool Calculate(ExporterIFC exporterIFC, IFCAnyHandle handle, IFCExportBodyParams extrusionCreationData, Element element, ElementType elementType, EntryMap entryMap)
       {
+         ElementId elementId = element.Id;
+         double slope = double.NaN;
          // We may have an extrusionCreationData that doesn't have anything set.  We will check this by seeing if there is a valid length set.
          // This works for Beam 
          if (extrusionCreationData == null || MathUtil.IsAlmostZero(extrusionCreationData.ScaledLength))
          {
             // Try looking for parameters that we can calculate slope from.
-            double startParamHeight = 0.0;
-            double endParamHeight = 0.0;
-            double length = 0.0;
-
-            if ((ParameterUtil.GetDoubleValueFromElement(element, BuiltInParameter.STRUCTURAL_BEAM_END0_ELEVATION, out startParamHeight) != null) &&
-               (ParameterUtil.GetDoubleValueFromElement(element, BuiltInParameter.STRUCTURAL_BEAM_END1_ELEVATION, out endParamHeight) != null) &&
-               (ParameterUtil.GetDoubleValueFromElement(element, BuiltInParameter.INSTANCE_LENGTH_PARAM, out length) != null))
+            if (ParameterUtil.TryGetDoubleValueFromElement(elementId, BuiltInParameter.STRUCTURAL_BEAM_END0_ELEVATION) is double startParamHeight &&
+                ParameterUtil.TryGetDoubleValueFromElement(elementId, BuiltInParameter.STRUCTURAL_BEAM_END1_ELEVATION) is double endParamHeight &&
+                ParameterUtil.TryGetDoubleValueFromElement(elementId, BuiltInParameter.INSTANCE_LENGTH_PARAM) is double length)
             {
                if (!MathUtil.IsAlmostZero(length))
                {
                   double factor = Math.Abs(endParamHeight - startParamHeight) / length;
-                  double tempSlope = UnitUtil.ScaleAngle(MathUtil.SafeAsin(factor));
-                  if (!Double.IsNaN(tempSlope))
+                  slope = UnitUtil.ScaleAngle(MathUtil.SafeAsin(factor));
+                  if (!double.IsNaN(slope))
                   {
-                     m_Slope = tempSlope;
+                     m_Slope = slope;
                      return true;
                   }
                }
@@ -88,28 +83,48 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
          }
 
          // This works for Ramp/RampFlight
-         double slope = 0.0;
-         if (ParameterUtil.GetDoubleValueFromElement(element, BuiltInParameter.RAMP_ATTR_MIN_INV_SLOPE, out slope) != null)
+         if (ParameterUtil.TryGetDoubleValueFromElement(elementId, BuiltInParameter.RAMP_ATTR_MIN_INV_SLOPE) is double slopeVal)
          {
-            m_Slope = slope;
-
-            if (!MathUtil.IsAlmostZero(m_Slope))
-            {
-               m_Slope = UnitUtil.ScaleAngle(Math.Atan(m_Slope));
-               return true;
-            }
+            m_Slope = UnitUtil.ScaleAngle(Math.Atan(slopeVal));
+            return true;
          }
 
          // For other elements with ExtrusionData. Parameter will take precedence (override)
-         ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "Slope", out m_Slope);
-         m_Slope = UnitUtil.ScaleAngle(m_Slope);
-         if (m_Slope > MathUtil.Eps())
+         (EvaluatedParameter parameter, slopeVal) = ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "Slope");
+         if (parameter != null)
+         {
+            m_Slope = UnitUtil.ScaleAngle(Math.Atan(slopeVal));
             return true;
+         }
 
          if (extrusionCreationData != null)
          {
-            m_Slope = extrusionCreationData.Slope;
-            return true;
+            if (extrusionCreationData.Slope > MathUtil.Eps)
+            {
+               m_Slope = extrusionCreationData.Slope;
+               return true;
+            }
+            else
+            {
+               // For any element that has axis, the slope will be computed based on the angle of the line vector
+               if (element.Location != null && element.Location is LocationCurve)
+               {
+                  LocationCurve axis = element.Location as LocationCurve;
+                  if (axis.Curve is Line)
+                  {
+                     Line axisCurve = axis.Curve as Line;
+                     XYZ vectorProjOnXY = new XYZ(axisCurve.Direction.X, axisCurve.Direction.Y, 0.0).Normalize(); //Project the vector to XY plane
+                     if (axisCurve.Direction.GetLength() > 0.0 && vectorProjOnXY.GetLength() > 0.0)
+                        slope = UnitUtil.ScaleAngle(MathUtil.SafeAcos(axisCurve.Direction.DotProduct(vectorProjOnXY) / (axisCurve.Direction.GetLength() * vectorProjOnXY.GetLength())));
+
+                     if (!double.IsNaN(slope))
+                     {
+                        m_Slope = slope;
+                        return true;
+                     }
+                  }
+               }
+            }
          }
 
          // The last attempt to compute the slope angle is to get the slope of the largest top facing face of the geometry
@@ -128,8 +143,12 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
          {
             XYZ faceNormal = largestTopFace.ComputeNormal(new UV());
             XYZ faceNormalProjXYPlane = new XYZ(faceNormal.X, faceNormal.Y, 0.0).Normalize();
-            m_Slope = GeometryUtil.GetAngleOfFace(largestTopFace, faceNormalProjXYPlane);
-            return true;
+            slope = GeometryUtil.GetAngleOfFace(largestTopFace, faceNormalProjXYPlane);
+            if (!double.IsNaN(slope))
+            {
+               m_Slope = slope;
+               return true;
+            }
          }
 
          return false;
@@ -143,7 +162,10 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// </returns>
       public override double GetDoubleValue()
       {
-         return m_Slope;
+         if (m_Slope.HasValue)
+            return m_Slope.Value;
+         else
+            return 0.0;
       }
    }
 

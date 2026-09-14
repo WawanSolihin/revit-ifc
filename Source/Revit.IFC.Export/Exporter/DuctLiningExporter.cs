@@ -17,17 +17,14 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 //
 
-using System;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
 using Revit.IFC.Export.Utility;
-using Revit.IFC.Export.Toolkit;
-using Revit.IFC.Common.Utility;
 
 namespace Revit.IFC.Export.Exporter
 {
    /// <summary>
-   /// Provides methods to export a Revit element as IfcCovering of type WRAPPING.
+   /// Provides methods to export a Revit lining element.
    /// </summary>
    class DuctLiningExporter
    {
@@ -42,57 +39,7 @@ namespace Revit.IFC.Export.Exporter
       public static bool ExportDuctLining(ExporterIFC exporterIFC, Element element,
           GeometryElement geometryElement, ProductWrapper productWrapper)
       {
-         if (element == null || geometryElement == null)
-            return false;
-
-         // Check the intended IFC entity or type name is in the exclude list specified in the UI
-         Common.Enums.IFCEntityType elementClassTypeEnum = Common.Enums.IFCEntityType.IfcCovering;
-         if (ExporterCacheManager.ExportOptionsCache.IsElementInExcludeList(elementClassTypeEnum))
-            return false;
-
-         IFCFile file = exporterIFC.GetFile();
-
-         using (IFCTransaction tr = new IFCTransaction(file))
-         {
-            // Check for containment override
-            IFCAnyHandle overrideContainer = null;
-            ElementId overrideContainerId = ParameterUtil.OverrideContainmentParameter(exporterIFC, element, out overrideContainer);
-
-            using (PlacementSetter placementSetter = PlacementSetter.Create(exporterIFC, element, null, null, overrideContainerId, overrideContainer))
-            {
-               using (IFCExtrusionCreationData ecData = new IFCExtrusionCreationData())
-               {
-                  ecData.SetLocalPlacement(placementSetter.LocalPlacement);
-
-                  ElementId categoryId = CategoryUtil.GetSafeCategoryId(element);
-
-                  BodyExporterOptions bodyExporterOptions = new BodyExporterOptions(true, ExportOptionsCache.ExportTessellationLevel.ExtraLow);
-                  IFCAnyHandle representation = RepresentationUtil.CreateAppropriateProductDefinitionShape(exporterIFC, element,
-                      categoryId, geometryElement, bodyExporterOptions, null, ecData, true);
-
-                  if (IFCAnyHandleUtil.IsNullOrHasNoValue(representation))
-                  {
-                     ecData.ClearOpenings();
-                     return false;
-                  }
-
-                  string guid = GUIDUtil.CreateGUID(element);
-                  IFCAnyHandle ownerHistory = ExporterCacheManager.OwnerHistoryHandle;
-                  IFCAnyHandle localPlacement = ecData.GetLocalPlacement();
-
-                  IFCAnyHandle ductLining = IFCInstanceExporter.CreateCovering(exporterIFC, element, guid,
-                      ownerHistory, localPlacement, representation, "Wrapping");
-                  ExporterCacheManager.ElementToHandleCache.Register(element.Id, ductLining);
-
-                  productWrapper.AddElement(element, ductLining, placementSetter.LevelInfo, ecData, true);
-
-                  ElementId matId = BodyExporter.GetBestMaterialIdFromGeometryOrParameter(geometryElement, exporterIFC, element);
-                  CategoryUtil.CreateMaterialAssociation(exporterIFC, ductLining, matId);
-               }
-            }
-            tr.Commit();
-            return true;
-         }
+         return GenericElementExporter.ExportElement(exporterIFC, element, geometryElement, productWrapper);
       }
    }
 }

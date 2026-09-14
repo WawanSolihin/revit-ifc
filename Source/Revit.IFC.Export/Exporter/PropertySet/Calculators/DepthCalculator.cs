@@ -25,6 +25,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
 using Autodesk.Revit.DB.Structure;
 using Revit.IFC.Common.Utility;
+using Revit.IFC.Common.Enums;
 using Revit.IFC.Export.Utility;
 
 namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
@@ -56,25 +57,39 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// Calculates the depth of a provision for void.
       /// </summary>
       /// <param name="exporterIFC">The ExporterIFC object.</param>
-      /// <param name="extrusionCreationData">The IFCExtrusionCreationData.</param>
+      /// <param name="extrusionCreationData">The IFCExportBodyParams.</param>
       /// <param name="element">The element to calculate the value.</param>
       /// <param name="elementType">The element type.</param>
       /// <returns>
       /// True if the operation succeed, false otherwise.
       /// </returns>
-      public override bool Calculate(ExporterIFC exporterIFC, IFCExtrusionCreationData extrusionCreationData, Element element, ElementType elementType)
+      public override bool Calculate(ExporterIFC exporterIFC, IFCAnyHandle handle, IFCExportBodyParams extrusionCreationData, Element element, ElementType elementType, EntryMap entryMap)
       {
-         if (ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "IfcQtyDepth", out m_Depth) == null)
-               ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "Depth", out m_Depth);
-         m_Depth = UnitUtil.ScaleLength(m_Depth);
-         if (m_Depth > MathUtil.Eps() * MathUtil.Eps())
-            return true;
+         if (ParameterUtil.TryGetDoubleValueFromElementOrSymbol(element, entryMap.RevitParameterName,
+            entryMap.CompatibleRevitParameterName, "IfcQtyDepth") is double depth)
+         {
+            if (depth > MathUtil.Eps)
+            {
+               m_Depth = UnitUtil.ScaleLength(depth);
+               return true;
+            }
+         }
 
          if (extrusionCreationData == null)
-               return false;
+            return false;
 
-         m_Depth = extrusionCreationData.ScaledLength;
-         return (m_Depth > MathUtil.Eps());
+         // For Slab, Depth is equal to the extrusion length (from ScaledLength)
+         IFCAnyHandle hnd = ExporterCacheManager.ElementToHandleCache.Find(element.Id);
+         if (IFCAnyHandleUtil.IsSubTypeOf(hnd, IFCEntityType.IfcSlab))
+         {
+            m_Depth = extrusionCreationData.ScaledLength;
+         }
+         else
+         {
+            m_Depth = extrusionCreationData.ScaledHeight;
+         }
+
+         return m_Depth > MathUtil.Eps;
       }
 
       /// <summary>

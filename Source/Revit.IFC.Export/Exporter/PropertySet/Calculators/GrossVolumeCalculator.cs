@@ -17,10 +17,7 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 //
 
-using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
 using Revit.IFC.Export.Utility;
@@ -39,62 +36,92 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       private double m_Volume = 0;
 
       /// <summary>
-      /// A static instance of this class.
-      /// </summary>
-      static GrossVolumeCalculator s_Instance = new GrossVolumeCalculator();
-
-      /// <summary>
       /// The SlabGrossVolumeCalculator instance.
       /// </summary>
-      public static GrossVolumeCalculator Instance
-      {
-         get { return s_Instance; }
-      }
+      public static GrossVolumeCalculator Instance { get; } = new GrossVolumeCalculator();
 
       /// <summary>
       /// Calculates gross volume.
       /// </summary>
-      /// <param name="exporterIFC">
-      /// The ExporterIFC object.
-      /// </param>
-      /// <param name="extrusionCreationData">
-      /// The IFCExtrusionCreationData.
-      /// </param>
-      /// <param name="element">
-      /// The element to calculate the value.
-      /// </param>
-      /// <param name="elementType">
-      /// The element type.
-      /// </param>
-      /// <returns>
-      /// True if the operation succeed, false otherwise.
-      /// </returns>
-      public override bool Calculate(ExporterIFC exporterIFC, IFCExtrusionCreationData extrusionCreationData, Element element, ElementType elementType)
+      /// <param name="exporterIFC">The ExporterIFC object.</param>
+      /// <param name="extrusionCreationData">The IFCExportBodyParams.</param>
+      /// <param name="element">The element to calculate the value.</param>
+      /// <param name="elementType">The element type.</param>
+      /// <returns>True if the operation succeeded, false otherwise.</returns>
+      public override bool Calculate(ExporterIFC exporterIFC, IFCAnyHandle handle, IFCExportBodyParams extrusionCreationData, Element element, ElementType elementType, EntryMap entryMap)
       {
-         if (ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "IfcQtyGrossVolume", out m_Volume) == null)
-               ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "GrossVolume", out m_Volume);
-         m_Volume = UnitUtil.ScaleVolume(m_Volume);
-         if (m_Volume > MathUtil.Eps() * MathUtil.Eps() * MathUtil.Eps())
+         const double volumeEps = MathUtil.Eps * MathUtil.Eps * MathUtil.Eps;
+         if (ParameterUtil.TryGetDoubleValueFromElementOrSymbol(element, entryMap.RevitParameterName, entryMap.CompatibleRevitParameterName, 
+            "IfcQtyGrossVolume") is double volume)
+         {
+            if (volume > volumeEps)
+            {
+               m_Volume = UnitUtil.ScaleVolume(volume);
+               return true;
+            }
+         }
+
+         m_Volume = UnitUtil.ScaleVolume(CalculateSpatialElementGrossVolume(element as SpatialElement, extrusionCreationData));
+         if (m_Volume > volumeEps)
             return true;
 
          if (extrusionCreationData == null)
             return false;
 
-         double area = extrusionCreationData.ScaledArea;
-         double length = extrusionCreationData.ScaledLength;
-         m_Volume = area * length;
-         if (m_Volume > MathUtil.Eps() * MathUtil.Eps() * MathUtil.Eps())
-            return true;
+         // While it would be unlikely that area and volume have different base length units,
+         // it is still safer to unscale and rescale the results.  For length, it is somewhat
+         // common to have mm as the length unit and m^3 as the volume unit.
+         double area = UnitUtil.UnscaleArea(extrusionCreationData.ScaledArea);
+         double length = UnitUtil.UnscaleLength(extrusionCreationData.ScaledLength);
+         m_Volume = UnitUtil.ScaleVolume(area * length);
+         return m_Volume > volumeEps;
+      }
 
-         return false;
+      private double CalculateSpatialElementGrossVolume(SpatialElement spatialElement, IFCExportBodyParams extrusionCreationData)
+      {
+         double area = 0.0;
+
+         if (spatialElement == null || extrusionCreationData == null)
+            return area;
+
+         // Get the outer boundary loops of the SpatialElement.
+         IList<IList<BoundarySegment>> boundaryLoops = spatialElement.GetBoundarySegments(new SpatialElementBoundaryOptions());
+
+         //Search for a outer loop with the largest area.
+         foreach (IList<BoundarySegment> boundaryLoop in boundaryLoops)
+         {
+            CurveLoop curveLoop = new CurveLoop();
+            foreach (BoundarySegment boundarySegment in boundaryLoop)
+            {
+               try
+               {
+                  Curve curve = boundarySegment.GetCurve();
+                  curveLoop.Append(curve);
+               }
+               catch (Autodesk.Revit.Exceptions.ArgumentException)
+               {
+                  //For some special cases, BoundarySegments of the element are not valid for CurveLoop creation
+                  //(curveLoop.Append(curve) throws exception because "This curve will make the loop discontinuous.") 
+
+                  return 0.0;
+               }
+            }
+
+            double loopArea = ExporterIFCUtils.ComputeAreaOfCurveLoops(new List<CurveLoop>() { curveLoop });
+
+            if (area < loopArea)
+               area = loopArea;
+         }
+
+         double length = UnitUtil.UnscaleLength(extrusionCreationData.ScaledLength);
+
+         return area * length;
       }
 
       /// <summary>
       /// Gets the calculated double value.
       /// </summary>
-      /// <returns>
-      /// The double value.
-      /// </returns>
+      /// <returns>The calculated volume.</returns>
       public override double GetDoubleValue()
       {
          return m_Volume;

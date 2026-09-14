@@ -126,14 +126,13 @@ namespace Revit.IFC.Import.Data
       /// Return geometry for a particular representation item.
       /// </summary>
       /// <param name="shapeEditScope">The geometry creation scope.</param>
-      /// <param name="lcs">Local coordinate system for the geometry, without scale.</param>
       /// <param name="scaledLcs">Local coordinate system for the geometry, including scale, potentially non-uniform.</param>
       /// <param name="guid">The guid of an element for which represntation is being created.</param>
       /// <returns>The created geometry.</returns>
       public IList<GeometryObject> CreateGeometry(
-            IFCImportShapeEditScope shapeEditScope, Transform lcs, Transform scaledLcs, string guid)
+            IFCImportShapeEditScope shapeEditScope, Transform scaledLcs, string guid)
       {
-         IList<GeometryObject> firstSolids = FirstOperand.CreateGeometry(shapeEditScope, lcs, scaledLcs, guid);
+         IList<GeometryObject> firstSolids = FirstOperand.CreateGeometry(shapeEditScope, scaledLcs, guid);
 
          if (firstSolids != null)
          {
@@ -162,7 +161,7 @@ namespace Revit.IFC.Import.Data
                   using (IFCImportShapeEditScope.IFCMaterialStack stack =
                       new IFCImportShapeEditScope.IFCMaterialStack(shapeEditScope, firstOperandStyledItem, null))
                   {
-                     secondSolids = SecondOperand.CreateGeometry(shapeEditScope, lcs, scaledLcs, guid);
+                     secondSolids = SecondOperand.CreateGeometry(shapeEditScope, scaledLcs, guid);
                   }
                }
             }
@@ -173,7 +172,7 @@ namespace Revit.IFC.Import.Data
                if (SecondOperand is IFCRepresentationItem)
                   Importer.TheLog.LogError((SecondOperand as IFCRepresentationItem).Id, ex.Message, false);
                else
-                  throw ex;
+                  throw;
                secondSolids = null;
             }
          }
@@ -215,7 +214,7 @@ namespace Revit.IFC.Import.Data
                Solid resultSolid = (firstSolid as Solid);
 
                int secondId = (SecondOperand == null) ? -1 : (SecondOperand as IFCRepresentationItem).Id;
-               XYZ suggestedShiftDirection = (SecondOperand == null) ? null : SecondOperand.GetSuggestedShiftDirection(lcs);
+               XYZ suggestedShiftDirection = GetSuggestedShiftDirection(scaledLcs);
                foreach (GeometryObject secondSolid in secondSolids)
                {
                   resultSolid = IFCGeometryUtil.ExecuteSafeBooleanOperation(Id, secondId, resultSolid, secondSolid as Solid, booleanOperationsType, suggestedShiftDirection);
@@ -232,29 +231,16 @@ namespace Revit.IFC.Import.Data
       }
 
       /// <summary>
-      /// In case of a Boolean operation failure, provide a recommended direction to shift the geometry in for a second attempt.
-      /// </summary>
-      /// <param name="lcs">The local transform for this entity.</param>
-      /// <returns>An XYZ representing a unit direction vector, or null if no direction is suggested.</returns>
-      /// <remarks>If the 2nd attempt fails, a third attempt will be done with a shift in the opposite direction.</remarks>
-      public XYZ GetSuggestedShiftDirection(Transform lcs)
-      {
-         // Sub-classes may have a better guess.
-         return null;
-      }
-
-      /// <summary>
       /// Create geometry for a particular representation item, and add to scope.
       /// </summary>
       /// <param name="shapeEditScope">The geometry creation scope.</param>
-      /// <param name="lcs">Local coordinate system for the geometry, without scale.</param>
       /// <param name="scaledLcs">Local coordinate system for the geometry, including scale, potentially non-uniform.</param>
       /// <param name="guid">The guid of an element for which represntation is being created.</param>
-      protected override void CreateShapeInternal(IFCImportShapeEditScope shapeEditScope, Transform lcs, Transform scaledLcs, string guid)
+      protected override void CreateShapeInternal(IFCImportShapeEditScope shapeEditScope, Transform scaledLcs, string guid)
       {
-         base.CreateShapeInternal(shapeEditScope, lcs, scaledLcs, guid);
+         base.CreateShapeInternal(shapeEditScope, scaledLcs, guid);
 
-         IList<GeometryObject> resultGeometries = CreateGeometry(shapeEditScope, lcs, scaledLcs, guid);
+         IList<GeometryObject> resultGeometries = CreateGeometry(shapeEditScope, scaledLcs, guid);
          if (resultGeometries != null)
          {
             foreach (GeometryObject resultGeometry in resultGeometries)
@@ -286,6 +272,21 @@ namespace Revit.IFC.Import.Data
          if (!IFCImportFile.TheFile.EntityMap.TryGetValue(ifcBooleanResult.StepId, out booleanResult))
             booleanResult = new IFCBooleanResult(ifcBooleanResult);
          return (booleanResult as IFCBooleanResult);
+      }
+
+      /// <summary>
+      /// In case of a Boolean operation failure, provide a recommended direction to shift the geometry in for a second attempt.
+      /// </summary>
+      /// <param name="lcs">The local transform for this entity.</param>
+      /// <returns>An XYZ representing a unit direction vector, or null if no direction is suggested.</returns>
+      /// <remarks>If the 2nd attempt fails, a third attempt will be done with a shift in the opposite direction.</remarks>
+      public XYZ GetSuggestedShiftDirection(Transform lcs)
+      {
+         XYZ suggestedXYZ = (SecondOperand == null) ? null : SecondOperand.GetSuggestedShiftDirection(lcs);
+         if (suggestedXYZ == null)
+            suggestedXYZ = (FirstOperand == null) ? null : FirstOperand.GetSuggestedShiftDirection(lcs);
+         return suggestedXYZ;
+
       }
    }
 }

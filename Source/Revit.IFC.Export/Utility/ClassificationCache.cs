@@ -19,82 +19,197 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
+using Revit.IFC.Common.Enums;
 using Revit.IFC.Common.Extensions;
-using Revit.IFC.Export.Exporter;
 using Revit.IFC.Export.Toolkit;
 
 namespace Revit.IFC.Export.Utility
 {
    /// <summary>
+   /// A structure to hold the key for the classification reference dictionary.
+   /// </summary>
+   public class ClassificationReferenceKey : IComparable<ClassificationReferenceKey>
+   {
+      private int CompareStrings(string first, string second)
+      {
+         return (first ?? string.Empty).CompareTo(second ?? string.Empty);
+      }
+
+      public int CompareTo(ClassificationReferenceKey other)
+      {
+         // If other is not a valid object reference, this instance is greater.
+         if (other == null) 
+            return 1;
+
+         int myReferencedSourceId = ReferencedSource?.Id ?? -1;
+         int otherReferencedSourceId = other.ReferencedSource?.Id ?? -1;
+         if (myReferencedSourceId != otherReferencedSourceId)
+            return (myReferencedSourceId < otherReferencedSourceId) ? -1 : 1;
+
+         int compVal;
+         if ((compVal = CompareStrings(Name, other.Name)) != 0)
+            return compVal;
+         if ((compVal = CompareStrings(Location, other.Location)) != 0)
+            return compVal;
+         if ((compVal = CompareStrings(ItemReference, other.ItemReference)) != 0)
+            return compVal;
+         return CompareStrings(Description, other.Description);
+      }
+
+      /// <summary>
+      /// The classification reference location.
+      /// </summary>
+      public string Location { get; set; } = null;
+
+      /// <summary>
+      /// The classification reference item reference.
+      /// </summary>
+      public string ItemReference { get; set; } = null;
+
+      /// <summary>
+      /// The classification reference name.
+      /// </summary>
+      public string Name { get; set; } = null;
+
+      /// <summary>
+      /// The classification reference description.
+      /// </summary>
+      public string Description { get; set; } = null;
+
+      /// <summary>
+      /// The classification reference referenced source.
+      /// </summary>
+      public IFCAnyHandle ReferencedSource { get; set; } = null;
+
+      /// <summary>
+      /// The default constructor.
+      /// </summary>
+      public ClassificationReferenceKey(string location, string itemReference, string name,
+         string description, IFCAnyHandle referencedSource)
+      {
+         Location = location;
+         ItemReference = itemReference;
+         Name = name;
+         Description = description;
+         ReferencedSource = referencedSource;
+      }
+   };
+
+   public class ClassificationCacheInfo
+   {
+      public ClassificationCacheInfo(string globalId, string name, 
+         string description, HashSet<IFCAnyHandle> relatedObjects)
+      {
+         GlobalId = globalId;
+         Name = name;
+         Description = description;
+         RelatedObjects = relatedObjects;
+      }
+
+      public string GlobalId { get; set; } = null;
+
+      public string Name { get; set; } = null;
+
+      public string Description { get; set; } = null;
+
+      public HashSet<IFCAnyHandle> RelatedObjects { get; set; } = null;
+   }
+
+   /// <summary>
    /// Used to keep a cache of the created IfcClassifications.
    /// </summary>
    public class ClassificationCache
    {
-      private bool m_UniformatOverridden = false;
-      public bool UniformatOverriden { get { return m_UniformatOverridden; } }
-
-      private IDictionary<string, IFCAnyHandle> m_ClassificationHandles = null;
+      public bool UniformatOverridden { get; private set; } = false;
 
       /// <summary>
       /// The map of classification names to the IfcClassification handles.
       /// </summary>
-      public IDictionary<string, IFCAnyHandle> ClassificationHandles
-      {
-         get
-         {
-            if (m_ClassificationHandles == null)
-               m_ClassificationHandles = new Dictionary<string, IFCAnyHandle>();
-            return m_ClassificationHandles;
-         }
-      }
+      public SortedDictionary<string, IFCAnyHandle> ClassificationHandles { get; } = [];
 
-      private IDictionary<string, IFCClassification> m_ClassificationsByName = null;
+      /// <summary>
+      /// The map of classification references to the related objects.
+      /// </summary>
+      public Dictionary<IFCAnyHandle, ClassificationCacheInfo> ClassificationRelations { get; } = [];
+
+      public SortedDictionary<ClassificationReferenceKey, IFCAnyHandle> ClassificationReferenceHandles { get; } = [];
 
       /// <summary>
       /// The list of defined classifications, sorted by name.
       /// </summary>
-      public IDictionary<string, IFCClassification> ClassificationsByName
-      {
-         get
-         {
-            if (m_ClassificationsByName == null)
-               m_ClassificationsByName = new Dictionary<string, IFCClassification>();
-            return m_ClassificationsByName;
-         }
-      }
-
-      private IList<string> m_CustomClassificationCodeNames = null;
+      public Dictionary<string, IFCClassification> ClassificationsByName { get; } = [];
 
       /// <summary>
       /// The names of the shared parameters used to defined custom classifications.
       /// </summary>
-      public IList<string> CustomClassificationCodeNames
-      {
-         get
-         {
-            if (m_CustomClassificationCodeNames == null)
-               m_CustomClassificationCodeNames = new List<string>();
-            return m_CustomClassificationCodeNames;
-         }
-      }
-
-      private IDictionary<string, string> m_FieldNameToClassificationNames = null;
+      public List<string> CustomClassificationCodeNames { get; } = [];
 
       /// <summary>
       /// The map of shared parameter field name to the corresponding classification name.
       /// </summary>
-      public IDictionary<string, string> FieldNameToClassificationNames
+      public Dictionary<string, string> FieldNameToClassificationNames { get; } = [];
+
+      public IFCAnyHandle FindOrCreateClassificationReference(IFCFile file, 
+         ClassificationReferenceKey key)
       {
-         get
+         if (!ClassificationReferenceHandles.TryGetValue(key, out IFCAnyHandle classificationReference))
          {
-            if (m_FieldNameToClassificationNames == null)
-               m_FieldNameToClassificationNames = new Dictionary<string, string>();
-            return m_FieldNameToClassificationNames;
+            classificationReference = IFCInstanceExporter.CreateClassificationReference(file,
+              key.Location, key.ItemReference, key.Name, key.Description, key.ReferencedSource);
+
+            ClassificationReferenceHandles[key] = classificationReference;
          }
+
+         return classificationReference;
+      }
+
+      public IFCAnyHandle AddRelation(IFCFile file, ClassificationReferenceKey key,
+         string relGuid, string relationName, IFCAnyHandle relatedObject)
+      {
+         IFCAnyHandle classificationReference = FindOrCreateClassificationReference(file, key);
+         AddRelation(classificationReference, relGuid, key.Name, key.ItemReference,
+            new HashSet<IFCAnyHandle>() { relatedObject });
+         return classificationReference;
+      }
+
+      public void AddRelation(IFCAnyHandle classificationReference, string guid, 
+         string keyName, string keyReference, ISet<IFCAnyHandle> relatedObject)
+      {
+         if (!ClassificationRelations.TryGetValue(classificationReference, out var relations))
+         {
+            bool hasKeyName = !string.IsNullOrWhiteSpace(keyName);
+            bool hasKeyReference = !string.IsNullOrWhiteSpace(keyReference);
+            string relName = hasKeyName ? keyName : keyReference;
+            string relDescription = (hasKeyName ? keyName : string.Empty) + 
+               ((hasKeyName || hasKeyReference) ? ":" : string.Empty) + 
+               (hasKeyReference ? keyReference : string.Empty);
+            relations = new ClassificationCacheInfo(guid, relName, relDescription,
+               new HashSet<IFCAnyHandle>());
+            ClassificationRelations[classificationReference] = relations;
+         }
+         relations.RelatedObjects.UnionWith(relatedObject);
+      }
+
+      private bool m_BimStandardsCacheInitialized = false;
+
+      private string m_BimStandardsCache = null;
+
+      public string GetBIMStandardsURL(Element element)
+      {
+         if (!m_BimStandardsCacheInitialized)
+         {
+            m_BimStandardsCacheInitialized = true;
+
+            ProjectInfo projectInfo = element?.Document?.ProjectInformation;
+            if (projectInfo != null)
+            {
+               (_, m_BimStandardsCache) = ParameterUtil.GetStringValueFromElement(projectInfo, false, "BIM Standards URL");
+            }
+         }
+
+         return m_BimStandardsCache;
       }
 
       /// <summary>
@@ -120,7 +235,7 @@ namespace Revit.IFC.Export.Utility
                      // found [<Classification Field Names>]
                      string classificationFieldName = splitResult[ii].Trim();
                      if (string.Compare("Assembly Code", classificationFieldName, true) == 0)
-                        m_UniformatOverridden = true;
+                        UniformatOverridden = true;
                      CustomClassificationCodeNames.Add(classificationFieldName);
                      if (classificationHasName)
                         FieldNameToClassificationNames[classificationFieldName] = classification.ClassificationName;

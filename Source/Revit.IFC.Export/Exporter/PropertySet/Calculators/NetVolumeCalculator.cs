@@ -58,7 +58,7 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// The ExporterIFC object.
       /// </param>
       /// <param name="extrusionCreationData">
-      /// The IFCExtrusionCreationData.
+      /// The IFCExportBodyParams.
       /// </param>
       /// <param name="element">
       /// The element to calculate the value.
@@ -69,8 +69,18 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
       /// <returns>
       /// True if the operation succeed, false otherwise.
       /// </returns>
-      public override bool Calculate(ExporterIFC exporterIFC, IFCExtrusionCreationData extrusionCreationData, Element element, ElementType elementType)
+      public override bool Calculate(ExporterIFC exporterIFC, IFCAnyHandle handle, IFCExportBodyParams extrusionCreationData, Element element, ElementType elementType, EntryMap entryMap)
       {
+         const double volumeEps = MathUtil.Eps * MathUtil.Eps * MathUtil.Eps;
+
+         (_, m_Volume) = ParameterUtil.GetDoubleValueFromElementOrSymbol(element, entryMap.RevitParameterName, 
+            entryMap.CompatibleRevitParameterName, "IfcQtyNetVolume");
+         if (m_Volume > volumeEps)
+         {
+            m_Volume = UnitUtil.ScaleVolume(m_Volume);
+            return true;
+         }
+
          double vol = 0;
          SolidMeshGeometryInfo geomInfo = GeometryUtil.GetSolidMeshGeometry(element);
          if (geomInfo.SolidsCount() > 0)
@@ -97,18 +107,7 @@ namespace Revit.IFC.Export.Exporter.PropertySet.Calculators
          }
 
          m_Volume = UnitUtil.ScaleVolume(vol);
-         if (m_Volume < MathUtil.Eps() * MathUtil.Eps() || m_Volume < MathUtil.Eps())
-         {
-            if (ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "IfcQtyNetVolume", out m_Volume) == null)
-               ParameterUtil.GetDoubleValueFromElementOrSymbol(element, "NetVolume", out m_Volume);
-            m_Volume = UnitUtil.ScaleVolume(m_Volume);
-            if (m_Volume < MathUtil.Eps())
-               return false;
-            else
-               return true;
-         }
-         else
-            return true;
+         return m_Volume > volumeEps;
       }
 
       /// <summary>

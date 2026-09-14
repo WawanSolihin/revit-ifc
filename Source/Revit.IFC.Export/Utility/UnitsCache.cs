@@ -23,101 +23,251 @@ using System.Linq;
 using System.Text;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
+using Revit.IFC.Common.Utility;
 using Revit.IFC.Export.Exporter;
+using Revit.IFC.Export.Exporter.PropertySet;
 using Revit.IFC.Export.Toolkit;
 
 namespace Revit.IFC.Export.Utility
 {
    /// <summary>
+   /// The class contains information about created and mapped unit.
+   /// </summary>
+   public class UnitInfo
+   {
+      public UnitInfo(IFCAnyHandle handle, double scaleFactor, double offset)
+      {
+         Handle = handle;
+         ScaleFactor = scaleFactor;
+         Offset = offset;
+      }
+
+      public IFCAnyHandle Handle { get; private set; } = null;
+      public double ScaleFactor { get; private set; } = 1.0;
+      public double Offset { get; private set; } = 0.0;
+   }
+
+
+   /// <summary>
    /// Used to keep a cache of the created IfcUnits.
    /// </summary>
-   public class UnitsCache : Dictionary<string, IFCAnyHandle>
+   public class UnitsCache
    {
-      Dictionary<UnitType, Tuple<IFCAnyHandle, double, double>> m_UnitConversionTable =
-          new Dictionary<UnitType, Tuple<IFCAnyHandle, double, double>>();
+      Dictionary<NamingUtil.IFCStringKey, IFCAnyHandle> UnitsByName { get; set; } = new();
 
+      /// <summary>
+      /// The dictionary mapping from Revit data type (SpecTypeId)
+      /// to created ifc unit handle with convesion values (scale and offset). 
+      /// </summary>
+      Dictionary<ForgeTypeId, UnitInfo> UnitInfoTable = [];
+
+      /// <summary>
+      /// The dictionary mapping from Revit unit (UnitTypeId) to created ifc handle. 
+      /// These are the auxiliary unit handles that don't go to IfcUnitAssignment
+      /// </summary>
+      Dictionary<ForgeTypeId, IFCAnyHandle> AuxiliaryUnitCache = [];
+
+      /// <summary>
+      /// The dictionary mapping from a unit handle with exponent to IfcDerivedUnitElement handle. 
+      /// </summary>
+      Dictionary<Tuple<IFCAnyHandle, int>, IFCAnyHandle> DerivedUnitElementCache = [];
+
+      /// <summary>
+      /// Finds UnitInfo in dictionary
+      /// </summary>
+      public bool FindUnitInfo(ForgeTypeId specTypeId, out UnitInfo unitInfo)
+      {
+         return UnitInfoTable.TryGetValue(specTypeId, out unitInfo);
+      }
+
+      /// <summary>
+      /// Adds UnitInfo to dictionary
+      /// </summary>
+      public void RegisterUnitInfo(ForgeTypeId specTypeId, UnitInfo unitInfo)
+      {
+         UnitInfoTable[specTypeId] = unitInfo;
+      }
+
+      /// <summary>
+      /// Removes associated UnitInfo from dictionary
+      /// </summary>
+      public void UnregisterUnitInfo(ForgeTypeId specTypeId)
+      {
+         UnitInfoTable.Remove(specTypeId);
+      }
+
+      /// <summary>
+      /// Extracts the unit handles to assign to a project 
+      /// </summary>
+      /// <returns>Unit handles set</returns>
+      public HashSet<IFCAnyHandle> GetUnitsToAssign()
+      {
+         HashSet<IFCAnyHandle> unitSet = [];
+         foreach (var unitInfo in UnitInfoTable)
+         {
+            // Special case: SpecTypeId.ColorTemperature is mapped to SI IFCUnit.ThermoDynamicTemperatureUnit (Kelvin)
+            // and mustn't be assigned to project to avoid conflict with ThermoDynamicTemperatureUnit of SpecTypeId.HvacTemperature
+            if (unitInfo.Key.Equals(SpecTypeId.ColorTemperature))
+               continue;
+
+            IFCAnyHandle unitHnd = unitInfo.Value?.Handle;
+            unitSet.AddIfNotNull(unitHnd);
+         }
+         return unitSet;
+      }
+
+
+      /// <summary>
+      /// Finds auxiliary unit in dictionary
+      /// </summary>
+      public bool FindAuxiliaryUnit(ForgeTypeId unitTypeId, out IFCAnyHandle auxiliaryUnit)
+      {
+         return AuxiliaryUnitCache.TryGetValue(unitTypeId, out auxiliaryUnit);
+      }
+
+      /// <summary>
+      /// Adds auxiliary unit to dictionary
+      /// </summary>
+      public void RegisterAuxiliaryUnit(ForgeTypeId unitTypeId, IFCAnyHandle auxiliaryUnit)
+      {
+         AuxiliaryUnitCache[unitTypeId] = auxiliaryUnit;
+      }
+
+      /// <summary>
+      /// Removes auxiliary unit from dictionary
+      /// </summary>
+      public void UnregisterAuxiliaryUnit(ForgeTypeId unitTypeId)
+      {
+         AuxiliaryUnitCache.Remove(unitTypeId);
+      }
+
+      /// <summary>
+      /// Finds derived unit element in dictionary
+      /// </summary>
+      public bool FindDerivedUnitElement(Tuple<IFCAnyHandle, int> unitWithExponent, out IFCAnyHandle derivedUnit)
+      {
+         return DerivedUnitElementCache.TryGetValue(unitWithExponent, out derivedUnit);
+      }
+
+      /// <summary>
+      /// Adds derived unit element to dictionary
+      /// </summary>
+      public void RegisterDerivedUnit(Tuple<IFCAnyHandle, int> unitWithExponent, IFCAnyHandle derivedUnit)
+      {
+         DerivedUnitElementCache[unitWithExponent] = derivedUnit;
+      }
+
+      /// <summary>
+      /// Finds user defined unit in dictionary
+      /// </summary>
+      public IFCAnyHandle FindUserDefinedUnit(string unitName)
+      {
+         NamingUtil.IFCStringKey unitKey = new(unitName);
+         UnitsByName.TryGetValue(unitKey, out IFCAnyHandle unitHandle);
+         return unitHandle;
+      }
+
+      /// <summary>
+      /// Adds user defined unit to dictionary
+      /// </summary>
+      public void RegisterUserDefinedUnit(string unitName, IFCAnyHandle unitHnd)
+      {
+         NamingUtil.IFCStringKey userKey = new(unitName);
+         UnitsByName[userKey] = unitHnd;
+      }
+
+      static readonly NamingUtil.IFCStringKey CurrencyUnit = new("CURRENCY");
+
+      private bool? CurrencyUnitExists { get; set; } = null;
+
+      public bool HasCurrencyUnit()
+      {
+         CurrencyUnitExists ??= UnitsByName.ContainsKey(CurrencyUnit);
+         return CurrencyUnitExists.Value;
+      }
+
+      public void Clear()
+      {
+         UnitInfoTable.Clear();
+         AuxiliaryUnitCache.Clear();
+         DerivedUnitElementCache.Clear();
+         UnitsByName.Clear();
+      }
+
+      #region Scale/unscale methods
       /// <summary>
       /// Convert from Revit internal units to Revit display units.
       /// </summary>
-      /// <param name="unitType">The unit type.</param>
+      /// <param name="specTypeId">Revit data type</param>
       /// <param name="unscaledValue">The value in Revit internal units.</param>
       /// <returns>The value in Revit display units.</returns>
-      public double Scale(UnitType unitType, double unscaledValue)
+      public double Scale(ForgeTypeId specTypeId, double unscaledValue)
       {
-         Tuple<IFCAnyHandle, double, double> scale;
-         if (m_UnitConversionTable.TryGetValue(unitType, out scale))
-            return unscaledValue * scale.Item2 + scale.Item3;
+         UnitInfo unitInfo = UnitMappingUtil.GetOrCreateUnitInfo(specTypeId);
+         if (unitInfo != null)
+            return unscaledValue * unitInfo.ScaleFactor + unitInfo.Offset;
          return unscaledValue;
       }
 
       /// <summary>
       /// Convert from Revit display units to Revit internal units.
       /// </summary>
-      /// <param name="unitType">The unit type.</param>
-      /// <param name="unscaledValue">The value in Revit display units.</param>
-      /// <returns>The value in Revit internal units.</returns>
-      /// <remarks>Ignores the offset component.</remarks>
-      public XYZ Unscale(UnitType unitType, XYZ scaledValue)
-      {
-         Tuple<IFCAnyHandle, double, double> scale;
-         if (m_UnitConversionTable.TryGetValue(unitType, out scale))
-            return scaledValue / scale.Item2;
-         return scaledValue;
-      }
-
-      /// <summary>
-      /// Convert from Revit display units to Revit internal units.
-      /// </summary>
-      /// <param name="unitType">The unit type.</param>
+      /// <param name="specTypeId">Revit data type</param>
       /// <param name="scaledValue">The value in Revit display units.</param>
       /// <returns>The value in Revit internal units.</returns>
-      public double Unscale(UnitType unitType, double scaledValue)
+      /// <remarks>Ignores the offset component.</remarks>
+      public XYZ Unscale(ForgeTypeId specTypeId, XYZ scaledValue)
       {
-         Tuple<IFCAnyHandle, double, double> scale;
-         if (m_UnitConversionTable.TryGetValue(unitType, out scale))
-            return (scaledValue - scale.Item3) / scale.Item2;
+         UnitInfo unitInfo = UnitMappingUtil.GetOrCreateUnitInfo(specTypeId);
+         if (unitInfo != null)
+            return scaledValue / unitInfo.ScaleFactor;
+         return scaledValue;
+      }
+
+      /// <summary>
+      /// Convert from Revit display units to Revit internal units.
+      /// </summary>
+      /// <param name="specTypeId">Revit data type</param>
+      /// <param name="scaledValue">The value in Revit display units.</param>
+      /// <returns>The value in Revit internal units.</returns>
+      public double Unscale(ForgeTypeId specTypeId, double scaledValue)
+      {
+         UnitInfo unitInfo = UnitMappingUtil.GetOrCreateUnitInfo(specTypeId);
+         if (unitInfo != null)
+            return (scaledValue - unitInfo.Offset) / unitInfo.ScaleFactor;
          return scaledValue;
       }
 
       /// <summary>
       /// Convert from Revit internal units to Revit display units.
       /// </summary>
-      /// <param name="unitType">The unit type.</param>
+      /// <param name="specTypeId">Revit data type</param>
       /// <param name="unscaledValue">The value in Revit internal units.</param>
       /// <returns>The value in Revit display units.</returns>
       /// <remarks>Ignores the offset component.</remarks>
-      public UV Scale(UnitType unitType, UV unscaledValue)
+      public UV Scale(ForgeTypeId specTypeId, UV unscaledValue)
       {
-         Tuple<IFCAnyHandle, double, double> scale;
-         if (m_UnitConversionTable.TryGetValue(unitType, out scale))
-            return unscaledValue * scale.Item2;
+         UnitInfo unitInfo = UnitMappingUtil.GetOrCreateUnitInfo(specTypeId);
+         if (unitInfo != null)
+            return unscaledValue * unitInfo.ScaleFactor;
          return unscaledValue;
       }
 
       /// <summary>
       /// Convert from Revit internal units to Revit display units.
       /// </summary>
-      /// <param name="unitType">The unit type.</param>
+      /// <param name="specTypeId">Revit data type</param>
       /// <param name="unscaledValue">The value in Revit internal units.</param>
       /// <returns>The value in Revit display units.</returns>
       /// <remarks>Ignores the offset component.</remarks>
-      public XYZ Scale(UnitType unitType, XYZ unscaledValue)
+      public XYZ Scale(ForgeTypeId specTypeId, XYZ unscaledValue)
       {
-         Tuple<IFCAnyHandle, double, double> scale;
-         if (m_UnitConversionTable.TryGetValue(unitType, out scale))
-            return unscaledValue * scale.Item2;
+         UnitInfo unitInfo = UnitMappingUtil.GetOrCreateUnitInfo(specTypeId);
+         if (unitInfo != null)
+            return unscaledValue * unitInfo.ScaleFactor;
          return unscaledValue;
       }
-
-      /// <summary>
-      /// Sets the conversion factors to convert Revit internal units to Revit display units for the specified unit type, and stores the IFC handle.
-      /// </summary>
-      /// <param name="unitType">The unit type.</param>
-      /// <param name="unitHandle">The IFCUnit handle.</param>
-      /// <param name="scale">The scaling factor.</param>
-      public void AddUnit(UnitType unitType, IFCAnyHandle unitHandle, double scale, double offset)
-      {
-         m_UnitConversionTable[unitType] = new Tuple<IFCAnyHandle, double, double>(unitHandle, scale, offset);
-      }
+      #endregion
    }
+
 }

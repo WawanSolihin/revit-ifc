@@ -17,21 +17,20 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 //
 
-using System;
-using System.Collections.Generic;
-using System.Text;
-using Autodesk.Revit;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.IFC;
-using Revit.IFC.Export.Exporter;
-using Revit.IFC.Export.Toolkit;
+using Newtonsoft.Json.Linq;
+using Revit.IFC.Common.Enums;
 using Revit.IFC.Common.Utility;
+using static Revit.IFC.Export.Utility.ParameterUtil;
+using Revit.IFC.Export.Exporter;
+using Revit.IFC.Export.Exporter.PropertySet;
+using Revit.IFC.Export.Toolkit;
+using System;
+using System.Collections.Generic;
 
 namespace Revit.IFC.Export.Utility
 {
-   using Revit.IFC.Common.Utility;
-   using Revit.IFC.Export.Exporter.PropertySet;
-
    /// <summary>
    /// Provides static methods for door and window related manipulations.
    /// </summary>
@@ -40,136 +39,190 @@ namespace Revit.IFC.Export.Utility
       /// <summary>
       /// Gets the panel operation from door style operation.
       /// </summary>
-      /// <param name="ifcDoorStyleOperationType">
-      /// The IFCDoorStyleOperation.
-      /// </param>
-      /// <returns>
-      /// The string represents the door panel operation.
-      /// </returns>
-      public static string GetPanelOperationFromDoorStyleOperation(string ifcDoorStyleOperationType)
+      /// <param name="ifcDoorStyleOperationType">The IFCDoorStyleOperation.</param>
+      /// <returns>The string represents the door panel operation.</returns>
+      private static string GetPanelOperationFromDoorStyleOperation(string ifcDoorStyleOperationType)
       {
-         if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(ifcDoorStyleOperationType, "SingleSwingLeft") ||
-             NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(ifcDoorStyleOperationType, "SingleSwingRight") ||
-             NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(ifcDoorStyleOperationType, "DoubleDoorSingleSwing") ||
-             NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(ifcDoorStyleOperationType, "DoubleDoorSingleSwingOppositeLeft") ||
-             NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(ifcDoorStyleOperationType, "DoubleDoorSingleSwingOppositeRight"))
+         const string baseValue = "NOTDEFINED";
+         if (string.IsNullOrWhiteSpace(ifcDoorStyleOperationType))
+            return baseValue;
+
+         NamingUtil.IFCStringKey allCapsDoorStyleOperationType = new(ifcDoorStyleOperationType);
+         if (allCapsDoorStyleOperationType.Contains("SINGLESWING"))
             return "SWINGING";
 
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(ifcDoorStyleOperationType, "DoubleSwingLeft") ||
-             NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(ifcDoorStyleOperationType, "DoubleSwingRight") ||
-             NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(ifcDoorStyleOperationType, "DoubleDoorDoubleSwing"))
+         if (allCapsDoorStyleOperationType.Contains("DOUBLESWING"))
             return "DOUBLE_ACTING";
 
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(ifcDoorStyleOperationType, "SlidingToLeft") ||
-             NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(ifcDoorStyleOperationType, "SlidingToRight") ||
-             NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(ifcDoorStyleOperationType, "DoubleDoorSliding"))
+         if (allCapsDoorStyleOperationType.Contains("SLIDING"))
             return "SLIDING";
 
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(ifcDoorStyleOperationType, "FoldingToLeft") ||
-             NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(ifcDoorStyleOperationType, "FoldingToRight") ||
-             NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(ifcDoorStyleOperationType, "DoubleDoorFolding"))
+         if (allCapsDoorStyleOperationType.Contains("FOLDING"))
             return "FOLDING";
 
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(ifcDoorStyleOperationType, "Revolving"))
+         if (allCapsDoorStyleOperationType.Contains("REVOLVING"))
             return "REVOLVING";
 
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(ifcDoorStyleOperationType, "RollingUp"))
+         if (allCapsDoorStyleOperationType.Contains("ROLLINGUP"))
             return "ROLLINGUP";
 
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(ifcDoorStyleOperationType, "UserDefined"))
+         if (allCapsDoorStyleOperationType.Contains("USERDEFINED"))
             return "USERDEFINED";
-         else
-            return "NOTDEFINED";
+
+         if (allCapsDoorStyleOperationType.Contains("FIXED"))
+            return "FIXEDPANEL";
+
+         return baseValue;
+      }
+
+      private static double? GetValueFromIndexedParameter(Element element, string baseParameterName, int index)
+      {
+         string parameterName = baseParameterName + index.ToString();
+         double? value = GetPositiveDoubleValueFromElementOrSymbol(element, parameterName);
+         if (value.HasValue)
+            return value;
+
+         // If the index is 1, we will try again with baseParameterName.
+         if (index != 1)
+            return null;
+
+         return GetPositiveDoubleValueFromElementOrSymbol(element, baseParameterName);
       }
 
       /// <summary>
-      /// Creates door panel properties.
+      /// Calculates PanelWidth as a normalised ratio (PanelWidth / Width) from the door type element.
+      /// Returns null if either parameter is missing or Width is zero.
+      /// </summary>
+      private static double? CalculatePanelWidthFromDoorType(Element elem)
+      {
+         if (elem == null)
+            return null;
+
+         IList<double?> panelWidthValues = PropertyUtil.GetDoubleValuesFromParameterByType(elem, "PanelWidth", SpecTypeId.Length, PropertyValueType.SingleValue);
+         IList<double?> widthValues = PropertyUtil.GetDoubleValuesFromParameterByType(elem, "Width", SpecTypeId.Length, PropertyValueType.SingleValue);
+
+         double? panelWidth = panelWidthValues?.Count > 0 ? panelWidthValues[0] : null;
+         double? width = widthValues?.Count > 0 ? widthValues[0] : null;
+
+         if (!panelWidth.HasValue || !width.HasValue || MathUtil.IsAlmostZero(width.Value))
+            return null;
+
+         return panelWidth.Value / width.Value;
+      }
+
+      private class DoorPanelInformation
+      {
+         public double? Depth { get; private set; } = null;
+         public double? Width { get; private set; } = null;
+         public string Operation { get; private set; } = null;
+         public string Position { get; private set; } = null;
+
+         public DoorPanelInformation(double? depth, double? width, string operation, string position) 
+         {
+            Depth = depth;
+            Width = width;
+            Operation = operation;
+            Position = position;
+         }
+      }
+
+      /// <summary>
+      /// Collects door panel information from the family instance parameters.
+      /// </summary>
+      private static IList<DoorPanelInformation> CollectDoorPanelInfo(
+         DoorWindowInfo doorWindowInfo, Element familyInstance, Element familySymbol)
+      {
+         IList<DoorPanelInformation> doorPanelInfoList = new List<DoorPanelInformation>();
+
+         const int maxPanels = 64;
+         for (int panelNumber = 1; panelNumber < maxPanels; panelNumber++)
+         {
+            double? panelDepth = GetValueFromIndexedParameter(familyInstance, "PanelDepth", panelNumber);
+            if (panelDepth == null && panelNumber > 1)
+               break;
+
+            double? panelWidth = (panelDepth != null) ?
+               GetValueFromIndexedParameter(familyInstance, "PanelWidth", panelNumber) : null;
+            if (panelWidth == null)
+            {
+               if (panelNumber > 1)
+                  break;
+               panelDepth = null;
+            }
+
+            bool breakAfterCreation = (panelDepth == null || panelWidth == null);
+            if (!breakAfterCreation)
+            {
+               panelDepth = UnitUtil.ScaleLength(panelDepth.Value);
+               panelWidth = (panelWidth.Value < 0.0) ? 0.0 : ((panelWidth.Value > 1.0) ? 1.0 : panelWidth);
+            }
+
+            string panelOperaton = GetPanelOperationFromDoorStyleOperation(doorWindowInfo?.DoorOperationTypeString);
+
+            bool flippedX = doorWindowInfo?.FlippedX ?? false;
+            bool flippedY = doorWindowInfo?.FlippedY ?? false;
+
+            bool flip = flippedX ^ flippedY;
+            string panelPosition = GetIFCDoorPanelPosition(familyInstance, panelNumber, flip);
+
+            if (panelWidth == null && panelNumber == 1)
+            {
+               panelWidth = CalculatePanelWidthFromDoorType(familySymbol);
+            }
+
+            doorPanelInfoList.Add(new DoorPanelInformation(panelDepth, panelWidth, panelOperaton, panelPosition));
+
+            if (breakAfterCreation)
+               break;
+         }
+
+         return doorPanelInfoList;
+      }
+
+      /// <summary>
+      /// Creates door panel properties to be attached to the door type.
+      /// For IFC4.3+ multi-panel doors, returns empty — panels are decomposed at instance level
+      /// via <see cref="CreateDoorPanelDecomposition"/>.
       /// </summary>
       /// <param name="exporterIFC">The ExporterIFC object.</param>
       /// <param name="doorWindowInfo">The DoorWindowInfo object.</param>
       /// <param name="familyInstance">The family instance of a door.</param>
+      /// <param name="familySymbol">The type element.</param>
       /// <returns>The list of handles created.</returns>
       public static IList<IFCAnyHandle> CreateDoorPanelProperties(ExporterIFC exporterIFC,
-         DoorWindowInfo doorWindowInfo, Element familyInstance)
+         DoorWindowInfo doorWindowInfo, Element familyInstance, Element familySymbol)
       {
          IFCFile file = exporterIFC.GetFile();
          IFCAnyHandle ownerHistory = ExporterCacheManager.OwnerHistoryHandle;
 
          IList<IFCAnyHandle> doorPanels = new List<IFCAnyHandle>();
 
-         IList<double?> panelDepthList = new List<double?>();
-         IList<double?> panelWidthList = new List<double?>();
+         IList<DoorPanelInformation> doorPanelInfoList = CollectDoorPanelInfo(doorWindowInfo, familyInstance, familySymbol);
 
-         IList<string> panelOperationList = new List<string>();
-         IList<string> panelPositionList = new List<string>();
-
-         int panelNumber = 1;
-         const int maxPanels = 64;  // arbitrary large number to prevent infinite loops.
-         for (; panelNumber < maxPanels; panelNumber++)
+         if (!ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4x3)
          {
-            string panelDepthCurrString = "PanelDepth" + panelNumber.ToString();
-            string panelWidthCurrString = "PanelWidth" + panelNumber.ToString();
-
-            // We will always have at least one panel definition as long as the panelOperation is not
-            // NotDefined.
-
-            panelOperationList.Add(GetPanelOperationFromDoorStyleOperation(doorWindowInfo.DoorOperationTypeString));
-
-            // If the panel operation is defined we'll allow no panel position for the 1st panel.
-            string panelPosition = GetIFCDoorPanelPosition("", familyInstance, panelNumber);
-            if (panelPosition == null)
+            // IFC4.3+ multi-panel: IfcPlate decomposition at instance level.
+            // IFC4.3+ single-panel: cache properties for the centralized pset pass
+            // so it can merge them into the IfcPropertySet it creates.
+            if (doorPanelInfoList.Count == 1 && familySymbol != null)
             {
-               if (panelNumber == 1)
-                  panelPosition = GetIFCDoorPanelPosition("", familyInstance, -1);
-               if ((panelPosition == null) && (panelNumber > 1))
-               {
-                  panelPositionList.Add("NOTDEFINED");
-                  break;
-               }
+               DoorPanelInformation panelInfo = doorPanelInfoList[0];
+               ExporterCacheManager.PreCreatedPsetProperties[("Pset_DoorPanelProperties", familySymbol.Id)] =
+                  CreateDoorPanelPropertyHandles4x3(file, panelInfo.Depth, panelInfo.Operation, panelInfo.Width, panelInfo.Position);
             }
-
-            if (doorWindowInfo.FlippedX ^ doorWindowInfo.FlippedY)
-               panelPosition = ReverseDoorPanelPosition(panelPosition);
-
-            panelPositionList.Add(panelPosition != null ? panelPosition : "NOTDEFINED");
-
-            double value1 = 0.0, value2 = 0.0;
-            bool foundDepth = (ParameterUtil.GetPositiveDoubleValueFromElementOrSymbol(familyInstance, panelDepthCurrString, out value1) != null);
-            if (!foundDepth && (panelNumber == 1))
-               foundDepth = (ParameterUtil.GetPositiveDoubleValueFromElementOrSymbol(familyInstance, "PanelDepth", out value1) != null);
-
-            bool foundWidth = (ParameterUtil.GetPositiveDoubleValueFromElementOrSymbol(familyInstance, panelWidthCurrString, out value2) != null);
-            if (!foundWidth && (panelNumber == 1))
-               foundWidth = (ParameterUtil.GetPositiveDoubleValueFromElementOrSymbol(familyInstance, "PanelWidth", out value2) != null);
-
-            if (foundDepth && foundWidth)
-            {
-               panelDepthList.Add(UnitUtil.ScaleLength(value1));
-               // Make sure value is in [0,1] range.
-               if (value2 < 0.0) value2 = 0.0; else if (value2 > 1.0) value2 = 1.0;
-               panelWidthList.Add(value2);
-            }
-            else
-            {
-               panelDepthList.Add(null);
-               panelWidthList.Add(null);
-            }
+            return doorPanels;
          }
 
          string baseDoorPanelName = NamingUtil.GetIFCName(familyInstance);
-         for (int panelIndex = 0; (panelIndex < panelNumber - 1); panelIndex++)
+         int panelNumber = 1;
+         foreach (DoorPanelInformation doorPanelInfo in doorPanelInfoList)
          {
-            double? currentPanelWidth = null;
-            if (panelWidthList[panelIndex].HasValue)
-               currentPanelWidth = (double)panelWidthList[panelIndex];
-
-            string doorPanelName = baseDoorPanelName;
-            //string doorPanelGUID = GUIDUtil.CreateGUID();
-            string doorPanelGUID = GUIDUtil.CreateSubElementGUID(familyInstance, (int)IFCDoorSubElements.DoorPanelStart + panelIndex);
-            IFCAnyHandle doorPanel = IFCInstanceExporter.CreateDoorPanelProperties(file, doorPanelGUID, ownerHistory,
-               doorPanelName, null, panelDepthList[panelIndex], panelOperationList[panelIndex],
-               currentPanelWidth, panelPositionList[panelIndex], null);
+            string doorPanelName = baseDoorPanelName + ":" + panelNumber.ToString();
+            string doorPanelGUID = GUIDUtil.CreateSubElementGUID(familyInstance, (int)IFCDoorSubElements.DoorPanelStart + panelNumber - 1);
+            IFCAnyHandle doorPanel = IFCInstanceExporter.CreateDoorPanelProperties(file, doorPanelGUID, ownerHistory, doorPanelName, null,
+               doorPanelInfo.Depth, doorPanelInfo.Operation, doorPanelInfo.Width, doorPanelInfo.Position, null);
             doorPanels.Add(doorPanel);
+            panelNumber++;
          }
 
          return doorPanels;
@@ -178,17 +231,15 @@ namespace Revit.IFC.Export.Utility
       /// <summary>
       /// Creates door lining properties.
       /// </summary>
-      /// <param name="exporterIFC">
-      /// The ExporterIFC object.
-      /// </param>
-      /// <param name="familyInstance">
-      /// The family instance of a door.
-      /// </param>
-      /// <returns>
-      /// The handle created.
-      /// </returns>
+      /// <param name="exporterIFC">The ExporterIFC object.</param>
+      /// <param name="familyInstance">The family instance of a door.</param>
+      /// <returns>The handle created.</returns>
+      /// <remarks>This is deprecated in IFC4.3.</remarks>
       public static IFCAnyHandle CreateDoorLiningProperties(ExporterIFC exporterIFC, Element familyInstance)
       {
+         if (!ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4x3)
+            return null;
+
          IFCFile file = exporterIFC.GetFile();
          IFCAnyHandle ownerHistory = ExporterCacheManager.OwnerHistoryHandle;
 
@@ -203,44 +254,45 @@ namespace Revit.IFC.Export.Utility
          double? casingThicknessOpt = null;
          double? casingDepthOpt = null;
 
-         double value1, value2;
-
-         // both of these must be defined, or not defined - if only one is defined, we ignore the values.
-         if ((ParameterUtil.GetPositiveDoubleValueFromElementOrSymbol(familyInstance, "LiningDepth", out value1) != null) &&
-             (ParameterUtil.GetPositiveDoubleValueFromElementOrSymbol(familyInstance, "LiningThickness", out value2) != null))
+         if ((GetPositiveDoubleValueFromElementOrSymbol(familyInstance, "IfcDoorLiningProperties.LiningDepth", "LiningDepth") is double value1) && 
+            (GetPositiveDoubleValueFromElementOrSymbol(familyInstance, "IfcDoorLiningProperties.LiningThickness", "LiningThickness") is double value2))
          {
+            // both of these must be defined, or not defined - if only one is defined, we ignore the values.
             liningDepthOpt = UnitUtil.ScaleLength(value1);
             liningThicknessOpt = UnitUtil.ScaleLength(value2);
          }
 
-         if (ParameterUtil.GetDoubleValueFromElementOrSymbol(familyInstance, "LiningOffset", out value1) != null)
+         (EvaluatedParameter parameter, value1) = GetDoubleValueFromElementOrSymbol(familyInstance, "IfcDoorLiningProperties.LiningOffset", 
+            "LiningOffset");
+         if (parameter != null)   
             liningOffsetOpt = UnitUtil.ScaleLength(value1);
 
          // both of these must be defined, or not defined - if only one is defined, we ignore the values.
-         if ((ParameterUtil.GetPositiveDoubleValueFromElementOrSymbol(familyInstance, "ThresholdDepth", out value1) != null) &&
-             (ParameterUtil.GetPositiveDoubleValueFromElementOrSymbol(familyInstance, "ThresholdThickness", out value2) != null))
+         if ((GetPositiveDoubleValueFromElementOrSymbol(familyInstance, "IfcDoorLiningProperties.ThresholdDepth", "ThresholdDepth") is double value3) &&
+             (GetPositiveDoubleValueFromElementOrSymbol(familyInstance, "IfcDoorLiningProperties.ThresholdThickness", "ThresholdThickness") is double value4))
          {
-            thresholdDepthOpt = UnitUtil.ScaleLength(value1);
-            thresholdThicknessOpt = UnitUtil.ScaleLength(value2);
+            thresholdDepthOpt = UnitUtil.ScaleLength(value3);
+            thresholdThicknessOpt = UnitUtil.ScaleLength(value4);
          }
 
-         if (ParameterUtil.GetDoubleValueFromElementOrSymbol(familyInstance, "ThreshholdOffset", out value1) != null)
-            liningOffsetOpt = UnitUtil.ScaleLength(value1);
+         (parameter, value1) = ParameterUtil.GetDoubleValueFromElementOrSymbol(familyInstance, "IfcDoorLiningProperties.ThresholdOffset", "ThresholdOffset");
+         if (parameter != null)
+            thresholdOffsetOpt = UnitUtil.ScaleLength(value1);
 
          // both of these must be defined, or not defined - if only one is defined, we ignore the values.
-         if ((ParameterUtil.GetDoubleValueFromElementOrSymbol(familyInstance, "TransomOffset", out value1) != null) &&
-             (ParameterUtil.GetPositiveDoubleValueFromElementOrSymbol(familyInstance, "TransomThickness", out value2) != null))
+         if ((GetPositiveDoubleValueFromElementOrSymbol(familyInstance, "IfcDoorLiningProperties.TransomOffset", "TransomOffset") is double value5) &&
+         (GetPositiveDoubleValueFromElementOrSymbol(familyInstance, "IfcDoorLiningProperties.TransomThickness", "TransomThickness") is double value6))
          {
-            transomOffsetOpt = UnitUtil.ScaleLength(value1);
-            transomThicknessOpt = UnitUtil.ScaleLength(value2);
+            transomOffsetOpt = UnitUtil.ScaleLength(value5);
+            transomThicknessOpt = UnitUtil.ScaleLength(value6);
          }
 
          // both of these must be defined, or not defined - if only one is defined, we ignore the values.
-         if ((ParameterUtil.GetPositiveDoubleValueFromElementOrSymbol(familyInstance, "CasingDepth", out value1) != null) &&
-             (ParameterUtil.GetPositiveDoubleValueFromElementOrSymbol(familyInstance, "CasingThickness", out value2) != null))
+         if ((GetPositiveDoubleValueFromElementOrSymbol(familyInstance, "IfcDoorLiningProperties.CasingDepth", "CasingDepth") is double value7) &&
+            (GetPositiveDoubleValueFromElementOrSymbol(familyInstance, "IfcDoorLiningProperties.CasingThickness", "CasingThickness") is double value8))
          {
-            casingDepthOpt = UnitUtil.ScaleLength(value1);
-            casingThicknessOpt = UnitUtil.ScaleLength(value2);
+            casingDepthOpt = UnitUtil.ScaleLength(value7);
+            casingThicknessOpt = UnitUtil.ScaleLength(value8);
          }
 
          string doorLiningGUID = GUIDUtil.CreateSubElementGUID(familyInstance, (int)IFCDoorSubElements.DoorLining);
@@ -254,101 +306,106 @@ namespace Revit.IFC.Export.Utility
       /// <summary>
       /// Gets door panel position.
       /// </summary>
-      /// <param name="typeName">
-      /// The type name of the door.
-      /// </param>
-      /// <param name="element">
-      /// The door element.
-      /// </param>
-      /// <param name="number">
-      /// The number of panel position.
-      /// </param>
-      /// <returns>
-      /// The string represents the door panel position.
-      /// </returns>
-      public static string GetIFCDoorPanelPosition(string typeName, Element element, int number)
+      /// <param name="element">The door element.</param>
+      /// <param name="number">The number of panel position.</param>
+      /// <param name="flip">True if the position value should be reversed.</param>
+      /// <returns>The string represents the door panel position.</returns>
+      private static string GetIFCDoorPanelPosition(Element element, int number, bool flip)
       {
-         string currPanelName;
-         if (number == -1)
-            currPanelName = "PanelPosition";
-         else
-            currPanelName = "PanelPosition" + number.ToString();
+         const string basePanelName = "PanelPosition";
+         string currPanelName = "PanelPosition" + number.ToString();
 
-         string value = "";
-         if (ParameterUtil.GetStringValueFromElementOrSymbol(element, currPanelName, out value) == null)
-            value = typeName;
-
-         if (value == "")
+         string value = null;
+         (_, value) = ParameterUtil.GetStringValueFromElementOrSymbol(element, null, false, "IfcDoorPanelProperties." + currPanelName, 
+            currPanelName, "IfcDoorPanelProperties." + basePanelName, basePanelName);
+         if (string.IsNullOrEmpty(value))
             return null;
-         else if (String.Compare(value, "left", true) == 0)
-            return "LEFT";
-         else if (String.Compare(value, "middle", true) == 0)
-            return "MIDDLE";
-         else if (String.Compare(value, "right", true) == 0)
-            return "RIGHT";
-         else
-            return "NOTDEFINED";
+         
+         string cleanedValue = NamingUtil.RemoveSpacesAndUnderscores(value);
+         string validatedValue = ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4x3 ?
+            IFCValidateEntry.ValidateStrEnum<IFCDoorPanelPosition>(cleanedValue) :
+            IFCValidateEntry.ValidateStrEnum<Exporter.PropertySet.IFC4X3.PEnum_DoorPanelPositionEnum>(cleanedValue);
+
+         if (flip)
+         {
+            if (validatedValue == "LEFT")
+               validatedValue = "RIGHT";
+            else if (validatedValue == "RIGHT")
+               validatedValue = "LEFT";
+         }
+
+         return validatedValue;
       }
 
-      /// <summary>
-      /// Reverses door panel position.
-      /// </summary>
-      /// <param name="originalPosition">
-      /// The original position.
-      /// </param>
-      /// <returns>
-      /// The string represents the reversed door panel position.
-      /// </returns>
-      public static string ReverseDoorPanelPosition(string originalPosition)
+      static readonly Dictionary<NamingUtil.IFCStringKey, IFCWindowStyleOperation> WindowStyles = new()
       {
-         if (originalPosition == null)
-            return "NOTDEFINED";
-         else if (String.Compare(originalPosition, "Left", true) == 0)
-            return "RIGHT";
-         else if (String.Compare(originalPosition, "Right", true) == 0)
-            return "LEFT";
-         return originalPosition;
-      }
+         { new NamingUtil.IFCStringKey("DOUBLEPANELHORIZONTAL"), IFCWindowStyleOperation.Double_Panel_Horizontal },
+         { new NamingUtil.IFCStringKey("DOUBLEPANELVERTICAL"), IFCWindowStyleOperation.Double_Panel_Vertical },
+         { new NamingUtil.IFCStringKey("USERDEFINED"), IFCWindowStyleOperation.UserDefined },
+         { new NamingUtil.IFCStringKey("SINGLEPANEL"), IFCWindowStyleOperation.Single_Panel },
+         { new NamingUtil.IFCStringKey("TRIPLEPANELBOTTOM"), IFCWindowStyleOperation.Triple_Panel_Bottom },
+         { new NamingUtil.IFCStringKey("TRIPLEPANELHORIZONTAL"), IFCWindowStyleOperation.Triple_Panel_Horizontal },
+         { new NamingUtil.IFCStringKey("TRIPLEPANELLEFT"), IFCWindowStyleOperation.Triple_Panel_Left },
+         { new NamingUtil.IFCStringKey("TRIPLEPANELRIGHT"), IFCWindowStyleOperation.Triple_Panel_Right },
+         { new NamingUtil.IFCStringKey("TRIPLEPANELTOP"), IFCWindowStyleOperation.Triple_Panel_Top },
+         { new NamingUtil.IFCStringKey("TRIPLEPANELVERTICAL"), IFCWindowStyleOperation.Triple_Panel_Vertical }
+      };
 
       /// <summary>
       /// Gets window style operation.
       /// </summary>
-      /// <param name="familySymbol">
-      /// The element type of window.
-      /// </param>
-      /// <returns>
-      /// The IFCWindowStyleOperation.
-      /// </returns>
-      public static Toolkit.IFCWindowStyleOperation GetIFCWindowStyleOperation(ElementType familySymbol)
+      /// <param name="familySymbol">The element type of window.</param>
+      /// <returns>The IFCWindowStyleOperation.</returns>
+      public static IFCWindowStyleOperation GetIFCWindowStyleOperation(ElementType familySymbol)
       {
-         string value;
-         ParameterUtil.GetStringValueFromElement(familySymbol, BuiltInParameter.WINDOW_OPERATION_TYPE, out value);
+         (_, string value) = GetStringValueFromElement(familySymbol, BuiltInParameter.WINDOW_OPERATION_TYPE);
 
-         if (String.IsNullOrEmpty(value))
-            return Toolkit.IFCWindowStyleOperation.NotDefined;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "UserDefined"))
-            return Toolkit.IFCWindowStyleOperation.UserDefined;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "SinglePanel"))
-            return Toolkit.IFCWindowStyleOperation.Single_Panel;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "DoublePanelVertical"))
-            return Toolkit.IFCWindowStyleOperation.Double_Panel_Vertical;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "DoublePanelHorizontal"))
-            return Toolkit.IFCWindowStyleOperation.Double_Panel_Horizontal;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "TriplePanelVertical"))
-            return Toolkit.IFCWindowStyleOperation.Triple_Panel_Vertical;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "TriplePanelBottom"))
-            return Toolkit.IFCWindowStyleOperation.Triple_Panel_Bottom;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "TriplePanelTop"))
-            return Toolkit.IFCWindowStyleOperation.Triple_Panel_Top;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "TriplePanelLeft"))
-            return Toolkit.IFCWindowStyleOperation.Triple_Panel_Left;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "TriplePanelRight"))
-            return Toolkit.IFCWindowStyleOperation.Triple_Panel_Right;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "TriplePanelHorizontal"))
-            return Toolkit.IFCWindowStyleOperation.Triple_Panel_Horizontal;
+         if (string.IsNullOrEmpty(value))
+            return IFCWindowStyleOperation.NotDefined;
 
-         return Toolkit.IFCWindowStyleOperation.NotDefined;
+         NamingUtil.IFCStringKey compValue = new(value);
+         if (WindowStyles.TryGetValue(compValue, out IFCWindowStyleOperation operation))
+            return operation;
+
+         return IFCWindowStyleOperation.UserDefined;
       }
+
+      public static IFCWindowStyleOperation ReverseWindowStyleOperation(Toolkit.IFCWindowStyleOperation operationType)
+      {
+         switch (operationType)
+         {
+            case IFCWindowStyleOperation.Triple_Panel_Left:
+               return IFCWindowStyleOperation.Triple_Panel_Right;
+            case IFCWindowStyleOperation.Triple_Panel_Right:
+               return IFCWindowStyleOperation.Triple_Panel_Left;
+            default:
+               return operationType;
+         }
+      }
+
+      public static string ReverseWindowPartitioningType(string partitioningType)
+      {
+         string compName = NamingUtil.RemoveSpacesAndUnderscores(partitioningType);
+         if (string.Equals(compName, "TRIPLEPANELLEFT", StringComparison.InvariantCultureIgnoreCase))
+            return "TRIPLE_PANEL_RIGHT";
+         if (string.Equals(compName, "TRIPLEPANELRIGHT", StringComparison.InvariantCultureIgnoreCase))
+            return "TRIPLE_PANEL_LEFT";
+         return partitioningType;
+      }
+
+      static readonly Dictionary<NamingUtil.IFCStringKey, string> WindowPartitioningTypes = new()
+      {
+         { new NamingUtil.IFCStringKey("DOUBLEPANELHORIZONTAL"), "DOUBLE_PANEL_HORIZONTAL" },
+         { new NamingUtil.IFCStringKey("DOUBLEPANELVERTICAL"), "DOUBLE_PANEL_VERTICAL" },
+         { new NamingUtil.IFCStringKey("USERDEFINED"), "USERDEFINED" },
+         { new NamingUtil.IFCStringKey("SINGLEPANEL"), "SINGLE_PANEL"},
+         { new NamingUtil.IFCStringKey("TRIPLEPANELBOTTOM"), "TRIPLE_PANEL_BOTTOM" },
+         { new NamingUtil.IFCStringKey("TRIPLEPANELHORIZONTAL"), "TRIPLE_PANEL_HORIZONTAL" },
+         { new NamingUtil.IFCStringKey("TRIPLEPANELLEFT"), "TRIPLE_PANEL_LEFT" },
+         { new NamingUtil.IFCStringKey("TRIPLEPANELRIGHT"), "TRIPLE_PANEL_RIGHT" },
+         { new NamingUtil.IFCStringKey("TRIPLEPANELTOP"), "TRIPLE_PANEL_TOP" },
+         { new NamingUtil.IFCStringKey("TRIPLEPANELVERTICAL"), "TRIPLE_PANEL_VERTICAL" }
+      };
 
       /// <summary>
       /// New in IFC4: to get Partitioning type information from Window. In IFC2x3 is called Window Operation Type
@@ -357,58 +414,29 @@ namespace Revit.IFC.Export.Utility
       /// <returns>The partitioning type information.</returns>
       public static string GetIFCWindowPartitioningType(ElementType familySymbol)
       {
-         string value;
-         ParameterUtil.GetStringValueFromElement(familySymbol, "WINDOW_PARTITIONING_TYPE", out value);
+         (_, string value) = GetStringValueFromElement(familySymbol, false, "WINDOW_PARTITIONING_TYPE");
 
-         if (String.IsNullOrEmpty(value))
+         if (string.IsNullOrEmpty(value))
             return "NOTDEFINED";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "UserDefined"))
-            return "USERDEFINED";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "SinglePanel"))
-            return "SINGLE_PANEL";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "DoublePanelVertical"))
-            return "DOUBLE_PANEL_VERTICAL";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "DoublePanelHorizontal"))
-            return "DOUBLE_PANEL_HORIZONTAL";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "TriplePanelVertical"))
-            return "TRIPLE_PANEL_VERTICAL";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "TriplePanelHorizontal"))
-            return "TRIPLE_PANEL_HORIZONTAL";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "TriplePanelBottom"))
-            return "TRIPLE_PANEL_BOTTOM";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "TriplePanelTop"))
-            return "TRIPLE_PANEL_TOP";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "TriplePanelLeft"))
-            return "TRIPLE_PANEL_LEFT";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "TriplePanelRight"))
-            return "TRIPLE_PANEL_RIGHT";
 
-         return "NOTDEFINED";
+         NamingUtil.IFCStringKey compValue = new(value);
+         if (WindowPartitioningTypes.TryGetValue(compValue, out string type))
+            return type;
+         
+         return "USERDEFINED";
       }
 
-      public static string GetIFCWindowType(ElementType familySymbol)
+      static readonly Dictionary<NamingUtil.IFCStringKey, IFCDoorStyleConstruction> DoorStyleConstructions = new()
       {
-         string value;
-         ParameterUtil.GetStringValueFromElement(familySymbol, "WINDOW_PREDEFINED_TYPE", out value);
-
-         if (String.IsNullOrEmpty(value))
-            return "NOTDEFINED";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "Movable"))
-            return "MOVABLE";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "Parapet"))
-            return "PARAPET";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "Partitioning"))
-            return "PARTITIONING";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "PlumbingWall"))
-            return "PLUMBINGWALL";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "Shear"))
-            return "SHEAR";
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "SolidWall"))
-            return "SOLIDWALL";
-
-         return "NOTDEFINED";
-
-      }
+         { new NamingUtil.IFCStringKey("ALUMINIUM"), IFCDoorStyleConstruction.Aluminium },
+         { new NamingUtil.IFCStringKey("ALUMINIUMPLASTIC"), IFCDoorStyleConstruction.Aluminium_Plastic },
+         { new NamingUtil.IFCStringKey("ALUMINIUMWOOD"), IFCDoorStyleConstruction.Aluminium_Wood },
+         { new NamingUtil.IFCStringKey("USERDEFINED"), IFCDoorStyleConstruction.UserDefined },
+         { new NamingUtil.IFCStringKey("HIGHGRADESTEEL"), IFCDoorStyleConstruction.High_Grade_Steel },
+         { new NamingUtil.IFCStringKey("PLASTIC"), IFCDoorStyleConstruction.Plastic },
+         { new NamingUtil.IFCStringKey("STEEL"), IFCDoorStyleConstruction.Steel },
+         { new NamingUtil.IFCStringKey("WOOD"), IFCDoorStyleConstruction.Wood }
+      };
 
       /// <summary>
       /// Gets IFCDoorStyleConstruction from construction type name.
@@ -417,34 +445,30 @@ namespace Revit.IFC.Export.Utility
       /// <returns>The IFCDoorStyleConstruction.</returns>
       public static IFCDoorStyleConstruction GetDoorStyleConstruction(Element element)
       {
-         string value = null;
-         if (ParameterUtil.GetStringValueFromElementOrSymbol(element, "Construction", out value) == null)
-            ParameterUtil.GetStringValueFromElementOrSymbol(element, BuiltInParameter.DOOR_CONSTRUCTION_TYPE, false, out value);
+         (_, string value) = GetStringValueFromElementOrSymbol(element, null, false, "IfcDoorStyle.ConstructionType", "ConstructionType", "Construction");
+         if (string.IsNullOrEmpty(value))
+         {
+            value = GetStringValueFromElementOrSymbol(element, null, false, BuiltInParameter.DOOR_CONSTRUCTION_TYPE);
+            if (string.IsNullOrEmpty(value))
+               return IFCDoorStyleConstruction.NotDefined;
+         }
 
-         if (String.IsNullOrEmpty(value))
-            return IFCDoorStyleConstruction.NotDefined;
-
-         string newValue = NamingUtil.RemoveSpacesAndUnderscores(value);
-
-         if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(newValue, "USERDEFINED"))
-            return IFCDoorStyleConstruction.UserDefined;
-         if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(newValue, "ALUMINIUM"))
-            return IFCDoorStyleConstruction.Aluminium;
-         if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(newValue, "HIGHGRADESTEEL"))
-            return IFCDoorStyleConstruction.High_Grade_Steel;
-         if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(newValue, "STEEL"))
-            return IFCDoorStyleConstruction.Steel;
-         if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(newValue, "WOOD"))
-            return IFCDoorStyleConstruction.Wood;
-         if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(newValue, "ALUMINIUMWOOD"))
-            return IFCDoorStyleConstruction.Aluminium_Wood;
-         if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(newValue, "ALUMINIUMPLASTIC"))
-            return IFCDoorStyleConstruction.Aluminium_Plastic;
-         if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(newValue, "PLASTIC"))
-            return IFCDoorStyleConstruction.Plastic;
+         NamingUtil.IFCStringKey compValue = new(value);
+         if (DoorStyleConstructions.TryGetValue(compValue, out var result))
+            return result;
 
          return IFCDoorStyleConstruction.UserDefined;
       }
+
+      static readonly Dictionary<NamingUtil.IFCStringKey, IFCWindowStyleConstruction> WindowStyleConstructions = new()
+      {
+         { new NamingUtil.IFCStringKey("ALUMINIUM"), IFCWindowStyleConstruction.Aluminium },
+         { new NamingUtil.IFCStringKey("ALUMINIUMWOOD"), IFCWindowStyleConstruction.Aluminium_Wood },
+         { new NamingUtil.IFCStringKey("HIGHGRADESTEEL"), IFCWindowStyleConstruction.High_Grade_Steel },
+         { new NamingUtil.IFCStringKey("PLASTIC"), IFCWindowStyleConstruction.Plastic },
+         { new NamingUtil.IFCStringKey("STEEL"), IFCWindowStyleConstruction.Steel },
+         { new NamingUtil.IFCStringKey("WOOD"), IFCWindowStyleConstruction.Wood }
+      };
 
       /// <summary>
       /// Gets window style construction.
@@ -453,141 +477,74 @@ namespace Revit.IFC.Export.Utility
       /// <returns>The string represents the window style construction.</returns>
       public static IFCWindowStyleConstruction GetIFCWindowStyleConstruction(Element element)
       {
-         string value;
-         if (ParameterUtil.GetStringValueFromElementOrSymbol(element, "Construction", out value) == null)
-            ParameterUtil.GetStringValueFromElementOrSymbol(element, BuiltInParameter.WINDOW_CONSTRUCTION_TYPE, false, out value);
+         (_, string value) = GetStringValueFromElementOrSymbol(element, null, false, "IfcWindowStyle.ConstructionType", "ConstructionType", "Construction");
+         if (string.IsNullOrEmpty(value))
+         {
+            value = GetStringValueFromElementOrSymbol(element, null, false, BuiltInParameter.WINDOW_CONSTRUCTION_TYPE);
+            if (string.IsNullOrWhiteSpace(value))
+               return IFCWindowStyleConstruction.NotDefined;
+         }
 
-         if (String.IsNullOrWhiteSpace(value))
-            return IFCWindowStyleConstruction.NotDefined;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "Aluminum"))
-            return IFCWindowStyleConstruction.Aluminium;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "HighGradeSteel"))
-            return IFCWindowStyleConstruction.High_Grade_Steel;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "Steel"))
-            return IFCWindowStyleConstruction.Steel;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "Wood"))
-            return IFCWindowStyleConstruction.Wood;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "AluminumWood"))
-            return IFCWindowStyleConstruction.Aluminium_Wood;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "Plastic"))
-            return IFCWindowStyleConstruction.Plastic;
+         NamingUtil.IFCStringKey compValue = new(value);
+         if (WindowStyleConstructions.TryGetValue(compValue, out IFCWindowStyleConstruction windowStyleConstruction))
+            return windowStyleConstruction;
 
-         //else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "OtherConstruction"))
          return IFCWindowStyleConstruction.Other_Construction;
       }
 
       /// <summary>
       /// Gets window panel operation.
       /// </summary>
-      /// <param name="initialValue">
-      /// The initial value.
-      /// </param>
-      /// <param name="element">
-      /// The window element.
-      /// </param>
-      /// <param name="number">
-      /// The number of panel operation.
-      /// </param>
-      /// <returns>
-      /// The string represents the window panel operation.
-      /// </returns>
-      public static IFCWindowPanelOperation GetIFCWindowPanelOperation(string initialValue, Element element, int number)
+      /// <param name="initialValue">The initial value.</param>
+      /// <param name="element">The window element.</param>
+      /// <param name="number">The number of panel operation.</param>
+      /// <returns>The string represents the window panel operation.</returns>
+      public static string GetIFCWindowPanelOperation(string initialValue, Element element, int number)
       {
          string currPanelName = "PanelOperation" + number.ToString();
 
-         string value;
-         if (ParameterUtil.GetStringValueFromElementOrSymbol(element, currPanelName, out value) == null)
-            value = initialValue;
+         (_, string value) = ParameterUtil.GetStringValueFromElementOrSymbol(element, null, false, "IfcWindowPanelProperties." + currPanelName, currPanelName);
+         value ??= initialValue;
 
-         if (value == "")
-            return IFCWindowPanelOperation.NotDefined;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "SideHungRightHand"))
-            return IFCWindowPanelOperation.SideHungRightHand;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "SideHungLeftHand"))
-            return IFCWindowPanelOperation.SideHungLeftHand;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "TiltAndTurnRightHand"))
-            return IFCWindowPanelOperation.TiltAndTurnRightHand;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "TiltAndTurnLeftHand"))
-            return IFCWindowPanelOperation.TiltAndTurnLeftHand;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "TopHung"))
-            return IFCWindowPanelOperation.TopHung;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "BottomHung"))
-            return IFCWindowPanelOperation.BottomHung;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "PivotHorizontal"))
-            return IFCWindowPanelOperation.PivotHorizontal;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "PivotVertical"))
-            return IFCWindowPanelOperation.PivotVertical;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "SlidingHorizontal"))
-            return IFCWindowPanelOperation.SlidingHorizontal;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "SlidingVertical"))
-            return IFCWindowPanelOperation.SlidingVertical;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "RemovableCasement"))
-            return IFCWindowPanelOperation.RemovableCasement;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "FixedCasement"))
-            return IFCWindowPanelOperation.FixedCasement;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "OtherOperation"))
-            return IFCWindowPanelOperation.OtherOperation;
-
-         return IFCWindowPanelOperation.NotDefined;
+         string cleanedValue = NamingUtil.RemoveSpacesAndUnderscores(value);
+         return ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4x3 ?
+            IFCValidateEntry.ValidateStrEnum<IFCWindowPanelOperation>(cleanedValue) :
+            IFCValidateEntry.ValidateStrEnum<Exporter.PropertySet.IFC4X3.PEnum_WindowPanelOperationEnum>(cleanedValue);
       }
 
       /// <summary>
       /// Gets window panel position.
       /// </summary>
-      /// <param name="initialValue">
-      /// The initial value.
-      /// </param>
-      /// <param name="element">
-      /// The window element.
-      /// </param>
-      /// <param name="number">
-      /// The number of panel position.
-      /// </param>
-      /// <returns>
-      /// The string represents the window panel position.
-      /// </returns>
-      public static IFCWindowPanelPosition GetIFCWindowPanelPosition(string initialValue, Element element, int number)
+      /// <param name="initialValue">The initial value.</param>
+      /// <param name="element">The window element.</param>
+      /// <param name="number">The number of panel position.</param>
+      /// <returns>The string represents the window panel position, or null if unset.</returns>
+      public static string GetIFCWindowPanelPosition(string initialValue, Element element, int number)
       {
          string currPanelName = "PanelPosition" + number.ToString();
 
-         string value;
-         if (ParameterUtil.GetStringValueFromElementOrSymbol(element, currPanelName, out value) == null)
-            value = initialValue;
+         (_, string value) = ParameterUtil.GetStringValueFromElementOrSymbol(element, null, false, "IfcWindowPanelProperties." + currPanelName, currPanelName);
+         value ??= initialValue;
 
-         if (value == "")
-            return IFCWindowPanelPosition.NotDefined;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "Left"))
-            return IFCWindowPanelPosition.Left;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "Middle"))
-            return IFCWindowPanelPosition.Middle;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "Right"))
-            return IFCWindowPanelPosition.Right;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "Bottom"))
-            return IFCWindowPanelPosition.Bottom;
-         else if (NamingUtil.IsEqualIgnoringCaseSpacesAndUnderscores(value, "Top"))
-            return IFCWindowPanelPosition.Top;
-
-         return IFCWindowPanelPosition.NotDefined;
+         return ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4x3 ?
+            IFCValidateEntry.ValidateStrEnum<IFCWindowPanelPosition>(value) :
+            IFCValidateEntry.ValidateStrEnum<Exporter.PropertySet.IFC4X3.PEnum_WindowPanelPositionEnum>(value);
       }
 
       /// <summary>
       /// Creates window panel position.
       /// </summary>
-      /// <param name="exporterIFC">
-      /// The ExporterIFC object.
-      /// </param>
-      /// <param name="familyInstance">
-      /// The family instance of a window.
-      /// </param>
-      /// <param name="description">
-      /// The description.
-      /// </param>
-      /// <returns>
-      /// The handle created.
-      /// </returns>
+      /// <param name="exporterIFC">The ExporterIFC object.</param>
+      /// <param name="familyInstance">The family instance of a window.</param>
+      /// <param name="description">The description.</param>
+      /// <returns>The handle created.</returns>
+      /// <remarks>This is deprecated in IFC4.3</remarks>
       public static IFCAnyHandle CreateWindowLiningProperties(ExporterIFC exporterIFC,
          Element familyInstance, string description)
       {
+         if (!ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4x3)
+            return null;
+
          IFCFile file = exporterIFC.GetFile();
          IFCAnyHandle ownerHistory = ExporterCacheManager.OwnerHistoryHandle;
 
@@ -600,36 +557,32 @@ namespace Revit.IFC.Export.Utility
          double? firstMullionOffsetOpt = null;
          double? secondMullionOffsetOpt = null;
 
-         double value1 = 0.0;
-         double value2 = 0.0;
-
          // both of these must be defined (or not defined)
-         if ((ParameterUtil.GetDoubleValueFromElementOrSymbol(familyInstance, "LiningDepth", out value1) != null) &&
-             (ParameterUtil.GetDoubleValueFromElementOrSymbol(familyInstance, "LiningThickness", out value2) != null))
+         if ((TryGetDoubleValueFromElementOrSymbol(familyInstance, "IfcWindowLiningProperties.LiningDepth", "LiningDepth") is double value1) &&
+             (TryGetDoubleValueFromElementOrSymbol(familyInstance, "IfcWindowLiningProperties.LiningThickness", "LiningThickness") is double value2))
          {
             liningDepthOpt = UnitUtil.ScaleLength(value1);
             liningThicknessOpt = UnitUtil.ScaleLength(value2);
          }
 
-         if (ParameterUtil.GetDoubleValueFromElementOrSymbol(familyInstance, "TransomThickness", out value1) != null)
-            transomThicknessOpt = UnitUtil.ScaleLength(value1);
+         if (TryGetDoubleValueFromElementOrSymbol(familyInstance, "IfcWindowLiningProperties.TransomThickness", "TransomThickness") is double value3)
+            transomThicknessOpt = UnitUtil.ScaleLength(value3);
 
-         if (ParameterUtil.GetDoubleValueFromElementOrSymbol(familyInstance, "FirstTransomOffset", out value1) != null)
-            firstTransomOffsetOpt = UnitUtil.ScaleLength(value1);
+         if (TryGetDoubleValueFromElementOrSymbol(familyInstance, "IfcWindowLiningProperties.FirstTransomOffset", "FirstTransomOffset") is double value4)
+            firstTransomOffsetOpt = value4;
 
-         if (ParameterUtil.GetDoubleValueFromElementOrSymbol(familyInstance, "SecondTransomOffset", out value1) != null)
-            secondTransomOffsetOpt = UnitUtil.ScaleLength(value1);
+         if (TryGetDoubleValueFromElementOrSymbol(familyInstance, "IfcWindowLiningProperties.SecondTransomOffset", "SecondTransomOffset") is double value5)
+            secondTransomOffsetOpt = value5;
 
-         if (ParameterUtil.GetDoubleValueFromElementOrSymbol(familyInstance, "MullionThickness", out value1) != null)
-            mullionThicknessOpt = UnitUtil.ScaleLength(value1);
+         if (TryGetDoubleValueFromElementOrSymbol(familyInstance, "IfcWindowLiningProperties.MullionThickness", "MullionThickness") is double value6)
+            mullionThicknessOpt = UnitUtil.ScaleLength(value6);
 
-         if (ParameterUtil.GetDoubleValueFromElementOrSymbol(familyInstance, "FirstMullionOffset", out value1) != null)
-            firstMullionOffsetOpt = UnitUtil.ScaleLength(value1);
+         if (TryGetDoubleValueFromElementOrSymbol(familyInstance, "IfcWindowLiningProperties.FirstMullionOffset", "FirstMullionOffset") is double value7)
+            firstMullionOffsetOpt = value7;
 
-         if (ParameterUtil.GetDoubleValueFromElementOrSymbol(familyInstance, "SecondMullionOffset", out value1) != null)
-            secondMullionOffsetOpt = UnitUtil.ScaleLength(value1);
+         if (TryGetDoubleValueFromElementOrSymbol(familyInstance, "IfcWindowLiningProperties.SecondMullionOffset", "SecondMullionOffset") is double value8)
+            secondMullionOffsetOpt = value8;
 
-         //string windowLiningGUID = GUIDUtil.CreateGUID();
          string windowLiningGUID = GUIDUtil.CreateSubElementGUID(familyInstance, (int)IFCWindowSubElements.WindowLining);
          string windowLiningName = NamingUtil.GetIFCName(familyInstance);
          return IFCInstanceExporter.CreateWindowLiningProperties(file, windowLiningGUID, ownerHistory,
@@ -637,62 +590,308 @@ namespace Revit.IFC.Export.Utility
             firstTransomOffsetOpt, secondTransomOffsetOpt, firstMullionOffsetOpt, secondMullionOffsetOpt, null);
       }
 
-      /// <summary>
-      /// Creates window panel properties.
-      /// </summary>
-      /// <param name="exporterIFC">
-      /// The ExporterIFC object.
-      /// </param>
-      /// <param name="doorWindowInfo">
-      /// The IFCDoorWindowInfo object.
-      /// </param>
-      /// <param name="familyInstance">
-      /// The family instance of a window.
-      /// </param>
-      /// <param name="description">
-      /// The description.
-      /// </param>
-      /// <returns>
-      /// The list of handles created.
-      /// </returns>
-      public static IList<IFCAnyHandle> CreateWindowPanelProperties(ExporterIFC exporterIFC,
-         Element familyInstance, string description)
+      private static Dictionary<string, IFCAnyHandle> CreateWindowPanelPropertyHandles4x3(IFCFile file,
+         string panelOperation, string panelPosition, double? frameDepth, double? frameThickness)
       {
-         IList<IFCAnyHandle> panels = new List<IFCAnyHandle>();
+         Dictionary<string, IFCAnyHandle> props = [];
+         props["OperationType"] = IFCInstanceExporter.CreatePropertyEnumeratedValue(file,
+            new("OperationType"), [IFCData.CreateEnumeration(panelOperation ?? "UNSET")], null);
+
+         props["PanelPosition"] = IFCInstanceExporter.CreatePropertyEnumeratedValue(file,
+            new("PanelPosition"), [IFCData.CreateEnumeration(panelPosition ?? "UNSET")], null);
+
+         if (frameDepth.HasValue)
+         {
+            IFCData frameDepthData = IFCDataUtil.CreateAsPositiveLengthMeasure(frameDepth.Value);
+            if (frameDepthData != null)
+               props["FrameDepth"] = IFCInstanceExporter.CreatePropertySingleValue(file, new("FrameDepth"), frameDepthData, null);
+         }
+
+         if (frameThickness.HasValue)
+         {
+            IFCData frameThicknessData = IFCDataUtil.CreateAsPositiveLengthMeasure(frameThickness.Value);
+            if (frameThicknessData != null)
+               props["FrameThickness"] = IFCInstanceExporter.CreatePropertySingleValue(file, new("FrameThickness"), frameThicknessData, null);
+         }
+
+         return props;
+      }
+
+      private static IFCAnyHandle CreatePsetWindowPanelProperties4x3(IFCFile file, string panelGUID, IFCAnyHandle ownerHistory, 
+         string description, string panelOperation, string panelPosition, double? frameDepth, 
+         double? frameThickness)
+      {
+         Dictionary<string, IFCAnyHandle> props = CreateWindowPanelPropertyHandles4x3(file,
+            panelOperation, panelPosition, frameDepth, frameThickness);
+         return IFCInstanceExporter.CreatePropertySet(file, panelGUID, ownerHistory, "Pset_WindowPanelProperties", description,
+            new HashSet<IFCAnyHandle>(props.Values));
+      }
+
+      private static Dictionary<string, IFCAnyHandle> CreateDoorPanelPropertyHandles4x3(IFCFile file,
+         double? panelDepth, string panelOperation, double? panelWidth, string panelPosition)
+      {
+         Dictionary<string, IFCAnyHandle> props = [];
+         if (panelDepth.HasValue)
+         {
+            IFCData panelDepthData = IFCDataUtil.CreateAsPositiveLengthMeasure(panelDepth.Value);
+            if (panelDepthData != null)
+               props["PanelDepth"] = IFCInstanceExporter.CreatePropertySingleValue(file, new("PanelDepth"), panelDepthData, null);
+         }
+
+         props["PanelOperation"] = IFCInstanceExporter.CreatePropertyEnumeratedValue(file,
+            new("PanelOperation"), [IFCDataUtil.CreateAsLabel(panelOperation ?? "UNSET")], null);
+
+         if (panelWidth.HasValue)
+         {
+            IFCData panelWidthData = IFCDataUtil.CreateAsNormalisedRatioMeasure(panelWidth.Value);
+            if (panelWidthData != null)
+               props["PanelWidth"] = IFCInstanceExporter.CreatePropertySingleValue(file, new("PanelWidth"), panelWidthData, null);
+         }
+
+         props["PanelPosition"] = IFCInstanceExporter.CreatePropertyEnumeratedValue(file,
+            new("PanelPosition"), [IFCDataUtil.CreateAsLabel(panelPosition ?? "UNSET")], null);
+
+         return props;
+      }
+
+      private static IFCAnyHandle CreatePsetDoorPanelProperties4x3(IFCFile file, string panelGUID, IFCAnyHandle ownerHistory,
+         string description, double? panelDepth, string panelOperation, double? panelWidth, string panelPosition)
+      {
+         Dictionary<string, IFCAnyHandle> props = CreateDoorPanelPropertyHandles4x3(file,
+            panelDepth, panelOperation, panelWidth, panelPosition);
+         return IFCInstanceExporter.CreatePropertySet(file, panelGUID, ownerHistory, "Pset_DoorPanelProperties", description,
+            new HashSet<IFCAnyHandle>(props.Values));
+      }
+
+      /// <summary>
+      /// For IFC4.3+ multi-panel doors, creates property-only IfcPlate children aggregated under
+      /// the door instance via IfcRelAggregates. Each plate carries its own Pset_DoorPanelProperties,
+      /// avoiding the IfcTypeObject.UniquePropertySetNames violation that would occur if multiple
+      /// same-named psets were placed on the door type.
+      /// </summary>
+      /// <param name="exporterIFC">The ExporterIFC object.</param>
+      /// <param name="doorWindowInfo">The DoorWindowInfo object.</param>
+      /// <param name="familyInstance">The family instance of a door.</param>
+      /// <param name="familySymbol">The type element.</param>
+      /// <param name="doorInstanceHandle">The IfcDoor instance handle to aggregate plates under.</param>
+      public static void CreateDoorPanelDecomposition(ExporterIFC exporterIFC,
+         DoorWindowInfo doorWindowInfo, Element familyInstance, Element familySymbol,
+         IFCAnyHandle doorInstanceHandle)
+      {
+         if (ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4x3)
+            return;
+
+         if (IFCAnyHandleUtil.IsNullOrHasNoValue(doorInstanceHandle))
+            return;
+
+         IList<DoorPanelInformation> doorPanelInfoList = CollectDoorPanelInfo(doorWindowInfo, familyInstance, familySymbol);
+         if (doorPanelInfoList.Count <= 1)
+            return;
+
          IFCFile file = exporterIFC.GetFile();
          IFCAnyHandle ownerHistory = ExporterCacheManager.OwnerHistoryHandle;
+         HashSet<IFCAnyHandle> plateHandles = [];
 
-         const int maxPanels = 1000;  // arbitrary large number to prevent infinite loops.
+         string baseName = NamingUtil.GetIFCName(familyInstance);
+         int panelNumber = 1;
+         foreach (DoorPanelInformation panelInfo in doorPanelInfoList)
+         {
+            string plateGUID = GUIDUtil.CreateSubElementGUID(familyInstance,
+               (int)IFCDoorSubElements.DoorPanelStart + panelNumber - 1);
+
+            IFCAnyHandle plateHandle = IFCInstanceExporter.CreatePlate(file, null, null,
+               plateGUID, ownerHistory, null, null, "USERDEFINED");
+            IFCAnyHandleUtil.OverrideNameAttribute(plateHandle, baseName + ":Panel:" + panelNumber);
+            IFCAnyHandleUtil.SetAttribute(plateHandle, "ObjectType", "DOOR_PANEL");
+
+            string psetGUID = GUIDUtil.GenerateIFCGuidFrom(
+               GUIDUtil.CreateGUIDString(IFCEntityType.IfcPropertySet, "Pset_DoorPanelProperties", plateHandle));
+            IFCAnyHandle psetHandle = CreatePsetDoorPanelProperties4x3(file, psetGUID, ownerHistory,
+               null, panelInfo.Depth, panelInfo.Operation, panelInfo.Width, panelInfo.Position);
+
+            ExporterUtil.CreateRelDefinesByProperties(file, ownerHistory, null, null,
+               new HashSet<IFCAnyHandle> { plateHandle }, psetHandle);
+
+            plateHandles.Add(plateHandle);
+            panelNumber++;
+         }
+
+         if (plateHandles.Count > 0)
+         {
+            string relGuid = GUIDUtil.GenerateIFCGuidFrom(
+               GUIDUtil.CreateGUIDString(IFCEntityType.IfcRelAggregates, doorInstanceHandle));
+            IFCInstanceExporter.CreateRelAggregates(file, relGuid, ownerHistory, null, null,
+               doorInstanceHandle, plateHandles);
+         }
+      }
+
+      private class WindowPanelInformation
+      {
+         public string Operation { get; private set; }
+         public string Position { get; private set; }
+         public double? FrameDepth { get; private set; }
+         public double? FrameThickness { get; private set; }
+
+         public WindowPanelInformation(string operation, string position, double? frameDepth, double? frameThickness)
+         {
+            Operation = operation;
+            Position = position;
+            FrameDepth = frameDepth;
+            FrameThickness = frameThickness;
+         }
+      }
+
+      /// <summary>
+      /// Collects window panel information from the family instance parameters.
+      /// </summary>
+      private static IList<WindowPanelInformation> CollectWindowPanelInfo(Element familyInstance)
+      {
+         IList<WindowPanelInformation> windowPanelInfoList = new List<WindowPanelInformation>();
+
+         const int maxPanels = 1000;
          for (int panelNumber = 1; panelNumber < maxPanels; panelNumber++)
          {
-            string frameDepthCurrString = "FrameDepth" + panelNumber.ToString();
-            string frameThicknessCurrString = "FrameThickness" + panelNumber.ToString();
-
-            IFCWindowPanelOperation panelOperation = GetIFCWindowPanelOperation("", familyInstance, panelNumber);
-            IFCWindowPanelPosition panelPosition = GetIFCWindowPanelPosition("", familyInstance, panelNumber);
-            if (panelOperation == IFCWindowPanelOperation.NotDefined && panelPosition == IFCWindowPanelPosition.NotDefined)
+            string panelOperation = GetIFCWindowPanelOperation("", familyInstance, panelNumber);
+            string panelPosition = GetIFCWindowPanelPosition("", familyInstance, panelNumber);
+            if (panelOperation == null && panelPosition == null)
                break;
 
             double? frameDepth = null;
             double? frameThickness = null;
 
-            double value1, value2;
-            if (((ParameterUtil.GetDoubleValueFromElementOrSymbol(familyInstance, frameDepthCurrString, out value1) != null) ||
-                ((panelNumber == 1) && (ParameterUtil.GetDoubleValueFromElementOrSymbol(familyInstance, "FrameDepth", out value1) != null))) &&
-               ((ParameterUtil.GetDoubleValueFromElementOrSymbol(familyInstance, frameThicknessCurrString, out value2) != null) ||
-                ((panelNumber == 1) && (ParameterUtil.GetDoubleValueFromElementOrSymbol(familyInstance, "FrameThickness", out value2) != null))))
-            {
-               frameDepth = UnitUtil.ScaleLength(value1);
-               frameThickness = UnitUtil.ScaleLength(value2);
-            }
+            string frameDepthCurrString = "FrameDepth" + panelNumber.ToString();
+            string frameThicknessCurrString = "FrameThickness" + panelNumber.ToString();
 
-            //string panelGUID = GUIDUtil.CreateGUID();
+            if (panelNumber == 1)
+            {
+               if ((TryGetDoubleValueFromElementOrSymbol(familyInstance, "IfcWindowPanelProperties." + frameDepthCurrString,
+                  frameDepthCurrString, "IfcWindowPanelProperties.FrameDepth", "FrameDepth") is double value1) &&
+                  (TryGetDoubleValueFromElementOrSymbol(familyInstance, "IfcWindowPanelProperties." + frameThicknessCurrString,
+                  frameThicknessCurrString, "IfcWindowPanelProperties.FrameThickness", "FrameThickness") is double value2))
+               {
+                  frameDepth = UnitUtil.ScaleLength(value1);
+                  frameThickness = UnitUtil.ScaleLength(value2);
+               }
+            }
+            else
+            {
+               if ((TryGetDoubleValueFromElementOrSymbol(familyInstance, "IfcWindowPanelProperties." + frameDepthCurrString, 
+                  frameDepthCurrString) is double value1) &&
+                  (TryGetDoubleValueFromElementOrSymbol(familyInstance, "IfcWindowPanelProperties." + frameThicknessCurrString,
+                  frameThicknessCurrString) is double value2))
+               {
+                  frameDepth = UnitUtil.ScaleLength(value1);
+                  frameThickness = UnitUtil.ScaleLength(value2);
+               }
+            }
+      
+            windowPanelInfoList.Add(new WindowPanelInformation(panelOperation, panelPosition, frameDepth, frameThickness));
+         }
+
+         return windowPanelInfoList;
+      }
+
+      /// <summary>
+      /// Creates window panel properties to be attached to the window type.
+      /// For IFC4.3+ multi-panel windows, returns empty — panels are decomposed at instance level
+      /// via <see cref="CreateWindowPanelDecomposition"/>.
+      /// </summary>
+      /// <param name="exporterIFC">The ExporterIFC object.</param>
+      /// <param name="familyInstance">The family instance of a window.</param>
+      /// <param name="description">The description.</param>
+      /// <param name="familySymbol">The type element.</param>
+      /// <returns>The list of handles created.</returns>
+      public static IList<IFCAnyHandle> CreateWindowPanelProperties(ExporterIFC exporterIFC,
+         Element familyInstance, string description, Element familySymbol)
+      {
+         IList<IFCAnyHandle> panels = new List<IFCAnyHandle>();
+         IFCFile file = exporterIFC.GetFile();
+         IFCAnyHandle ownerHistory = ExporterCacheManager.OwnerHistoryHandle;
+
+         IList<WindowPanelInformation> windowPanelInfoList = CollectWindowPanelInfo(familyInstance);
+
+         if (!ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4x3)
+         {
+            // IFC4.3+ multi-panel: IfcPlate decomposition at instance level.
+            // IFC4.3+ single-panel: cache properties for the centralized pset pass.
+            if (windowPanelInfoList.Count == 1 && familySymbol != null)
+            {
+               WindowPanelInformation panelInfo = windowPanelInfoList[0];
+               ExporterCacheManager.PreCreatedPsetProperties[("Pset_WindowPanelProperties", familySymbol.Id)] =
+                  CreateWindowPanelPropertyHandles4x3(file, panelInfo.Operation, panelInfo.Position,
+                     panelInfo.FrameDepth, panelInfo.FrameThickness);
+            }
+            return panels;
+         }
+
+         int panelNumber = 1;
+         foreach (WindowPanelInformation panelInfo in windowPanelInfoList)
+         {
             string panelGUID = GUIDUtil.CreateSubElementGUID(familyInstance, (int)IFCWindowSubElements.WindowPanelStart + panelNumber);
             string panelName = NamingUtil.GetIFCNamePlusIndex(familyInstance, panelNumber);
-            panels.Add(IFCInstanceExporter.CreateWindowPanelProperties(file, panelGUID, ownerHistory,
-               panelName, description, panelOperation, panelPosition, frameDepth, frameThickness, null));
+            IFCAnyHandle psetHandle = IFCInstanceExporter.CreateWindowPanelProperties(file, panelGUID, ownerHistory,
+               panelName, description, panelInfo.Operation, panelInfo.Position, panelInfo.FrameDepth, panelInfo.FrameThickness, null);
+            panels.Add(psetHandle);
+            panelNumber++;
          }
          return panels;
+      }
+
+      /// <summary>
+      /// For IFC4.3+ multi-panel windows, creates property-only IfcPlate children aggregated under
+      /// the window instance via IfcRelAggregates. Each plate carries its own Pset_WindowPanelProperties.
+      /// </summary>
+      /// <param name="exporterIFC">The ExporterIFC object.</param>
+      /// <param name="familyInstance">The family instance of a window.</param>
+      /// <param name="windowInstanceHandle">The IfcWindow instance handle to aggregate plates under.</param>
+      public static void CreateWindowPanelDecomposition(ExporterIFC exporterIFC,
+         Element familyInstance, IFCAnyHandle windowInstanceHandle)
+      {
+         if (ExporterCacheManager.ExportOptionsCache.ExportAsOlderThanIFC4x3)
+            return;
+
+         if (IFCAnyHandleUtil.IsNullOrHasNoValue(windowInstanceHandle))
+            return;
+
+         IList<WindowPanelInformation> windowPanelInfoList = CollectWindowPanelInfo(familyInstance);
+         if (windowPanelInfoList.Count <= 1)
+            return;
+
+         IFCFile file = exporterIFC.GetFile();
+         IFCAnyHandle ownerHistory = ExporterCacheManager.OwnerHistoryHandle;
+         HashSet<IFCAnyHandle> plateHandles = [];
+
+         string baseName = NamingUtil.GetIFCName(familyInstance);
+         int panelNumber = 1;
+         foreach (WindowPanelInformation panelInfo in windowPanelInfoList)
+         {
+            string plateGUID = GUIDUtil.CreateSubElementGUID(familyInstance,
+               (int)IFCWindowSubElements.WindowPanelStart + panelNumber);
+
+            IFCAnyHandle plateHandle = IFCInstanceExporter.CreatePlate(file, null, null,
+               plateGUID, ownerHistory, null, null, "USERDEFINED");
+            IFCAnyHandleUtil.OverrideNameAttribute(plateHandle, baseName + ":Panel:" + panelNumber);
+            IFCAnyHandleUtil.SetAttribute(plateHandle, "ObjectType", "WINDOW_PANEL");
+
+            string psetGUID = GUIDUtil.GenerateIFCGuidFrom(
+               GUIDUtil.CreateGUIDString(IFCEntityType.IfcPropertySet, "Pset_WindowPanelProperties", plateHandle));
+            IFCAnyHandle psetHandle = CreatePsetWindowPanelProperties4x3(file, psetGUID, ownerHistory,
+               null, panelInfo.Operation, panelInfo.Position, panelInfo.FrameDepth, panelInfo.FrameThickness);
+
+            ExporterUtil.CreateRelDefinesByProperties(file, ownerHistory, null, null,
+               new HashSet<IFCAnyHandle> { plateHandle }, psetHandle);
+
+            plateHandles.Add(plateHandle);
+            panelNumber++;
+         }
+
+         if (plateHandles.Count > 0)
+         {
+            string relGuid = GUIDUtil.GenerateIFCGuidFrom(
+               GUIDUtil.CreateGUIDString(IFCEntityType.IfcRelAggregates, windowInstanceHandle));
+            IFCInstanceExporter.CreateRelAggregates(file, relGuid, ownerHistory, null, null,
+               windowInstanceHandle, plateHandles);
+         }
       }
 
       /// <summary>
@@ -705,7 +904,7 @@ namespace Revit.IFC.Export.Utility
       /// <returns>The IFC handle associated with the host at that level.</returns>
       static public IFCAnyHandle GetHndForHostAndLevel(ExporterIFC exporterIFC, ElementId hostId, ElementId levelId)
       {
-         if (hostId == ElementId.InvalidElementId)
+         if (MathUtil.IsInvalidElementId(hostId))
             return null;
 
          IFCAnyHandle hostObjectHnd = null;
@@ -737,7 +936,7 @@ namespace Revit.IFC.Export.Utility
          XYZ point = arc.Evaluate(startParam, false);
          XYZ otherPoint = arc.Evaluate(endParam, false);
 
-         double eps = MathUtil.Eps();
+         double eps = MathUtil.Eps;
          XYZ maximum = new XYZ(Math.Max(point[0], otherPoint[0]),
              Math.Max(point[1], otherPoint[1]),
              Math.Max(point[2], otherPoint[2]));
@@ -870,9 +1069,15 @@ namespace Revit.IFC.Export.Utility
           IFCAnyHandle hostObjHnd, ElementId hostId, ElementId insertId, string openingGUID, CurveLoop cutLoop, XYZ cutDir,
           double origUnscaledDepth, bool posHingeSide, bool isRecess)
       {
-         // calculate some values.
-         double openingHeight = -1.0;
-         double openingWidth = -1.0;
+         double openingHeight = 0.0, openingWidth = 0.0;
+         Transform loopLcs = cutLoop.HasPlane() ? GeometryUtil.CreateTransformFromPlane(cutLoop.GetPlane()) : null;
+         BoundingBoxXYZ cutLoopBBox = ComputeApproximateCurveLoopBBoxForOpening(cutLoop, loopLcs);
+         if (cutLoopBBox != null)
+         {
+            XYZ dist = cutLoopBBox.Max - cutLoopBBox.Min;
+            openingHeight = Math.Abs(dist.Z);
+            openingWidth = Math.Sqrt(dist.X * dist.X + dist.Y * dist.Y);
+         }
 
          Element wallElement = doc.GetElement(hostId);
          Wall wall = (wallElement != null) ? wallElement as Wall : null;
@@ -883,6 +1088,13 @@ namespace Revit.IFC.Export.Utility
          // Don't export opening if we are exporting parts on a wall, as the parts will already have the openings cut out.
          if (PartExporter.CanExportParts(wall))
             return null;
+
+         Element doorWindowElement = doc.GetElement(insertId);
+
+         double? optWallSlantAngle = ExporterCacheManager.WallCrossSectionCache.GetUniformSlantAngle(wall);
+         bool wallIsVertical = (optWallSlantAngle != null) && MathUtil.IsAlmostZero(optWallSlantAngle.Value);
+         Parameter insertOrientation = doorWindowElement.get_Parameter(BuiltInParameter.INSERT_ORIENTATION);
+         bool insertIsVertical = (insertOrientation != null && insertOrientation.HasValue && insertOrientation.StorageType == StorageType.Integer && insertOrientation.AsInteger() == 0 /*vertical orientation*/);
 
          ElementId catId = CategoryUtil.GetSafeCategoryId(wall);
 
@@ -895,73 +1107,109 @@ namespace Revit.IFC.Export.Utility
          XYZ relZ = XYZ.BasisZ;
          XYZ relX = XYZ.BasisX;
 
-         double openingZNonScaled = -1.0;
-
-         // get height, width before transform
-         BoundingBoxXYZ cutLoopBBox = ComputeApproximateCurveLoopBBoxForOpening(cutLoop, null);
-         if (cutLoopBBox != null)
-         {
-            XYZ dist = cutLoopBBox.Max - cutLoopBBox.Min;
-            openingZNonScaled = cutLoopBBox.Min.Z;
-            openingHeight = Math.Abs(dist.Z);
-            openingWidth = Math.Sqrt(dist.X * dist.X + dist.Y * dist.Y);
-         }
-
          Transform openingTrf = ExporterIFCUtils.GetUnscaledTransform(exporterIFC, hostObjPlacementHnd);
-         XYZ hostObjYDir = openingTrf.BasisY;
-         XYZ hostObjOrig = openingTrf.Origin;
          openingTrf = openingTrf.Inverse;
 
-         // move to wall axis
-         CurveLoop tmpCutLoop = GeometryUtil.TransformCurveLoop(cutLoop, openingTrf);
+         if (RepresentationUtil.DocumentMirrorState.IsExportingMirroredLink())
+         {
+            Transform mirrorTrf = FederatedLinkManager.MirrorTransform;
+            if (mirrorTrf != null)
+               openingTrf = openingTrf.Multiply(mirrorTrf);
+         }
 
+         // Create a copy of the opening loop that will be expressed in the local coordinate system relative to the wall
+         CurveLoop tmpCutLoop = GeometryUtil.TransformCurveLoop(cutLoop, openingTrf);
+         loopLcs = openingTrf.Multiply(loopLcs);
          cutDir = openingTrf.OfVector(cutDir);
+
          if (curve is Line)
          {
-            Plane cutLoopPlane = null;
-            try
+            // TODO: Check this code for inserts in tapered walls.
+            if (wallIsVertical == insertIsVertical) // For vertical inserts in vertical walls and slanted inserts in slanted walls
             {
-               cutLoopPlane = tmpCutLoop.GetPlane();
+               XYZ wallExtrusionDir = WallExporter.GetWallExtrusionDirection(wall) ?? XYZ.BasisZ;
+
+               // Create a plane that goes through the center of the wall along its length
+               XYZ localExtrusionDir = openingTrf.OfVector(wallExtrusionDir);
+               Transform curveData = curve.ComputeDerivatives(curve.GetEndParameter(0), false);
+               if (curveData.BasisX.IsZeroLength())
+                  return null;
+
+               curveData = openingTrf.Multiply(curveData);
+               Plane wallCenterPlane = Plane.CreateByOriginAndBasis(curveData.Origin, curveData.BasisX.Normalize(), localExtrusionDir.Normalize());
+               // Calculate a center wall point relative to the origin of the opening loop
+               wallCenterPlane.Project(loopLcs.Origin, out UV uv, out _);
+
+               // Revit API doesn't seem to provide a plane evaluation method, so calculating the point by hand here
+               XYZ wallCenterPoint = wallCenterPlane.Origin + wallCenterPlane.XVec * uv.U + wallCenterPlane.YVec * uv.V;
+
+               // Place the opening loop on the proper side related to insert's hinge
+               // This is not applicable to vertical inserts in slanted walls, since they won't cut 
+               // the wall if cutout loop is placed on the side of the insert closer to the wall.
+               double desiredLoopOffset = posHingeSide ? (-unScaledDepth / 2.0) : (unScaledDepth / 2.0);
+               XYZ localY = localExtrusionDir.CrossProduct(curveData.BasisX).Normalize();
+               XYZ desiredPosition = wallCenterPoint + localY * desiredLoopOffset;
+               if (!loopLcs.Origin.IsAlmostEqualTo(desiredPosition))
+               {
+                  XYZ moveVec = desiredPosition - loopLcs.Origin;
+                  tmpCutLoop = GeometryUtil.MoveCurveLoop(tmpCutLoop, moveVec);
+               }
+
+               bool cutDirRelToHostObjY = (cutDir[1] > 0.0); // true = same sense, false = opp. sense
+               if (posHingeSide != cutDirRelToHostObjY)
+               {
+                  cutDir = cutDir.Negate();
+               }
+
+               loopLcs.BasisX = localExtrusionDir;
             }
-            catch
+            else // For vertical inserts in slanted walls
             {
-               return null;
+               if (wallIsVertical && insertIsVertical)
+                  return null; // This shouldn't be possible
+
+               // TODO: Is this right for tapered walls?
+               double slantAngle = optWallSlantAngle.GetValueOrDefault(0.0);
+
+               // Handle cases where cut direction is looking away from the wall
+               // Positive Y coordinate in cutDir means it's looking away from the positive slant direction
+               if ((cutDir[1] > 0.0) != (slantAngle < 0.0))
+               {
+                  // Move the cut loop forward to make sure that the width of the opening will also be cut out
+                  XYZ moveVec = cutDir * unScaledDepth;
+                  tmpCutLoop = GeometryUtil.MoveCurveLoop(tmpCutLoop, moveVec);
+                  // Flip the cut direction so that the cut would intersect the wall
+                  cutDir = cutDir.Negate();
+               }
+
+               // Calculate the distance from the top of the insert to the wall
+               double distToWall = openingHeight * Math.Tan(Math.Abs(slantAngle));
+               // Add wall's width to make sure the cut reaches its opposite side
+               unScaledDepth = distToWall + wall.Width;
+
+               loopLcs.BasisX = XYZ.BasisZ;
             }
 
-            XYZ clOrig = cutLoopPlane.Origin;
-
-            double wantOriginAtY = posHingeSide ? (-unScaledDepth / 2.0) : (unScaledDepth / 2.0);
-
-            if (!MathUtil.IsAlmostEqual(wantOriginAtY, clOrig[1]))
-            {
-               XYZ moveVec = new XYZ(0, wantOriginAtY - clOrig[1], 0);
-               tmpCutLoop = GeometryUtil.MoveCurveLoop(tmpCutLoop, moveVec);
-            }
-
-            bool cutDirRelToHostObjY = (cutDir[1] > 0.0); // true = same sense, false = opp. sense
-
-            if (posHingeSide != cutDirRelToHostObjY)
-            {
-               cutDir = cutDir * -1.0;
-               cutDirRelToHostObjY = !cutDirRelToHostObjY;  // not used beyond this point.
-            }
+            // In IFC the local X direction should point upwards along the wall, 
+            // and local Y direction should point horizontally along the wall.
+            loopLcs.BasisY = cutDir.CrossProduct(loopLcs.BasisX).Normalize();
+            loopLcs.BasisZ = cutDir;
          }
-         else if ((cutLoopBBox != null) && (curve is Arc))
+         else if (curve is Arc)
          {
             Arc arc = curve as Arc;
             double radius = arc.Radius;
-
+         
             XYZ curveCtr = arc.Center;
 
             // check orientation to cutDir, make sure it points to center of arc.
-
             XYZ origLL = new XYZ(cutLoopBBox.Min.X, cutLoopBBox.Min.Y, curveCtr.Z);
             XYZ origUR = new XYZ(cutLoopBBox.Max.X, cutLoopBBox.Max.Y, curveCtr.Z);
             XYZ origCtr = (origLL + origUR) / 2.0;
-
+         
             double centerDist = origCtr.DistanceTo(curveCtr);
             XYZ approxMoveDir = (origCtr - curveCtr).Normalize();
-
+         
             bool cutDirPointingIn = (cutDir.DotProduct(approxMoveDir) < 0.0);
             bool centerInsideArc = (centerDist < radius);
             if (centerInsideArc == cutDirPointingIn)
@@ -970,10 +1218,10 @@ namespace Revit.IFC.Export.Utility
                origCtr += moveVec;
                tmpCutLoop = GeometryUtil.MoveCurveLoop(tmpCutLoop, moveVec);
             }
-
+         
             // not for windows that are too big ... forget about it.  Very rare case.
             double depthFactor = openingWidth / (2.0 * radius);
-            double eps = MathUtil.Eps();
+            double eps = MathUtil.Eps;
             if (depthFactor < 1.0 - eps)
             {
                double depthFactorSq = depthFactor * depthFactor * 4;
@@ -985,7 +1233,7 @@ namespace Revit.IFC.Export.Utility
                   unScaledDepth += extraDepth;
                }
             }
-
+         
             // extra fudge on the other side of the window opening.
             depthFactor = origUnscaledDepth / (2.0 * radius);
             if (depthFactor < 1.0 - eps)
@@ -996,10 +1244,10 @@ namespace Revit.IFC.Export.Utility
             }
          }
 
-         XYZ cutXDir = XYZ.BasisZ;
-         XYZ cutYDir = cutDir.CrossProduct(cutXDir);
-         cutYDir = cutYDir.Normalize();
-         Transform lcs = GeometryUtil.CreateTransformFromVectorsAndOrigin(cutXDir, cutYDir, cutDir, XYZ.Zero);
+         Transform lcs = new Transform(loopLcs)
+         {
+            Origin = XYZ.Zero
+         };
 
          // now move to origin in this coordinate system.
          // todo: update openingtrf if we are to use it again!
@@ -1016,8 +1264,6 @@ namespace Revit.IFC.Export.Utility
 
          double depth = UnitUtil.ScaleLength(unScaledDepth);
 
-         Element doorWindowElement = doc.GetElement(insertId);
-
          IFCAnyHandle openingRepHnd = RepresentationUtil.CreateExtrudedProductDefShape(exporterIFC, doorWindowElement, catId,
              oCutLoopList, lcs, cutDir, depth);
          if (IFCAnyHandleUtil.IsNullOrHasNoValue(openingRepHnd))
@@ -1026,26 +1272,36 @@ namespace Revit.IFC.Export.Utility
          // care only about first loop.
          IFCFile file = exporterIFC.GetFile();
          XYZ scaledOrig = UnitUtil.ScaleLength(relOrig);
+
+         if (RepresentationUtil.DocumentMirrorState.IsExportingMirroredLink())
+         {
+            Transform mirrorTrf = FederatedLinkManager.MirrorTransform;
+            if (mirrorTrf != null)
+               scaledOrig = mirrorTrf.OfPoint(scaledOrig);
+         }
+
          IFCAnyHandle openingPlacement = ExporterUtil.CreateLocalPlacement(file, hostObjPlacementHnd, scaledOrig, relZ, relX);
 
          string openingObjectType = isRecess ? "Recess" : "Opening";
          string origOpeningName = NamingUtil.GetIFCNamePlusIndex(doorWindowElement, 1);
+         string openingDescription = NamingUtil.GetDescriptionOverride(doorWindowElement, null);
          string openingName = NamingUtil.GetNameOverride(doorWindowElement, origOpeningName);
-
-         IFCAnyHandle openingHnd = IFCInstanceExporter.CreateOpeningElement(exporterIFC, doorWindowElement, openingGUID, ownerHistory,
-             openingPlacement, openingRepHnd);
-         IFCAnyHandleUtil.OverrideNameAttribute(openingHnd, openingName);
-         IFCAnyHandleUtil.SetAttribute(openingHnd, "ObjectType", openingObjectType);
-
+         string openingTag = NamingUtil.GetTagOverride(doorWindowElement);
+         IFCAnyHandle openingHnd = IFCInstanceExporter.CreateOpeningElement(exporterIFC, 
+            openingGUID, ownerHistory, 
+            openingName, openingDescription, openingObjectType,
+            openingPlacement, openingRepHnd, openingTag);
+         
          string openingVoidsGUID = GUIDUtil.CreateSubElementGUID(doorWindowElement, (int)IFCDoorSubElements.DoorOpeningRelVoid);
          IFCInstanceExporter.CreateRelVoidsElement(file, openingVoidsGUID, ownerHistory, null, null, hostObjHnd, openingHnd);
 
-         if (ExporterCacheManager.ExportOptionsCache.ExportBaseQuantities)
+         if (ExporterCacheManager.ExportIFCBaseQuantities())
          {
-            using (IFCExtrusionCreationData extraParams = new IFCExtrusionCreationData())
+            using (IFCExportBodyParams extraParams = new IFCExportBodyParams())
             {
                double height = 0.0, width = 0.0;
-               if (GeometryUtil.ComputeHeightWidthOfCurveLoop(tmpCutLoop, lcs, out height, out width))
+               OpeningUtil.GetOpeningDirections(wallElement, out _, out XYZ wallAxis);
+               if (GeometryUtil.ComputeHeightWidthOfCurveLoop(tmpCutLoop, wallAxis, out height, out width))
                {
                   extraParams.ScaledHeight = UnitUtil.ScaleLength(height);
                   extraParams.ScaledWidth = UnitUtil.ScaleLength(width);
@@ -1089,13 +1345,13 @@ namespace Revit.IFC.Export.Utility
 
          using (PlacementSetter setter = PlacementSetter.Create(exporterIFC, insertElement))
          {
-            using (IFCExtrusionCreationData extrusionCreationData = new IFCExtrusionCreationData())
+            using (IFCExportBodyParams extrusionCreationData = new IFCExportBodyParams())
             {
                extrusionCreationData.SetLocalPlacement(ExporterUtil.CreateLocalPlacement(file, setter.LocalPlacement, null));
                extrusionCreationData.ReuseLocalPlacement = true;
 
                IFCAnyHandle openingHnd = OpeningUtil.CreateOpening(exporterIFC, hostObjHnd, hostElement, insertElement, openingGUID, solid, scaledHostWidth,
-                   isRecess, extrusionCreationData, null, null);
+                   isRecess, extrusionCreationData, null, null, null, -1, -1);
 
                double unscaledHeight = UnitUtil.UnscaleLength(extrusionCreationData.ScaledHeight);
                double unscaledWidth = UnitUtil.UnscaleLength(extrusionCreationData.ScaledWidth);

@@ -17,11 +17,7 @@
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 //
 
-using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace RevitIFCTools.PropertySet
 {
@@ -33,7 +29,7 @@ namespace RevitIFCTools.PropertySet
       {
          string compT = Name;
          foreach (PsetProperty p in Properties)
-            compT += "\n" + p.ToString();
+            compT += "\r\n" + p.ToString();
          return compT;
       }
    }

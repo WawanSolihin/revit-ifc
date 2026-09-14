@@ -1,4 +1,4 @@
-﻿//
+//
 // BIM IFC export alternate UI library: this library works with Autodesk(R) Revit(R) to provide an alternate user interface for the export of IFC files from Revit.
 // Copyright (C) 2016  Autodesk, Inc.
 // 
@@ -18,22 +18,24 @@
 //
 
 using System.Reflection;
-using System.Resources;
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Windows;
 
 // General Information about an assembly is controlled through the following 
 // set of attributes. Change these attribute values to modify the information
 // associated with an assembly.
-[assembly: AssemblyTitle("IFCExporterUI")]
+[assembly: AssemblyTitle("Autodesk.IFC.Export.UI")]
 [assembly: AssemblyDescription("IFC Exporter for Revit Project")]
 [assembly: AssemblyConfiguration("")]
+
+// Company, Product and Copyright info can now be found in Foundation\RevitENU\Version.cs
+#if IFC_OPENSOURCE
 [assembly: AssemblyCompany("Autodesk, Inc.")]
-[assembly: AssemblyProduct("IFCExporterUI")]
-[assembly: AssemblyCopyright("© 2012-2017 Autodesk, Inc. All rights reserved.")]
+[assembly: AssemblyProduct("Autodesk.IFC.Export.UI")]
+[assembly: AssemblyCopyright("� 2012-2026 Autodesk, Inc. All rights reserved.")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]
+#endif
 
 // Setting ComVisible to false makes the types in this assembly not visible 
 // to COM components.  If you need to access a type in this assembly from 
@@ -59,16 +61,12 @@ using System.Windows;
     // app, or any theme specific resource dictionaries)
 )]
 
-
-// Version information for an assembly consists of the following four values:
-//
-//      Major Version
-//      Minor Version 
-//      Build Number
-//      Revision
-//
-// You can specify all the values or you can default the Build and Revision Numbers 
-// by using the '*' as shown below:
-// [assembly: AssemblyVersion("1.0.*")]
-[assembly: AssemblyVersion("19.1.2.0")]
-[assembly: AssemblyFileVersion("19.1.2.0")]
+[assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("windows7.0")]
+// Version information can now be found in Foundation\RevitENU\Version.cs
+#if IFC_OPENSOURCE
+// The following information is used in the Open Source version as the release version number.
+// The number will show up in the Title bar of the export dialog as well as at the IFC header file
+// This number must be manually updated prior to releasing the new version
+[assembly: AssemblyVersion("27.3.0.12")]
+[assembly: AssemblyFileVersion("27.3.0.12")]
+#endif

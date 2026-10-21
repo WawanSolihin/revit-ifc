@@ -6,6 +6,16 @@
 	<UseWPF>true</UseWPF>
    <EnableDefaultPageItems>false</EnableDefaultPageItems>
    <UseWindowsForms>False</UseWindowsForms>
+   <TargetFramework>net10.0-windows7.0</TargetFramework>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <DefineConstants>$(DefineConstants);FORNAX_EXTENSION</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <DefineConstants>$(DefineConstants);FORNAX_EXTENSION</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Slow_Debug|x64'">
+    <DefineConstants>$(DefineConstants);FORNAX_EXTENSION</DefineConstants>
   </PropertyGroup>
   <Import Project="$(SolutionDir)VSProps\Revit.CSharp.Sdk.props" />
   <ItemGroup>
@@ -40,7 +50,7 @@
    </ItemGroup>
    <ItemGroup>
      <Reference Include="RevitAPI">
-       <HintPath>..\..\..\API\2027\RevitAPI.dll</HintPath>
+       <HintPath>C:\Program Files\Autodesk\Revit 2027\RevitAPI.dll</HintPath>
      </Reference>
    </ItemGroup>
   <Import Project="$(SolutionDir)VSProps\Revit.CSharp.Sdk.targets" />

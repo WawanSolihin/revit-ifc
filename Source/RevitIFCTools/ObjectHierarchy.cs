@@ -1,5 +1,8 @@
-﻿using System;
+﻿using Autodesk.Revit.DB;
+using Revit.IFC.Common.Utility;
+using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -45,7 +48,7 @@ namespace RevitIFCTools
       /// </summary>
       /// <param name="ifcSchemaFile"></param>
       /// <returns>List of object hierarchies</returns>
-      public List<ObjectHierarchy> GenerateObjectHierarchy(string ifcSchemaFile)
+      public static List<ObjectHierarchy> GenerateObjectHierarchy(string ifcSchemaFile)
       {
          if (string.IsNullOrEmpty(ifcSchemaFile))
          {
@@ -53,12 +56,14 @@ namespace RevitIFCTools
          }
 
          FileInfo schemaFileInfo = new FileInfo(ifcSchemaFile);
-         bool newLoad = ProcessIFCXMLSchema.ProcessIFCSchema(schemaFileInfo);
+         string ifcVersion = Path.GetFileNameWithoutExtension(schemaFileInfo.Name);
+         IfcSchemaEntityTree.TryGetSchemaVersion(ifcVersion, out IFCSchemaFileVersion schemaVersion);
+         IfcSchemaEntityTree entityTree = new IfcSchemaEntityTree(schemaVersion);
+         bool newLoad = ProcessIFCXMLSchema.ProcessIFCSchema(schemaFileInfo, ref entityTree);
          if (newLoad)
          {
-            string ifcVersion = Path.GetFileNameWithoutExtension(schemaFileInfo.Name);
             List<ObjectHierarchy> objectHierarchies = new List<ObjectHierarchy>();
-            foreach (var entityDict in IfcSchemaEntityTree.EntityDict)
+            foreach (var entityDict in entityTree.IfcEntityDict)
             {
                IfcSchemaEntityNode parentEntityNode = entityDict.Value;
 
@@ -66,16 +71,16 @@ namespace RevitIFCTools
                {
                   //check if current has a child
                   IList<IfcSchemaEntityNode> childNodes = parentEntityNode.GetChildren();
-                  if (childNodes.Count == 0)
+                  //if (childNodes.Count == 0)
                   {
-                     objectHierarchies.Add(new ObjectHierarchy(ifcVersion, parentEntityNode.Name, parentEntityNode.Name,
-                        parentEntityNode.isAbstract, 0));
-                     continue;
+                     objectHierarchies.Add(new ObjectHierarchy(schemaVersion.ToString(), parentEntityNode.Name, parentEntityNode.Name,
+                        parentEntityNode.IsAbstract, 0));
+                     //continue;
                   }
 
                   foreach (IfcSchemaEntityNode childNode in childNodes)
                   {
-                     List<ObjectHierarchy> hierarchies = CollectObjectHierarchies(childNode, ifcVersion, parentEntityNode.Name);
+                     List<ObjectHierarchy> hierarchies = CollectObjectHierarchies(childNode, schemaVersion.ToString(), parentEntityNode.Name);
                      objectHierarchies.AddRange(hierarchies);
                   }
                }
@@ -93,18 +98,18 @@ namespace RevitIFCTools
       /// <param name="ifcSchemaVersion"></param>
       /// <param name="currentNodeName"></param>
       /// <returns></returns>
-      private List<ObjectHierarchy> CollectObjectHierarchies(IfcSchemaEntityNode childNode, string ifcSchemaVersion, string currentNodeName)
+      private static List<ObjectHierarchy> CollectObjectHierarchies(IfcSchemaEntityNode childNode, string ifcSchemaVersion, string currentNodeName)
       {
          List<ObjectHierarchy> objectHierarchies = new List<ObjectHierarchy>();
 
          //check if current child node has a child
          IList<IfcSchemaEntityNode> descendantNodes = childNode.GetChildren();
-         if (descendantNodes.Count == 0)
+         //if (descendantNodes.Count == 0 || !childNode.isAbstract)
          {
             int level = 0;
             //add the current child node into the list
             objectHierarchies.Add(new ObjectHierarchy(ifcSchemaVersion, childNode.Name, childNode.Name,
-                      childNode.isAbstract, level));
+                      childNode.IsAbstract, level));
 
             IfcSchemaEntityNode parentNode = childNode.GetParent();
 
@@ -116,12 +121,12 @@ namespace RevitIFCTools
                if (currentNodeName != parentNode.Name)
                {
                   objectHierarchies.Add(new ObjectHierarchy(ifcSchemaVersion, parentNode.Name, childNode.Name,
-                     parentNode.isAbstract, level));
+                     parentNode.IsAbstract, level));
                }
                else
                {
                   objectHierarchies.Add(new ObjectHierarchy(ifcSchemaVersion, parentNode.Name, childNode.Name,
-                     parentNode.isAbstract, level));
+                     parentNode.IsAbstract, level));
                   break;
                }
                parentNode = parentNode.GetParent();
@@ -131,6 +136,37 @@ namespace RevitIFCTools
          foreach (var descendantNode in descendantNodes)
          {
             objectHierarchies.AddRange(CollectObjectHierarchies(descendantNode, ifcSchemaVersion, currentNodeName));
+         }
+         return objectHierarchies;
+      }
+
+      List<ObjectHierarchy> GenerateHierarchy(string ifcSchemaVersion, IfcSchemaEntityNode currNode, string stopNodeName)
+      {
+         List<ObjectHierarchy> objectHierarchies = new List<ObjectHierarchy>();
+         int level = 0;
+         //add the current child node into the list
+         objectHierarchies.Add(new ObjectHierarchy(ifcSchemaVersion, currNode.Name, currNode.Name,
+                currNode.IsAbstract, level));
+
+         IfcSchemaEntityNode parentNode = currNode.GetParent();
+
+         //add every current child node parent's parent node into the list
+         while (parentNode != null)
+         {
+            level++;
+            //stops the loop when the current node and child node's parent are the same
+            if (stopNodeName != parentNode.Name)
+            {
+               objectHierarchies.Add(new ObjectHierarchy(ifcSchemaVersion, parentNode.Name, currNode.Name,
+                  parentNode.IsAbstract, level));
+            }
+            else
+            {
+               objectHierarchies.Add(new ObjectHierarchy(ifcSchemaVersion, parentNode.Name, currNode.Name,
+                  parentNode.IsAbstract, level));
+               break;
+            }
+            parentNode = parentNode.GetParent();
          }
          return objectHierarchies;
       }

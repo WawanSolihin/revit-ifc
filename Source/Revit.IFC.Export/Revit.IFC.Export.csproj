@@ -71,18 +71,20 @@
     <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
   </ItemGroup>
   <ItemGroup>
+    <Reference Include="AddInLoader">
+      <HintPath>C:\Program Files\Autodesk\Revit 2027\AddInLoader.dll</HintPath>
+    </Reference>
     <Reference Include="RevitAPI">
-      <HintPath>..\..\..\API\2027\RevitAPI.dll</HintPath>
+      <HintPath>C:\Program Files\Autodesk\Revit 2027\RevitAPI.dll</HintPath>
     </Reference>
     <Reference Include="RevitAPIIFC">
-      <HintPath>..\..\..\API\2027\RevitAPIIFC.dll</HintPath>
+      <HintPath>C:\Program Files\Autodesk\Revit 2027\RevitAPIIFC.dll</HintPath>
+    </Reference>
+    <Reference Include="RevitAPISteel">
+      <HintPath>C:\Program Files\Autodesk\Revit 2027\RevitAPISteel.dll</HintPath>
     </Reference>
     <Reference Include="RevitAPIUI">
-      <HintPath>..\..\..\API\2027\RevitAPIUI.dll</HintPath>
-    </Reference>
-    <Reference Include="AddInLoader">
-      <HintPath>..\..\..\API\2027\AddInLoader.dll</HintPath>
-      <Private>False</Private>
+      <HintPath>C:\Program Files\Autodesk\Revit 2027\RevitAPIUI.dll</HintPath>
     </Reference>
     <Reference Include="RevitAPISteel">
       <HintPath>..\..\..\API\2027\RevitAPISteel.dll</HintPath>

@@ -142,14 +142,29 @@ $(ProjectDir)CreateAddinFile.bat $(OutDir)$(TargetName).addin $(AssemblyName).dl
     <ProjectReference Include="..\Revit.IFC.Export\Revit.IFC.Export.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <Reference Include="AdWindows">
+      <HintPath>C:\Program Files\Autodesk\Revit 2027\AdWindows.dll</HintPath>
+    </Reference>
     <Reference Include="Autodesk.UI.Windows">
-      <HintPath>..\..\..\API\2027\Autodesk.UI.Windows.dll</HintPath>
+      <HintPath>C:\Program Files\Autodesk\Revit 2027\Autodesk.UI.Windows.dll</HintPath>
     </Reference>
     <Reference Include="Autodesk.Weave.Wpf">
-      <HintPath>..\..\..\API\2027\Autodesk.Weave.Wpf.dll</HintPath>
+      <HintPath>C:\Program Files\Autodesk\Revit 2027\Autodesk.Weave.Wpf.dll</HintPath>
+    </Reference>
+    <Reference Include="RevitAPI">
+      <HintPath>C:\Program Files\Autodesk\Revit 2027\RevitAPI.dll</HintPath>
+    </Reference>
+    <Reference Include="RevitAPIIFC">
+      <HintPath>C:\Program Files\Autodesk\Revit 2027\RevitAPIIFC.dll</HintPath>
+    </Reference>
+    <Reference Include="RevitAPIUI">
+      <HintPath>C:\Program Files\Autodesk\Revit 2027\RevitAPIUI.dll</HintPath>
+    </Reference>
+    <Reference Include="UIFramework">
+      <HintPath>C:\Program Files\Autodesk\Revit 2027\UIFramework.dll</HintPath>
     </Reference>
     <Reference Include="UserInterfaceUtility">
-      <HintPath>..\..\..\API\2027\UserInterfaceUtility.dll</HintPath>
+      <HintPath>C:\Program Files\Autodesk\Revit 2027\UserInterfaceUtility.dll</HintPath>
     </Reference>
   </ItemGroup>
 </Project>

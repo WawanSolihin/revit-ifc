@@ -156,7 +156,7 @@ namespace Revit.IFC.Export.Utility
    /// <summary>
    /// Represents the Revit parameter to get from element.
    /// </summary>
-   class UserDefinedPropertyRevitParameter
+   public class UserDefinedPropertyRevitParameter
    {
       /// <summary>
       /// Gets Revit <see cref="BuiltInParameter"/>.
@@ -206,7 +206,7 @@ namespace Revit.IFC.Export.Utility
    /// <summary>
    /// Represents a single property definiton from the config.
    /// </summary>
-   class UserDefinedProperty
+   public class UserDefinedProperty
    {
       /// <summary>
       /// Gets or sets a property name.
@@ -366,7 +366,7 @@ namespace Revit.IFC.Export.Utility
    /// <summary>
    /// Represents a property set from the config.
    /// </summary>
-   class UserDefinedPropertySet
+   public class UserDefinedPropertySet
    {
       /// <summary>
       /// Gets a property set name.
@@ -389,7 +389,7 @@ namespace Revit.IFC.Export.Utility
       public IList<UserDefinedProperty> Properties { get; set; } = new List<UserDefinedProperty>();
    }
 
-   class PropertyMap
+   public static class PropertyMap
    {
       /// <summary>
       /// Load parameter mapping. It parses lines until it finds UserdefinedPset

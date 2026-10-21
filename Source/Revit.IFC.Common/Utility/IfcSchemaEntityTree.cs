@@ -45,7 +45,7 @@ namespace Revit.IFC.Common.Utility
       /// </summary>
       public HashSet<IfcSchemaEntityNode> TheTree { get; set; } = new HashSet<IfcSchemaEntityNode>();
 
-      public static readonly string[] SupportedSchemaFileNames = [ "IFC2X2_ADD1", "IFC2X3_TC1", "IFC4", "IFC4RV", "IFC4X3" ];
+      public static readonly string[] SupportedSchemaFileNames = [ "IFC2X2_ADD1", "IFC2X3_TC1", "IFC4", "IFC4RV", "IFC4X3_ADD2" ];
 
       /// <summary>
       /// Reset the static Dictionary and Set. To be done before parsing another IFC schema
